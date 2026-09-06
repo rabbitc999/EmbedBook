@@ -1,0 +1,12 @@
+{
+  "struct": "ParamDataV1_T",
+  "version": 1,
+  "fields": [
+    { "name": "MagicNumber", "type": "uint32_t" },
+    { "name": "DataVersion", "type": "uint32_t" },
+    { "name": "car_Kp", "type": "float" },
+    { "name": "car_Ki", "type": "float" },
+    { "name": "car_Kd", "type": "float" },
+    { "name": "system_Name", "type": "char", "length": 16 }
+  ]
+}

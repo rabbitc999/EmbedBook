@@ -1,0 +1,399 @@
+\chapter{C 语言实现面向对象特性} \label{ch:oop-in-c}
+
+回顾前面的章节：第~\ref{ch:scheduler-and-state-machine}~章用结构体封装“任务控制块”，用函数指针把“任务” 当作参数传递；第~\ref{ch:simple-task}~章的 \texttt{simple\_task} 用回调函数把“任务行为”注入调度器。这些做法其实已经在不自觉间使用了面向对象（Object-Oriented, OO）的设计思想。
+
+随着嵌入式项目规模增大，我们希望代码具备面向对象语言那样的封装性、可复用性和可扩展性，但很多单片机项目只使用 C 语言，也不适合引入 C++ 复杂的运行时机制。好在 C 语言本身提供了足够的基础设施——结构体、函数指针、联合体——完全可以实现面向对象的三大核心特性：封装、继承与多态。本章介绍这些特性的 C 语言实现方法，为第~\ref{ch:menu-system}~章菜单系统的“类”设计打下理论基础。完整可运行代码位于 \texttt{Chapter-c-oop/C语言面向对象设备对象/}。
+
+\medskip \textbf{本章涉及到的实验内容：}
+\begin{enumerate}
+\item 结构体封装实验（模块化设备驱动）；
+\item 函数指针多态实验（虚函数表）；
+\item 结构体嵌套继承实验（基类与派生类）；
+\item 联合体数据复用实验（多态数据结构）。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{面向对象三大特性与 C 语言的对应}
+
+面向对象编程有三大核心特性，C 语言都有朴素的对应实现，如表~\ref{tab:oop-map}~所示。
+
+\begin{table}[htbp]
+\centering \caption{面向对象特性与 C 语言实现手段的对应} \label{tab:oop-map}
+	\begin{tabular}{lll}
+		\toprule
+		\textbf{OO 特性} & \textbf{要解决的问题} & \textbf{C 语言实现手段} \\
+		\midrule
+		封装    & 数据与操作的内聚、信息隐藏 & 结构体 + 模块化函数 \\
+		继承    & 在已有类型上扩展新功能 & 结构体嵌套（组合） \\
+		多态    & 同一接口、多种实现 & 函数指针（虚函数表） \\
+		数据多态 & 同一种数据结构存放不同类型的数据 & 联合体 \texttt{union} \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+	\begin{tikzpicture}[
+		box/.style={draw=structurecolor, thick, rounded corners=2pt, align=center,
+			fill=structurecolor!8, minimum width=3.4cm, minimum height=1.1cm,
+			font=\small},
+		arrow/.style={-stealth, thick}
+		]
+		\node[box] (enc)  at (0,0)   {封装\\结构体+模块函数};
+		\node[box] (inh)  at (4.6,0) {继承\\结构体嵌套};
+		\node[box] (poly) at (9.2,0) {多态\\函数指针};
+		\node[box, fill=second!8, draw=second] (app) at (4.6,-2.2) {面向对象的嵌入式模块设计};
+		\draw[arrow] (enc) -- (app);
+		\draw[arrow] (inh) -- (app);
+		\draw[arrow] (poly) -- (app);
+	\end{tikzpicture}
+\caption{C 语言实现面向对象特性的途径} \label{fig:oop-ways}
+\end{figure}
+
+% ---------------------------------------------------------------------
+\section{封装：结构体与模块化}
+
+% ---------------------------------------------------------------------
+\subsection{数据与操作的内聚}
+
+“封装”的第一层含义是：把相关的数据聚合成一个结构体，并让操作这些数据的函数都围绕该结构体展开。第~\ref{ch:scheduler-and-state-machine}~章的任务控制块就是一个典型例子：
+
+\begin{lstlisting}[style=c]
+	typedef struct tagTask_H {
+		uint32_t Counter;          // 数据：计数器
+		uint32_t MaxCounter;       // 数据：周期
+		void (*Callback)(void);    // 数据：回调函数指针
+		TaskFlag_H Flag;           // 数据：状态
+	} Task_H;
+	
+	void Task_Loop(void);          // 操作：调度循环
+	void Task_Tick(void);          // 操作：心跳更新
+\end{lstlisting}
+
+任务的所有属性被“装”进 \texttt{Task\_H}，对任务的访问只能通过 \texttt{Task\_Loop} 与 \texttt{Task\_Tick} 等接口函数完成，外部代码不需要（也不应该）直接操作任务内部细节。这就是 “数据与操作的内聚”。
+
+% ---------------------------------------------------------------------
+\subsection{头文件接口与不透明指针}
+
+“封装”的第二层含义是信息隐藏：头文件只暴露接口，不暴露实现。更进一步，可以使用 “不透明指针（opaque pointer）”技术——在头文件中只前向声明结构体类型，具体定义放在源文件中，外部完全看不到结构体内部：
+
+\begin{lstlisting}[style=c]
+	/* device.h —— 对外只暴露接口 */
+	typedef struct tagDevice_T Device_T;   /* 前向声明，不透明类型 */
+	
+	Device_T *Device_Create(void);
+	void      Device_Destroy(Device_T *dev);
+	void      Device_Start(Device_T *dev);
+\end{lstlisting}
+
+\begin{lstlisting}[style=c]
+	/* device.c —— 结构体定义只在这里出现 */
+	struct tagDevice_T {
+		uint8_t  state;
+		uint32_t period;
+		uint32_t tick;
+	};
+	
+	Device_T *Device_Create(void)
+	{
+		Device_T *dev = malloc(sizeof(Device_T)); /* 或使用静态池 */
+		...
+	}
+\end{lstlisting}
+
+外部代码只能持有 \texttt{Device\_T*} 指针并调用接口函数，无法访问内部成员，从语言层面保证了信息隐藏。这对大型团队协作和模块维护非常有利：只要接口不变，内部实现可以任意修改。
+
+% ---------------------------------------------------------------------
+\section{继承：结构体嵌套}
+
+% ---------------------------------------------------------------------
+\subsection{用组合模拟继承}
+
+C 语言没有继承语法，但可以利用“结构体嵌套”实现等价的效果：把“基类”结构体作为 “派生类”结构体的第一个成员。由于结构体首成员的地址与结构体本身的地址相同，派生类对象的指针可以安全地转换成基类指针：
+
+\begin{lstlisting}[style=c]
+	/* 基类：通用设备 */
+	typedef struct tagDeviceBase_T {
+		uint8_t  state;              /* 所有设备共有 */
+		uint32_t errorCode;          /* 所有设备共有 */
+	} DeviceBase_T;
+	
+	/* 派生类 1：LED 设备 */
+	typedef struct tagLedDevice_T {
+		DeviceBase_T base;           /* 基类放在第一个成员 */
+		GPIO_TypeDef *port;          /* LED 特有 */
+		uint16_t pin;
+	} LedDevice_T;
+	
+	/* 派生类 2：串口设备 */
+	typedef struct tagUartDevice_T {
+		DeviceBase_T base;           /* 基类放在第一个成员 */
+		USART_TypeDef *usart;        /* 串口特有 */
+		uint32_t baudRate;
+	} UartDevice_T;
+\end{lstlisting}
+
+由于 \texttt{LedDevice\_T} 与 \texttt{UartDevice\_T} 的第一个成员都是 \texttt{DeviceBase\_T}，它们的首地址与内部 \texttt{base} 成员的地址一致，因此可以统一当作 \texttt{DeviceBase\_T*} 使用：
+
+\begin{lstlisting}[style=c]
+	void Device_ReportStatus(DeviceBase_T *dev)
+	{
+		printf("state=%u error=%u\n", dev->state, dev->errorCode);
+	}
+	
+	LedDevice_T led = { 0 };
+	UartDevice_T uart = { 0 };
+	
+	Device_ReportStatus((DeviceBase_T *)&led);   /* 派生类指针 -> 基类指针 */
+	Device_ReportStatus((DeviceBase_T *)&uart);
+\end{lstlisting}
+
+这样，一段只依赖基类的通用代码，就可以处理所有“继承自”该基类的具体设备——这就是继承带来的代码复用。
+
+% ---------------------------------------------------------------------
+\subsection{与项目代码的联系}
+
+第~\ref{ch:scheduler-and-state-machine}~章的 \texttt{KeyCtrl\_T}、第~\ref{ch:simple-task}~章的 \texttt{Task\_T} 虽然不是严格意义上的“基类和派生类”结构，但都体现了同样的思想：把公共属性聚合在结构体中，再通过函数指针扩展行为。第~\ref{ch:menu-system}~章菜单系统的 \texttt{UI\_MenuItem} 则会把“继承”与“多态”结合得更加完整。
+
+% ---------------------------------------------------------------------
+\section{多态：函数指针与虚函数表}
+
+% ---------------------------------------------------------------------
+\subsection{函数指针作为“虚函数”}
+
+多态的含义是“同一接口，多种实现”。在 C 中，把函数指针作为结构体成员，就等于给 “对象”安装了一个可替换的行为接口，效果类似 C++ 的虚函数：
+
+\begin{lstlisting}[style=c]
+	/* 设备“类”：行为全部由函数指针提供 */
+	typedef struct tagDevice_T Device_T;
+	struct tagDevice_T {
+		void (*Init)(Device_T *self);                /* 初始化 */
+		void (*Read)(Device_T *self, uint8_t *buf, uint16_t len);  /* 读 */
+		void (*Write)(Device_T *self, uint8_t *buf, uint16_t len); /* 写 */
+		void *priv;                                  /* 派生类私有数据 */
+	};
+	
+	/* 派生：串口设备 */
+	typedef struct tagUartPriv_T {
+		USART_TypeDef *usart;
+		uint32_t baudRate;
+	} UartPriv_T;
+	
+	static void Uart_Init(Device_T *self)
+	{
+		UartPriv_T *priv = (UartPriv_T *)self->priv;
+		/* 初始化 USART 外设 */
+	}
+	
+	static void Uart_Write(Device_T *self, uint8_t *buf, uint16_t len)
+	{
+		UartPriv_T *priv = (UartPriv_T *)self->priv;
+		for (uint16_t i = 0; i < len; i++) {
+			/* 逐字节发送 */
+		}
+	}
+	
+	/* 构造函数：把派生类的实现“注入”基类的函数指针表 */
+	void UartDevice_Create(Device_T *dev, UartPriv_T *priv,
+	USART_TypeDef *usart, uint32_t baudRate)
+	{
+		dev->Init  = Uart_Init;
+		dev->Read  = NULL;      /* 本设备未实现读 */
+		dev->Write = Uart_Write;
+		dev->priv  = priv;
+		priv->usart = usart;
+		priv->baudRate = baudRate;
+	}
+\end{lstlisting}
+
+用户代码只面对统一的 \texttt{Device\_T*} 接口，无需关心具体是什么设备：
+
+\begin{lstlisting}[style=c]
+	void App_TransferData(Device_T *dev, uint8_t *buf, uint16_t len)
+	{
+		if (dev->Write != NULL) {
+			dev->Write(dev, buf, len);   /* 具体执行哪个实现，由函数指针决定 */
+		}
+	}
+	
+	Device_T uartDev;
+	UartPriv_T uartPriv;
+	UartDevice_Create(&uartDev, &uartPriv, USART1, 115200);
+	
+	App_TransferData(&uartDev, buf, 4);  /* 实际执行 Uart_Write */
+\end{lstlisting}
+
+如果需要增加一种新设备（比如 SPI 屏），只需要再写一组 \texttt{Spi\_Init} 与 \texttt{Spi\_Write}，调用一个 \texttt{SpiDevice\_Create} 把函数指针填进去即可，\texttt{App\_TransferData} 一行都不用改。这正是多态带来的可扩展性。
+
+% ---------------------------------------------------------------------
+\subsection{面向接口编程}
+
+第~\ref{ch:simple-task}~章 \texttt{simple\_task} 的任务回调 \texttt{TaskCallback}、延时打断回调 \texttt{TimerDelayCallback}，第~\ref{ch:menu-system}~章菜单系统的 \texttt{UI\_FuncEvent} 与 \texttt{UI\_Event}，本质上都是“面向接口编程”：调用方只依赖函数指针签名（接口），实现方通过注册机制注入具体行为。这种模式在嵌入式领域无处不在，例如：
+
+\begin{itemize}
+\item 按键扫描：\texttt{GetVoltage} 函数指针解耦 GPIO 与状态机逻辑；
+\item 存储设备：\texttt{Read}、\texttt{Write} 与 \texttt{Erase} 函数指针统一 Nor Flash、EEPROM、SD 卡；
+\item 显示设备：\texttt{ShowString} 与 \texttt{Clear} 函数指针统一 LCD、OLED、串口终端。
+\end{itemize}
+
+% ---------------------------------------------------------------------
+\section{联合体：多态数据复用}
+
+继承解决了“对象是谁”的问题，多态解决了“行为是什么”的问题，而数据多态则解决 “同一个字段在不同类型中含义不同”的问题。C 语言的 \texttt{union} 让多个成员共享同一块内存，非常适合存放互斥的、类型相关的数据。
+
+第~\ref{ch:menu-system}~章菜单项的 \texttt{UI\_MenuItem} 就是这样设计的：不同菜单项需要的数据完全不同—— 跳转项需要一个菜单指针，函数项需要一个函数指针，数值项需要绑定变量、上下限和类型，单选与多选只需要绑定变量和成立值。它们不会同时使用，因此用一个 \texttt{union} 即可：
+
+\begin{lstlisting}[style=c]
+	union _ChildUnion
+	{
+		UI_Menu* Jump;                 /* 跳转项：目标菜单 */
+		UI_FuncEvent Func;             /* 函数项：目标函数 */
+		
+		uint32_t* BindPtr;             /* 多选：绑定变量 */
+		
+		struct _ValueItem
+		{
+			uint32_t* BindPtr;         /* 数值项：绑定变量 */
+			uint32_t Min;              /* 修改下限 */
+			uint32_t Max;              /* 修改上限 */
+			UI_MenuChangeValueType Type; /* 类型：INT / FLOAT */
+		} Value;
+		
+		struct _ChooseItem
+		{
+			uint32_t* BindPtr;         /* 单选：绑定变量 */
+			int32_t Establish;         /* 成立值 */
+		} Choose;
+	} Union;
+\end{lstlisting}
+
+使用 \texttt{union} 需要注意：所有成员共享同一块内存，编译器无法检查“当前该读哪个成员”，因此必须由另一个字段显式区分类型（例如 \texttt{UI\_MenuItem} 中通过 \texttt{DrawDetail}、\texttt{Enter}、\texttt{Exit} 与 \texttt{Change} 四个函数指针隐含区分，数值项再通过 \texttt{Union.Value.Type} 区分 INT 与 FLOAT）。
+
+% ---------------------------------------------------------------------
+\section{综合示例：可复用的设备对象}
+
+把封装、继承、多态组合起来，可以得到一个完整的“设备对象”模式。下面用一个抽象的“定时器对象”展示完整用法——不同单片机上的定时器（STM32 的 TIM、51 的定时器）可以通过同一套接口操作。
+
+\begin{lstlisting}[style=c]
+	/* timer.h —— 对外接口 */
+	typedef struct tagTimer_T Timer_T;
+	
+	Timer_T *Timer_Create(void);             /* 创建定时器对象 */
+	void     Timer_SetPeriod(Timer_T *t, uint32_t periodMs);
+	void     Timer_Start(Timer_T *t);
+	void     Timer_Stop(Timer_T *t);
+	uint8_t  Timer_IsExpired(Timer_T *t);    /* 查询并清除超时标志 */
+\end{lstlisting}
+
+\begin{lstlisting}[style=c]
+	/* timer_stm32.c —— STM32 实现 */
+	struct tagTimer_T {
+		uint32_t period;              /* 周期 */
+		volatile uint8_t expired;     /* 超时标志 */
+		/* 私有字段 */
+		TIM_TypeDef *tim;
+	};
+	
+	Timer_T *Timer_Create(void)
+	{
+		static Timer_T s_timer;       /* 静态对象池，避免 malloc */
+		s_timer.period = 1000;
+		s_timer.expired = 0;
+		s_timer.tim = TIM6;
+		return &s_timer;
+	}
+	
+	void Timer_SetPeriod(Timer_T *t, uint32_t periodMs)
+	{
+		t->period = periodMs;
+	}
+	
+	void Timer_Start(Timer_T *t)
+	{
+		t->tim->PSC = ...;            /* 配置预分频 */
+		t->tim->ARR = ...;
+		TIM_Cmd(t->tim, ENABLE);
+	}
+	
+	void Timer_Stop(Timer_T *t)
+	{
+		TIM_Cmd(t->tim, DISABLE);
+	}
+	
+	uint8_t Timer_IsExpired(Timer_T *t)
+	{
+		uint8_t r = t->expired;
+		t->expired = 0;               /* 查询并清除 */
+		return r;
+	}
+	
+	/* 中断服务函数中置位超时标志 */
+	void TIM6_IRQHandler(void)
+	{
+		s_timer.expired = 1;
+		TIM_ClearITPendingBit(TIM6, TIM_IT_Update);
+	}
+\end{lstlisting}
+
+应用层完全不依赖具体型号的寄存器操作，只依赖 \texttt{timer.h} 的接口；换一个单片机时，只需要重写 \texttt{timer\_stm32.c} 这个“实现文件”，应用代码保持不变。这就是面向对象设计在嵌入式开发中的价值。
+
+% ---------------------------------------------------------------------
+\section{单片机实验：设备对象移植与实测}
+
+本章代码可以在 PC 上编译理解，但真正体现价值的是把它移植到开发板上运行。本节实验需要在自己手头的单片机上完成，作者先在正文里给出实验框架，后续再补充实物照片与运行记录。
+
+\begin{anybox}{实验目的}
+
+\begin{enumerate}
+\item 体会“接口与实现分离”：应用层只依赖 \texttt{timer.h}，不依赖具体寄存器；
+\item 用 LED、按键或串口验证封装、继承、多态的实际运行效果；
+\item 掌握更换单片机后“只改实现文件”的移植流程。
+\end{enumerate}
+
+\end{anybox}
+\begin{anybox}{建议实验步骤}
+
+\begin{enumerate}
+\item 在自己工程中建立 \texttt{timer.h}、\texttt{timer\_stm32.c}（或对应平台的实现文件）；
+\item 把定时器中断里的“超时置位”封装进 \texttt{Timer\_IsExpired}；
+\item 编写一个 LED 设备对象和一个串口设备对象，通过统一的虚函数表调用；
+\item 在主循环里周期性查询两个设备对象，观察 LED 闪烁与串口输出；
+\item 换一个定时器或平台，只替换实现文件，确认应用代码无需修改。
+\end{enumerate}
+
+\end{anybox}
+\begin{anybox}{验收标准}
+\begin{itemize}
+\item 编译零警告（或已说明的少量警告）；
+\item LED 与串口行为正确，应用层代码中没有出现具体寄存器名；
+\item 能说明“新增一个设备需要改哪些文件、不需要改哪些文件”。
+\end{itemize}
+
+\medskip \noindent\textbf{待补充实验记录}：
+
+\begin{itemize}
+\item 开发板与接线照片；
+\item 串口与示波器输出截图；
+\item 移植到第二块开发板的对比记录。
+\end{itemize}
+\end{anybox}
+
+\begin{figure}[htbp]
+\centering
+    % TODO: 在此插入开发板实物照片
+\caption{设备对象移植实验实物照片（待补充）} \label{fig:ch5-mcu-demo}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+    % TODO: 在此插入串口运行截图
+\caption{设备对象运行效果截图（待补充）} \label{fig:ch5-mcu-log}
+\end{figure}
+% ---------------------------------------------------------------------
+\begin{problemset}
+\item 封装的核心目标是什么？请说明结构体成员私有化与“头文件只暴露接口”之间的关系。
+\item 用结构体嵌套实现继承时，子对象与父对象的内存布局是怎样的？如何通过“父结构体指针”访问子类字段？
+\item 函数指针实现多态与 C++ 虚函数的本质区别是什么？写出一个“设备表”示例，说明如何新增设备而不修改调用方。
+\item 联合体保存不同类型数据时，为什么必须额外用一个类型字段？直接读取未写入的成员会得到什么结果？
+\item “面向接口编程”在单片机项目中有什么实际收益？请以菜单、存储设备或显示设备为例说明。
+\end{problemset}

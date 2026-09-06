@@ -1,0 +1,378 @@
+\chapter{串口通信与 FIFO 缓冲区} \label{ch:serial-fifo}
+
+串口（UART）是单片机与上位机、传感器、无线模块通信最常用的接口。串口接收的难点不在硬件配置，而在“如何高效、可靠地接收不定长的数据”：是阻塞等待？是中断逐字节接收？还是配合 FIFO 缓冲区批量处理？本章从最简单的阻塞式收发讲起，逐步过渡到中断状态机与串口空闲中断，再用第~\ref{ch:simple-task}~章介绍的循环队列（FIFO）缓冲区解决数据缓冲问题，最后给出完整的 HEX 数据包协议设计与表驱动命令处理方法。完整可运行代码位于 \texttt{Chapter-serial-fifo/串口FIFO与HEX协议/}。
+
+\medskip \textbf{本章涉及到的实验内容：}
+\begin{enumerate}
+\item 串口中断状态机接收实现（固定包长数据包）；
+\item 串口空闲中断实现（不定长数据接收）；
+\item 基于 FIFO 的串口控制器实现（收发缓冲）；
+\item HEX 数据包协议实现（帧格式、校验码、命令表驱动、应答响应）；
+\item MCU 移植实验。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{串口通信基础}
+
+% ---------------------------------------------------------------------
+\subsection{UART 帧格式}
+
+UART 采用异步串行通信，一帧数据通常由起始位、数据位（LSB 在前）、可选的校验位和停止位组成。以“1 起始位 + 8 数据位 + 1 停止位”为例，一帧共 10 位，如图~\ref{fig:uart-frame}~所示。
+
+\begin{figure}[htbp]
+\centering
+    \begin{tikzpicture}[
+        cell/.style={draw=structurecolor, thick, minimum height=0.85cm, align=center, font=\small},
+        lab/.style={font=\small}
+    ]
+        \foreach \i/\txt in {0/空闲,1/起始位,2/D0,3/D1,4/D2,5/D3,6/D4,7/D5,8/D6,9/D7,10/停止位,11/空闲} {
+            \node[cell, minimum width=1.05cm] at (\i*1.05,0) {\txt};
+        }
+        \node[lab] at (5.8,-1.3) {1 帧共 10 位（1 起始位 + 8 数据位 + 1 停止位，LSB 在前）};
+    \end{tikzpicture}
+\caption{UART 帧格式} \label{fig:uart-frame}
+\end{figure}
+
+收发双方必须约定相同的波特率（每秒传输的位数）与帧格式，否则无法正确解析数据。
+
+% ---------------------------------------------------------------------
+\subsection{阻塞式收发的弊端}
+
+最简单直接的收发方式是“阻塞式”：发送时循环等待发送完成，接收时循环等待数据到达。例如按键扫描中的 \texttt{Key\_GetNum}、LED 闪烁中的 \texttt{Delay\_ms} 都是典型的阻塞写法。阻塞的定义是：执行某段程序时，CPU 因为需要等待延时或等待某个信号而被迫处于暂停状态一段时间，程序执行时间较长或时间不定；非阻塞则是指 CPU 不会等待，程序很快执行结束。
+
+串口如果采用阻塞接收，主程序会被“卡”在等待接收上，无法响应按键、刷新屏幕等其他任务。因此工程中串口接收几乎都采用中断方式，把“数据到达”交给硬件事件驱动。
+
+% ---------------------------------------------------------------------
+\section{串口中断状态机接收}
+
+% ---------------------------------------------------------------------
+\subsection{中断中逐字节解析数据包}
+
+一种常见的做法是在接收中断（RXNE）中，用状态机逐字节解析固定格式的数据包。例如协议约定“包头 0xFF + 4 字节数据 + 包尾 0xFE”：
+
+\begin{anybox}{共享变量必须先声明为 volatile}
+。下面的数据包缓冲区和接收完成标志由中断写入、主循环读取，如果不加 \texttt{volatile}，编译器可能把主循环中的判断优化成“只判断一次”，导致新数据包到达后主循环毫无反应（原理见第~\ref{sec:volatile-const}~节）：
+\end{anybox}
+
+\begin{lstlisting}[style=c]
+volatile uint8_t Serial_RxPacket[4];  /* 中断写入的数据包 */
+volatile uint8_t Serial_RxFlag = 0;   /* 接收完成标志：中断置1，主循环清0 */
+\end{lstlisting}
+
+\begin{lstlisting}[style=c]
+void USART1_IRQHandler(void)
+{
+    static uint8_t RxState = 0;         /* 接收状态机的当前状态 */
+    static uint8_t pRxPacket = 0;       /* 当前接收数据的下标 */
+
+    if (USART_GetITStatus(USART1, USART_IT_RXNE) == SET) {
+        uint8_t RxData = USART_ReceiveData(USART1);
+
+        /* 状态0：等待包头 */
+        if (RxState == 0) {
+            if (RxData == 0xFF) {       /* 收到包头 */
+                RxState = 1;            /* 进入接收数据状态 */
+                pRxPacket = 0;          /* 数据下标归零 */
+            }
+        }
+        /* 状态1：接收数据 */
+        else if (RxState == 1) {
+            Serial_RxPacket[pRxPacket] = RxData;
+            pRxPacket++;
+            if (pRxPacket >= 4) {       /* 收够4个数据 */
+                RxState = 2;
+            }
+        }
+        /* 状态2：等待包尾 */
+        else if (RxState == 2) {
+            if (RxData == 0xFE) {       /* 收到包尾，接收完成 */
+                RxState = 0;
+                Serial_RxFlag = 1;      /* 置接收完成标志 */
+            }
+        } else {
+            RxState = 0;                /* 异常状态复位 */
+        }
+        USART_ClearITPendingBit(USART1, USART_IT_RXNE);
+    }
+}
+\end{lstlisting}
+% ---------------------------------------------------------------------
+\subsection{中断状态机的缺点}
+
+这种“把解析逻辑全部放在中断里”的做法有两个明显缺点：
+
+\begin{enumerate}
+\item \textbf{缺乏实时性}：中断服务函数执行时间过长，会影响其他中断的响应；
+\item \textbf{数据包处理不及时}：在高负载程序中，主循环可能来不及取走 \texttt{Serial\_RxFlag} 对应的数据，下一个数据包到达时就会互相干扰，甚至丢包。
+\end{enumerate}
+
+解决办法是：中断只负责“把数据放进缓冲区”，解析与处理交给主循环。这就是 FIFO 缓冲区方案，也是本章后半部分的重点。
+
+% ---------------------------------------------------------------------
+\section{串口空闲中断}
+
+% ---------------------------------------------------------------------
+\subsection{空闲中断的触发条件}
+
+STM32 串口有一个特殊的中断——空闲中断（IDLE）。它的触发条件是：串口接收到数据后（RXNE 被置位），如果在一个字节对应的周期内没有新的数据接收，硬件会把 IDLE 位置 1 并触发空闲中断。
+
+空闲中断的意义在于：它天然标定了“一帧数据接收完毕”的时刻。对于不定长数据（如命令字符串、任意长度的数据帧），用空闲中断可以很方便地判断接收完成，无需预先知道数据长度。
+
+% ---------------------------------------------------------------------
+\subsection{配置与中断服务函数}
+
+初始化时同时使能接收中断与空闲中断：
+
+\begin{lstlisting}[style=c]
+USART_ITConfig(USART1, USART_IT_RXNE, ENABLE);  /* 接收中断 */
+USART_ITConfig(USART1, USART_IT_IDLE, ENABLE);  /* 空闲中断 */
+\end{lstlisting}
+
+被中断与主循环共享的接收缓冲、长度与完成标志同样要加 \texttt{volatile}：
+
+\begin{lstlisting}[style=c]
+volatile uint8_t  g_uart1ReceiveBuff[64]; /* 中断写入，主循环读取 */
+volatile uint16_t g_uart1Len = 0;         /* 当前接收长度 */
+volatile uint8_t  g_usart1RxFlag = 0;     /* 一帧接收完成标志 */
+\end{lstlisting}
+
+中断服务函数分别处理两类中断：
+
+\begin{lstlisting}[style=c]
+void USART1_IRQHandler(void)
+{
+    /* 接收中断：逐字节存入缓冲区 */
+    if (USART_GetITStatus(USART1, USART_IT_RXNE) != RESET) {
+        USART_ClearITPendingBit(USART1, USART_IT_RXNE);
+        g_uart1ReceiveBuff[g_uart1Len++] = USART_ReceiveData(USART1);
+    }
+    /* 空闲中断：一帧接收完毕，置标志 */
+    else if (USART_GetFlagStatus(USART1, USART_FLAG_IDLE) != RESET) {
+        USART_ClearITPendingBit(USART1, USART_IT_IDLE);
+        USART1->SR = 0;
+        USART1->DR = 0;
+        g_usart1RxFlag = 1;      /* 通知主循环处理完整的一帧 */
+    }
+}
+\end{lstlisting}
+
+\begin{anybox}{缓冲区溢出}
+直接使用定长数组 \texttt{g\_uart1ReceiveBuff} 时，需要防止缓冲区写满溢出；更稳妥的做法是配合循环队列（FIFO）缓冲区，其通用实现见第~\ref{ch:simple-task}~章。
+\end{anybox}
+
+% ---------------------------------------------------------------------
+\section{基于 FIFO 的串口控制器}
+
+把收发 FIFO 与硬件句柄封装成一个“串口控制器”，就可以管理多个串口：
+
+\begin{anybox}{说明}
+\texttt{SerialFifo\_T} 的数据结构及写入、读取与长度计算函数已在第~\ref{ch:simple-task}~章的
+“循环队列（FIFO）缓冲区”一节给出，本节直接把它们应用到串口收发上。
+\end{anybox}
+
+\begin{lstlisting}[style=c]
+/* USART 控制器 */
+typedef struct tagSerialBlock_T
+{
+    /* 缓冲区管理 */
+    SerialFifo_T RxFifo;          /* 接收 FIFO */
+    SerialFifo_T TxFifo;          /* 发送 FIFO */
+
+    /* 硬件句柄 */
+    USART_TypeDef *USART;         /* 串口指针 */
+
+    /* 其他成员 */
+    uint32_t RxSendTick;          /* 接收时间（用于超时判断） */
+    SerialPort_T TargetPort;      /* 目标端口号 */
+} SerialBlock_T;
+
+/* USART 端口枚举 */
+typedef enum tagSerialPort_T
+{
+    COM1,
+    COM2,
+    /* ... */
+    SERIAL_COUNT
+} SerialPort_T;
+
+void Serial_Init(void);
+void Serial_RxLoop(void);         /* 主循环中调用：从RxFifo取数据并解析 */
+void Serial_TxLoop(void);         /* 主循环中调用：把TxFifo数据发送出去 */
+void Serial_SendArray(SerialPort_T COMx, uint8_t *Array, uint16_t Size);
+\end{lstlisting}
+
+\begin{anybox}{说明}
+发送侧也可以用同样的 FIFO：应用层把要发送的数据写入 \texttt{TxFifo} 后立即返回，发送循环（或发送完成中断）逐字节取出发送，做到“发送不阻塞应用”。
+\end{anybox}
+% ---------------------------------------------------------------------
+\section{DMA 串口接收}
+
+对于高波特率、大数据量的场合，还可以使用 DMA 配合串口：DMA 控制器把接收寄存器中的数据自动搬运到内存缓冲区，完全不需要 CPU 干预，只有缓冲区满或空闲中断时才通知 CPU 处理一次。DMA 方案把 CPU 从“逐字节搬运”中彻底解放出来，适合大数据传输，但需要额外配置 DMA 通道与内存缓冲区，代码复杂度更高。FIFO 与 DMA 可以结合使用：DMA 负责搬运， FIFO 负责缓冲，主循环负责解析。
+
+% ---------------------------------------------------------------------
+\section{HEX 数据包协议}
+
+% ---------------------------------------------------------------------
+\subsection{简易固定包长数据包}
+
+最简单的协议是“固定包长、含包头包尾”，例如：\texttt{0xFF + 4字节数据 + 0xFE}。接收状态机只有 3 个状态：等待包头、接收数据、等待包尾。固定包长的优点是实现简单，缺点是数据长度固定，无法表达变长数据。
+
+% ---------------------------------------------------------------------
+\subsection{改进的 HEX 数据包格式}
+
+更通用的帧格式在包头之后加入命令 ID、长度、数据、校验码等字段：
+
+\begin{lstlisting}[style=c]
+包头1  包头2  命令ID  长度   数据              校验码  包尾1  包尾2
+0x55   0xAA   0x02   0x03   0x01 0x02 0x03   0x0E   0xFF   0xFE
+\end{lstlisting}
+
+各字段含义：
+
+\begin{enumerate}
+\item \textbf{包头（0x55 0xAA）}：两字节帧头。\texttt{0x55 = 0101 0101B}、\texttt{0xAA = 1010 1010B}，是标准方波，用示波器调试时可以快速定位帧头位置；同时规律的跳变也便于实现自动波特率识别（测量连续跳变的时间间隔即可反推波特率）；
+\item \textbf{命令 ID}：表示这一帧要做什么。例如命令 ID 为 0x01 点亮 LED1，0x02 点亮 LED2，不同的命令 ID 对应不同的处理动作；
+\item \textbf{长度}：数据字段的字节数。例如配置 5 个参数时长度为 5；
+\item \textbf{数据}：具体载荷，长度由“长度”字段决定；
+\item \textbf{校验码}：对“命令 ID + 长度 + 数据”求和（和校验），接收端重新计算并比对，一致则认为这一帧数据完整且正确；
+\item \textbf{包尾（0xFF 0xFE）}：帧结束标志。
+\end{enumerate}
+
+\begin{anybox}{功能 ID}
+某些协议还会在命令 ID 之后增加“功能 ID”，用于区分同一命令下的不同操作，例如读操作（获取设备状态）与写操作（写入设备期望状态）。功能 ID 对应同一命令不同的处理逻辑。
+
+\end{anybox}
+% ---------------------------------------------------------------------
+\subsection{HEX 接收状态机}
+
+接收端用一个状态机解析帧的各个字段。状态枚举定义如下：
+
+\begin{lstlisting}[style=c]
+/* 串口接收状态定义 */
+typedef enum tagSerialState_T
+{
+    SERIAL_STATE_IDLE,             /* 空闲 */
+    SERIAL_STATE_HEX_START_1,      /* 等待包头1 (0x55) */
+    SERIAL_STATE_HEX_START_2,      /* 等待包头2 (0xAA) */
+    SERIAL_STATE_HEX_CMD_ID,       /* 接收命令ID */
+    SERIAL_STATE_HEX_FUNC_ID,      /* 接收功能ID */
+    SERIAL_STATE_HEX_LEN,          /* 接收数据长度 */
+    SERIAL_STATE_HEX_DATA,         /* 接收数据 */
+    SERIAL_STATE_HEX_CHECK_CODE,   /* 接收校验码 */
+    SERIAL_STATE_HEX_END_1,        /* 等待包尾1 (0xFF) */
+    SERIAL_STATE_HEX_END_2         /* 等待包尾2 (0xFE) */
+} SerialState_T;
+\end{lstlisting}
+
+解析流程：中断（或 FIFO 读取循环）逐字节驱动状态机——收到 0x55 进入状态 1，收到 0xAA 进入状态 2，依次接收命令 ID、功能 ID、长度，按长度接收数据，接收校验码并验算，最后验证包尾；校验成功则把完整一帧放入接收缓冲区，校验失败则输出错误信息并回到等待包头状态。这个状态机与 6.2 节的固定包长状态机原理完全一致，只是状态更多、字段更完整。
+
+% ---------------------------------------------------------------------
+\section{表驱动法命令处理}
+
+% ---------------------------------------------------------------------
+\subsection{为什么用命令表}
+
+解析出命令 ID 后，如果用一长串 \texttt{if} 与 \texttt{else} 逐个判断，每增加一个命令就要修改解析函数，函数体会越来越长。表驱动法（查表法）把“命令 ID $\rightarrow$ 处理函数”的对应关系集中到一张表中：解析时用命令 ID 查表，命中则调用对应的处理函数，未命中则忽略。新增命令时只需在表中增加一行，解析代码一行都不用改。
+
+% ---------------------------------------------------------------------
+\subsection{命令表结构}
+
+\begin{lstlisting}[style=c]
+/* HEX 命令回调函数类型 */
+typedef void (*CmdHexCallback_T)(uint16_t COMx, uint8_t CommandID,
+                                 uint8_t *Data, uint16_t DataLength);
+
+/* HEX 命令表节点 */
+typedef struct tagCmdHexNode_T
+{
+    uint8_t CommandID;            /* 命令ID */
+    CmdHexCallback_T Callback;    /* 对应的处理函数 */
+} CmdHexNode_T;
+
+/* HEX 命令表 */
+typedef struct tagCmdHexTable_T
+{
+    uint8_t Count;                /* 表项数量 */
+    CmdHexNode_T *Table;          /* 表项数组 */
+} CmdHexTable_T;
+\end{lstlisting}
+
+使用示例：
+
+\begin{lstlisting}[style=c]
+void Cmd_LedControl(uint16_t COMx, uint8_t CommandID, uint8_t *Data, uint16_t DataLength)
+{
+    /* 处理 LED 控制命令 */
+}
+
+/* 命令表：{命令ID, 处理函数} */
+CmdHexNode_T g_CmdTable[] = {
+    { 0x01, Cmd_LedControl },
+    { 0x02, Cmd_ReadSensor },
+    /* 新增命令只需在此追加一行 */
+};
+
+CmdHexTable_T g_CmdHexTable = {
+    .Count = sizeof(g_CmdTable) / sizeof(g_CmdTable[0]),
+    .Table = g_CmdTable,
+};
+\end{lstlisting}
+
+“函数指针数组 + 查表分发”正是第~\ref{ch:oop-in-c}~章“C 语言实现面向对象特性”中多态思想在通信协议中的典型应用。
+
+% ---------------------------------------------------------------------
+\section{数据发送格式与应答响应}
+
+% ---------------------------------------------------------------------
+\subsection{数据发送格式}
+
+通过串口发送不同类型的数据时，需要约定统一的格式：
+
+\begin{itemize}
+\item \textbf{整数}：直接按整数对应的二进制发送；
+\item \textbf{浮点数}：按 IEEE 754 的浮点数格式发送（见第~\ref{ch:embedded-c}~章）；
+\item \textbf{字符串}：先发送长度，再发送字符串内容；
+\item \textbf{字节序}：发送多字节数据时注意上位机与单片机的数据排布方式，明确使用大端还是小端（见第~\ref{ch:embedded-c}~章大小端一节）。
+\end{itemize}
+
+对于多种参数，可以规定固定格式，例如“第 1$\sim$4 字节为 Kp（float，小端），第 5$\sim$8 字节为 Ki（float，小端）……”，保证双方按同一规则解析。
+
+% ---------------------------------------------------------------------
+\subsection{三类应答响应}
+
+接收方处理完一帧命令后，通常需要回复应答，一般分三类：
+
+\begin{enumerate}
+\item \textbf{成功应答}：命令执行成功；
+\item \textbf{失败应答}：命令格式不正确、校验码错误、命令执行错误等（应答中携带错误码）；
+\item \textbf{数据应答}：把查询到的数据作为载荷回发给请求方。
+\end{enumerate}
+
+\begin{lstlisting}[style=c]
+void Cmd_HexTransmitData(uint16_t COMx, uint8_t *Data, uint16_t DataLength); /* 数据应答 */
+void Cmd_HexTransmitError(uint16_t COMx, uint8_t ErrorCode);                 /* 失败应答 */
+void Cmd_HexTransmitOK(uint16_t COMx);                                       /* 成功应答 */
+void Cmd_SendHexData(uint16_t COMx, uint8_t CommandID, uint8_t *Data, uint16_t DataLength);
+\end{lstlisting}
+
+应答帧同样使用 HEX 帧格式（包头、命令 ID、长度、数据、校验码、包尾），保证收发双方协议一致。
+
+
+% ---------------------------------------------------------------------
+\section{单片机代码移植实现}
+
+\begin{figure}[htbp]
+\centering
+    % TODO: 在此插入第4章串口、FIFO 与 HEX 实验截图
+\caption{第4章实验记录图（待补充）} \label{fig:ch4-placeholder}
+\end{figure}
+
+% ---------------------------------------------------------------------
+\begin{problemset}
+\item 串口接收“不定长数据”时，为什么不能只靠固定大小的 \texttt{uint8\_t buf[N]}？请给出一个缓冲区被写满后数据丢失的例子。
+\item 画出循环队列在“缓冲区未满、刚好写满、写入时跨过末尾”三种情况下的 \texttt{StartIndex} 与 \texttt{EndIndex} 位置。
+\item 为什么计算 FIFO 数据长度时要写成 \texttt{(EndIndex + Size - StartIndex) \% Size}？直接相减会出现什么问题？
+\item 在生产者（接收中断）和消费者（主循环）并发访问 FIFO 时，需要做哪些保护？请说明为什么 \texttt{volatile} 不够。
+\item HEX 帧格式中，校验码的作用是什么？如果校验失败，接收端应该丢弃整帧还是继续解析下一帧？
+\item 请比较中断逐字节接收、空闲中断接收和 DMA 接收三种方案的实时性、CPU 占用与代码复杂度。
+\end{problemset}

@@ -1,0 +1,352 @@
+\chapter{单片机用户参数存储} \label{ch:param-store}
+
+智能小车、无人机、工业控制器等设备在断电后仍需要保存用户参数：PID 系数、轮距、最大速度、串口波特率、Wi-Fi 密码、界面标题……这些参数如果每次都烧进固件，用户就无法在运行时调整。本章以 \texttt{store.c} 与 \texttt{store.h} 的实现为例，介绍单片机上“用户参数存储”的经典做法：定义一个大参数结构体、用魔数校验合法性、按标志位分组保存、支持文件导入导出，并讨论固件升级时最容易踩的坑——参数迁移。
+
+\medskip \textbf{本章涉及到的实验内容：}
+\begin{enumerate}
+\item 参数魔数与默认值恢复；
+\item 按保存标志位分组更新参数；
+\item 参数文件导出与导入（FatFS）；
+\item 参数版本升级与 Python 迁移工具；
+\item 断电重启后参数保持实测。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{为什么需要用户参数存储}
+
+不存储参数的设备存在两个问题：
+
+\begin{enumerate}
+\item \textbf{每次上电都要重新调参}：PID、限速、串口波特率等参数一改，下次开机又回到固件里的默认值；
+\item \textbf{固件与参数耦合}：用户想改一个 Wi-Fi 密码就必须重新编译、烧录，体验很差。
+\end{enumerate}
+
+解决方法是把“代码”与“配置”分开：代码里只有默认值和结构体描述，真正运行时的数值放在可擦写的非易失存储器中。常见选择如下：
+
+\begin{table}[htbp]
+\centering \caption{常见非易失参数存储介质对比} \label{tab:param-media}
+    \begin{tabular}{llll}
+        \toprule
+        \textbf{介质} & \textbf{容量} & \textbf{适合场景} & \textbf{注意点} \\
+        \midrule
+        EEPROM（I2C 与 SPI） & KB 级 & 少量参数 & 按字节擦写 \\
+        单片机内部 Flash & 数十 KB & 小型参数 & 需要按扇区擦除 \\
+        QSPI Flash & MB 级 & 参数 + 文件 + 字库 & 适合文件系统管理 \\
+        片上备份寄存器 & 几十字节 & 掉电快速标志 & 容量极小 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+本章的 \texttt{store.c} 同时用到了两类存储：QSPI Flash 保存完整参数快照，FatFS 文件负责导出与导入。前者适合“设备自己上电恢复”，后者适合“用户把参数拷到电脑上备份或换机”。
+
+% ---------------------------------------------------------------------
+\section{ParamData\_T：一个“参数快照”结构体}
+
+最直观的参数存储方式，是把所有参数放进一个全局结构体，再整体写入 Flash：
+
+\begin{lstlisting}[style=c]
+ParamData_T g_ParamData = { 0 };
+\end{lstlisting}
+
+\texttt{ParamData\_T} 的字段按功能分组：
+
+\begin{itemize}
+\item \textbf{魔数}：\texttt{MagicNumber}，用于判断 Flash 里的数据是否有效；
+\item \textbf{底盘与 PID}：轮距、最大速度、X、Y、Yaw 与电机 PID；
+\item \textbf{电机映射}：电机与编码器方向映射；
+\item \textbf{通信}：广播时间、HEX 严格模式、串口波特率、校验位和停止位；
+\item \textbf{外部设备}：蓝牙名称密码、ESP8266 Wi-Fi 与 MQTT 参数；
+\item \textbf{界面信息}：GUI 标题、版本号、学校与项目名称；
+\item \textbf{避障与打滑}：激光与超声波阈值、打滑系数；
+\item \textbf{低功耗与脚本}：待机时间、Lua 自启动路径。
+\end{itemize}
+
+这种“整包结构体”的优点是代码简单、读写快、顺序清楚；缺点是只要结构体成员顺序改变，旧数据就不能继续按新布局解释，这正是参数迁移要解决的问题。
+
+本章示例代码位于 \texttt{Chapter-param-store/用户参数存储/}：\texttt{store.c} 与 \texttt{store.h} 为设备端源码，\texttt{Test/} 下是 PC 模拟 Flash 与 FatFS 的测试工程。
+
+% ---------------------------------------------------------------------
+\section{魔数与默认值}
+
+Flash 在擦除后通常是 0xFF，如果代码直接读取，可能读到一堆无意义数据。因此参数结构体第一个成员保存魔数：
+
+\begin{lstlisting}[style=c]
+#define PARAM_MAGIC_NUMBER 0x20260426
+
+/* 初始化时读取 Flash */
+if (g_ParamData.MagicNumber != PARAM_MAGIC_NUMBER) {
+    DEBUG_PRINTF("警告：魔数不匹配，恢复默认参数\n");
+    Param_Clear();          /* 清空并写回默认值 */
+}
+\end{lstlisting}
+
+魔数的作用是“有效性检查”：只有上一次确实成功保存过参数，MagicNumber 才会等于约定值。如果设备第一次上电、参数区被擦除或数据损坏，程序就调用 \texttt{Param\_LoadDefault(PARAM\_SAVE\_ALL\_DATA)} 恢复默认值。
+
+% ---------------------------------------------------------------------
+\section{按标志位分组保存}
+
+如果把所有参数都一次性写 Flash，任何一次微小修改都要写很大的结构体，且 Flash 磨损加快。\texttt{store.c} 使用 16 位标志位描述“本次要保存哪些分组”：
+
+\begin{lstlisting}[style=c]
+#define PARAM_SAVE_CAR_CTRL_DATA     0x0001
+#define PARAM_SAVE_SYSTEM_DATA       0x0002
+#define PARAM_SAVE_AVOIDANCE_DATA    0x0004
+#define PARAM_SAVE_COMMAND_DATA      0x0008
+#define PARAM_SAVE_LOC_X_PID_DATA    0x0100
+#define PARAM_SAVE_YAW_PID_DATA      0x0400
+#define PARAM_SAVE_ALL_DATA          0xFFFF
+\end{lstlisting}
+
+例如修改了 X 方向 PID 后，只调用：
+
+\begin{lstlisting}[style=c]
+Param_Save(PARAM_SAVE_LOC_X_PID_DATA);
+\end{lstlisting}
+
+函数内部先把对应的运行时全局变量同步进 \texttt{g\_ParamData}，最后仍然“整包写 Flash”：
+
+\begin{lstlisting}[style=c]
+void Param_Save(uint16_t saveFlags)
+{
+    g_ParamData.MagicNumber = PARAM_MAGIC_NUMBER;
+
+    if (saveFlags & PARAM_SAVE_LOC_X_PID_DATA) {
+        g_ParamData.car_pidLocationX.Kp = g_Car.remote.pidLocationX.Kp;
+        g_ParamData.car_pidLocationX.Ki = g_Car.remote.pidLocationX.Ki;
+        ...
+    }
+
+    W25QXX_WriteBuffer((uint8_t *)&g_ParamData,
+                       QSPI_ADDR_PARAM,
+                       sizeof(ParamData_T));
+}
+\end{lstlisting}
+
+标志位控制的是“哪些全局变量先同步进结构体”，Flash 写入始终是整个结构体。这样既简化了写入逻辑，又能避免无关代码误改其他分组的参数。
+
+% ---------------------------------------------------------------------
+\section{文件导入导出}
+
+\texttt{Param\_Export} 把当前 \texttt{g\_ParamData} 以二进制快照写入 FatFS 文件； \texttt{Param\_Load} 从文件读回后写进 Flash：
+
+\begin{lstlisting}[style=c]
+void Param_Load(char *filePath)
+{
+    /* 从文件读入 g_ParamData */
+    FatFS_ReadFile(filePath, (uint8_t *)&g_ParamData,
+                   sizeof(ParamData_T));
+
+    /* 同步到运行全局变量并写回 Flash */
+    Param_ReadToGlobal();
+    Param_Save(PARAM_SAVE_ALL_DATA);
+}
+
+void Param_Export(char *filePath)
+{
+    FatFS_WriteFile(filePath, (uint8_t *)&g_ParamData,
+                    sizeof(ParamData_T));
+}
+\end{lstlisting}
+
+导入前必须校验 \texttt{MagicNumber}，否则一个损坏文件会把整个参数区覆盖。同时要注意：函数 \texttt{Param\_Export}和\texttt{Param\_Load} 传输的是“编译期结构体二进制布局”，不同固件版本之间不能保证兼容。
+
+\begin{anybox}{版本兼容}
+\texttt{Param\_Export} 与 \texttt{Param\_Load} 直接搬运“编译期结构体布局”；结构体一旦增删字段或调整成员顺序，旧文件就必须按 \texttt{DataVersion} 识别并迁移，不能按新布局强行解释。
+\end{anybox}
+
+% ---------------------------------------------------------------------
+\section{参数迁移：固件升级后如何保留旧参数}
+
+\subsection{为什么需要迁移}
+
+当固件从 V1 升级到 V2 时，常见改动有三种：
+
+\begin{enumerate}
+\item \textbf{新增参数}：例如增加 \texttt{car\_slipK3}、增加一个新的串口；
+\item \textbf{删除或改名参数}：例如废弃旧接口标题，换成新的；
+\item \textbf{改变结构体字段顺序}：这种改动危害最大，会导致所有旧数据按新布局全部错位。
+\end{enumerate}
+
+如果升级后直接读取旧 Flash 或旧文件，轻则参数错乱，重则把字符串数组读成浮点数、把 0xFF 读成巨大速度值，引发安全问题。
+
+\subsection{迁移设计原则}
+
+\begin{enumerate}
+\item \textbf{只在结构体末尾追加新字段}，不要插入、删除或重排旧字段；
+\item \textbf{用 DataVersion 记录布局版本}，推荐放在 MagicNumber 之后；
+\item \textbf{新增字段必须有默认值}，迁移时“旧字段原样拷贝，新字段填默认值”；
+\item \textbf{文件导入时先按版本识别}，不支持旧版本时宁可拒绝，也不要按错误布局解释。
+\end{enumerate}
+
+伪代码：
+
+\begin{lstlisting}[style=c]
+#define PARAM_DATA_VERSION_V1  1
+#define PARAM_DATA_VERSION_V2  2
+
+/* 读取文件头后先判断版本 */
+if (pData->MagicNumber == PARAM_MAGIC_NUMBER) {
+    ParamDataV1_T oldV1Data;  /* 旧版本固件定义的结构体 */
+    switch (pData->DataVersion) {
+        case PARAM_DATA_VERSION_V1:
+            /* 旧字段逐项拷贝，新增字段赋默认值 */
+            Param_MigrateV1ToV2(&oldV1Data, pData);
+            break;
+        case PARAM_DATA_VERSION_V2:
+            break;
+        default:
+            DEBUG_PRINTF("参数版本过旧/未知，拒绝导入\n");
+            return;
+    }
+}
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\section{Python 参数迁移小工具}
+
+在 PC 上生成 C 迁移代码时，使用 Python 比 C 更方便。Python 的标准库自带 \texttt{json}、\texttt{argparse}，不需要安装编译器，就能快速比较新旧字段表并生成 \texttt{Param\_MigrateV1ToV2} 函数源码。
+
+完整小工具位于 \texttt{Chapter-param-store/参数迁移工具/}，包含：
+
+\begin{itemize}
+\item \texttt{param\_migrate.py}：C 迁移代码生成器；
+\item \texttt{schema\_v1.json}：旧版本字段表；
+\item \texttt{schema\_v2.json}：新版本字段表。
+\end{itemize}
+
+字段表以 JSON 描述，示例内容如下：
+
+\begin{lstlisting}
+// schema_v2.json（节选）
+{
+  "struct": "ParamData_T",
+  "version": 2,
+  "fields": [
+    { "name": "MagicNumber", "type": "uint32_t" },
+    { "name": "DataVersion", "type": "uint32_t" },
+    { "name": "car_Kp", "type": "float" },
+    ...
+    { "name": "car_FeedForward", "type": "float",
+      "default": 0.0 },
+    { "name": "lua_AutoBootPath", "type": "char",
+      "length": 32, "default": "default.lua" }
+  ]
+}
+\end{lstlisting}
+
+生成命令：
+
+\begin{lstlisting}
+python param_migrate.py schema_v1.json schema_v2.json \
+       -o param_migrate.c
+\end{lstlisting}
+
+脚本执行流程：
+
+\begin{enumerate}
+\item 读取新旧 schema JSON；
+\item 找出公共字段与新增字段；
+\item 公共字段生成“原样拷贝”代码；
+\item 新增字段生成“填充默认值”代码；
+\item 输出 \texttt{Param\_MigrateV1ToV2(pOld, pNew)} 的完整 C 函数。
+\end{enumerate}
+
+生成结果示例：
+
+\begin{lstlisting}[style=c]
+void Param_MigrateV1ToV2(
+    const ParamDataV1_T *pOld,
+    ParamData_T *pNew)
+{
+    if ((pOld == NULL) || (pNew == NULL)) {
+        return;
+    }
+
+    pNew->MagicNumber = pOld->MagicNumber;
+    pNew->DataVersion = pOld->DataVersion;
+    pNew->car_Kp = pOld->car_Kp;
+    ...
+    pNew->car_FeedForward = 0.0f;
+    pNew->car_EnableOuterLoop = 1;
+    strncpy(pNew->lua_AutoBootPath, "default.lua",
+            sizeof(pNew->lua_AutoBootPath) - 1);
+
+    pNew->DataVersion = PARAM_DATA_VERSION_V2;
+}
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\section{为什么选择 Python 做这类工具}
+
+\begin{enumerate}
+\item \textbf{无需编译}：脚本改完立即运行，迭代参数格式时比 C 工具快得多；
+\item \textbf{标准库丰富}：\texttt{struct} 处理二进制、\texttt{json} 与 \texttt{yaml} 做人类可读配置、 \texttt{argparse} 做命令行参数、\texttt{pytest} 做单元测试；
+\item \textbf{跨平台}：Windows 导出、Linux 服务器、Mac 备份都能直接跑；
+\item \textbf{适合批量与自动化}：可以遍历整个参数目录、对比新旧文件、把结果写回 CSV；
+\item \textbf{容易阅读}：字段表 + 函数名写清楚后，同事也能快速维护。
+\end{enumerate}
+
+\begin{anybox}{Python 的代价}
+运行时依赖解释器，不适合直接放在单片机上；用于“上位机辅助工具、测试脚本、迁移工具”最合适，设备端仍然使用 C 实现。
+
+\end{anybox}
+% ---------------------------------------------------------------------
+\section{单片机实验：参数保存、断电恢复与迁移}
+
+本节实验需要在自己开发板上完成，作者先给出实验框架，后续补充实物照片与串口截图。
+
+\begin{anybox}{实验目的}
+
+\begin{enumerate}
+\item 验证修改 PID 与最大速度后断电重启参数仍然保留；
+\item 验证魔数错误时能自动恢复默认值；
+\item 用 Python 工具生成 C 迁移函数，并完成旧版本参数升级。
+\end{enumerate}
+
+\end{anybox}
+\begin{anybox}{建议实验步骤}
+
+\begin{enumerate}
+\item 修改一个 PID 参数并调用 \texttt{Param\_Save}，断电重启后观察参数；
+\item 在参数区写入错误 MagicNumber，确认设备恢复默认参数；
+\item 使用 \texttt{Param\_Export} 导出参数文件到 SD 与 Flash；
+\item 修改 \texttt{schema\_v1} 与 \texttt{schema\_v2.json}，用 \texttt{param\_migrate.py} 生成 \texttt{Param\_MigrateV1ToV2}；
+\item 把生成的迁移函数编译进固件，导入旧文件后确认 PID 等旧参数保留、新增字段为默认值。
+\end{enumerate}
+
+\end{anybox}
+\begin{anybox}{验收标准}
+\begin{itemize}
+\item 断电重启后参数保持不变；
+\item 魔数损坏时能自动恢复默认值而不死机；
+\item 迁移后新旧共有字段数值一致，新增字段等于默认值。
+\end{itemize}
+
+\medskip \noindent\textbf{待补充实验记录}：
+
+\begin{itemize}
+\item 开发板与 QSPI Flash 与 SD 卡接线照片；
+\item 串口打印的参数保存与恢复日志；
+\item Python 迁移前后文件对比结果。
+\end{itemize}
+\end{anybox}
+
+\begin{figure}[htbp]
+\centering
+    % TODO: 在此插入开发板与存储介质照片
+\caption{参数存储实验硬件照片（待补充）} \label{fig:ch12-mcu-hw}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+    % TODO: 在此插入串口参数保存日志截图
+\caption{参数保存与断电恢复串口日志（待补充）} \label{fig:ch12-mcu-log}
+\end{figure}
+% ---------------------------------------------------------------------
+\begin{problemset}
+\item 参数存储结构体中为什么要放一个魔数？如果只靠校验和，能否发现“存入了错误结构体版本”？
+\item 固件升级后参数结构体新增了一个字段，直接读取旧 Flash 会出现什么问题？请给出至少两种迁移策略。
+\item 按“标志位分组保存”相比把整块参数一次性写入，优点是什么？代价是什么？
+\item 为什么导出/导入参数文件常用 FatFS？二进制格式与 \texttt{json/yaml} 格式分别适合什么场景？
+\item \texttt{param\_migrate.py} 这类迁移工具用 Python 而不是 C 实现，主要优势是什么？
+\end{problemset}

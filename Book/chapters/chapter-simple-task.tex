@@ -1,0 +1,920 @@
+\chapter{轻量级协作式任务调度器的设计与实现} \label{ch:simple-task}
+
+第~\ref{ch:scheduler-and-state-machine}~章我们从一个 LED 闪烁的例子出发，逐步构建了基于任务控制块（TCB）的调度器，并添加了阻塞、用户状态、单次执行与动态增删等能力。但工程化的调度器还需要考虑更多问题：任务数量上限、任务被反复增删后数组的利用率、就绪任务的执行顺序、任务运行时间的测量、以及“让某个任务自己延时一段时间而不影响其他任务”这类需求。
+
+本章介绍的 \texttt{simple\_task} 是一个完整的、可直接移植到 32 位单片机上的轻量级协作式任务调度器（版本 2.0）。它采用时间触发、协作运行模式：定时器中断只负责“计时”和“标记”，真正的任务代码全部在主循环中顺序执行，因此不需要任何操作系统层面的任务切换机制，也没有优先级反转、信号量等并发问题，非常适合资源受限、功能需求中等的嵌入式系统。
+
+\medskip \textbf{本章涉及到的实验内容：}
+\begin{enumerate}
+\item 循环队列（FIFO）缓冲区基础（写入、读取和分段拷贝）；
+\item simple\_task 调度器基础实现（任务添加、删除、启用、禁用和立即执行）；
+\item 任务内协程式延时实现（\texttt{Task\_DelayUntil} 与 \texttt{Task\_DelayInterrupt}）；
+\item 硬实时任务实验与 CPU 占用率统计实现；
+\item simple\_task PC 仿真测试实验（12 个自动化用例）；
+\item simple\_task MCU 移植测试实验。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{设计目标与总体架构}
+
+% ---------------------------------------------------------------------
+\subsection{设计目标}
+
+在动手编写代码之前，先明确 \texttt{simple\_task} 的设计目标：
+
+\begin{itemize}
+\item \textbf{轻量级}：核心只有 \texttt{simple\_task.c} 与 \texttt{simple\_task.h} 两个文件，不依赖任何 RTOS 服务，代码量小、易于阅读。
+\item \textbf{静态分配}：任务池在编译期静态分配，运行时不使用 \texttt{malloc} 与 \texttt{free}，不会产生内存碎片，也避免了内存耗尽导致系统崩溃的风险。
+\item \textbf{可裁剪}：所有功能都通过 \texttt{simple\_task\_config.h} 中的宏开关控制，不需要的功能直接裁剪掉，以节省 RAM 和 ROM。
+\item \textbf{协作式调度}：任务在主循环中按序执行，不抢占；配合“协程式延时”可以实现任务内部的非阻塞等待。
+\item \textbf{支持硬实时扩展}：对周期要求严格的代码（如 PWM 输出、ADC 触发）可以注册为 “硬实时任务”，在定时器中断中直接执行。
+\item \textbf{可观测}：内置任务运行时间统计与 CPU 占用率计算，通过 \texttt{Task\_GetInfo} 可以随时输出系统的运行状态，方便调试。
+\end{itemize}
+
+% ---------------------------------------------------------------------
+\subsection{总体架构}
+
+\texttt{simple\_task} 采用分层设计，如图~\ref{fig:task-arch}~所示。调度器核心只依赖 “底层硬件抽象接口”，因此换一个单片机只需要修改 \texttt{bsp\_system.h} 这一个文件。
+
+\begin{figure}[htbp]
+\centering
+    \begin{tikzpicture}[
+        box/.style={draw=structurecolor, thick, rounded corners=2pt, align=center,
+                    fill=structurecolor!8, minimum width=10cm, minimum height=0.9cm,
+                    font=\small},
+        arrow/.style={-stealth, thick}
+    ]
+        \node[box] (app)    at (0,3.4) {应用层：用户任务回调（LED、按键、LCD 等）};
+        \node[box] (core)   at (0,1.7) {调度核心层：simple\_task.c / simple\_task.h\\（任务池、FIFO 就绪队列、Task\_Tick / Task\_Loop）};
+        \node[box] (cfg)    at (0,0)   {配置层：simple\_task\_config.h（功能裁剪）};
+        \node[box] (bsp)    at (0,-1.7){硬件抽象层：bsp\_system.h（定时器中断 / DWT / WFI）};
+        \node[box] (hw)     at (0,-3.4){硬件：TIM6 定时器 / DWT 高精度定时器 / CPU};
+
+        \draw[arrow] (app)  -- (core);
+        \draw[arrow] (core) -- (cfg);
+        \draw[arrow] (cfg)  -- (bsp);
+        \draw[arrow] (bsp)  -- (hw);
+    \end{tikzpicture}
+\caption{simple\_task 调度器的分层架构} \label{fig:task-arch}
+\end{figure}
+
+各层职责如下：
+
+\begin{itemize}
+\item \textbf{应用层}：用户编写任务回调函数，回调通过 \texttt{Task\_Add} 注册进调度器；
+\item \textbf{调度核心层}：维护任务池与就绪队列，完成计时、置位、执行、状态迁移；
+\item \textbf{配置层}：通过宏决定编译进哪些功能（队列、统计、硬实时任务等）；
+\item \textbf{硬件抽象层}：封装定时器中断开关、高精度计时、CPU 睡眠等底层操作；
+\item \textbf{硬件}：1ms 定时器提供系统节拍，DWT 提供微秒级计时。
+\end{itemize}
+
+% ---------------------------------------------------------------------
+\section{关键数据结构}
+
+% ---------------------------------------------------------------------
+\subsection{任务系统状态}
+
+调度器使用枚举 \texttt{TaskSystemState\_T} 描述任务的生命周期状态，如表~\ref{tab:task-state}~所示，状态转换关系如图~\ref{fig:task-state}~所示。
+
+\begin{table}[htbp]
+\centering \caption{任务系统状态说明} \label{tab:task-state}
+    \begin{tabular}{cll}
+        \toprule
+        \textbf{状态} & \textbf{含义} & \textbf{说明} \\
+        \midrule
+        \texttt{RUN}     & 正在运行  & 内部使用，任务回调执行期间置位 \\
+        \texttt{WAIT}    & 等待      & 计时中，等待下一次调度 \\
+        \texttt{READY}   & 就绪      & 计时已到，等待主循环执行 \\
+        \texttt{DISABLE} & 禁用      & 不参与调度（可选） \\
+        \texttt{ONCE}    & 单次执行  & 执行一次后自动禁用（可选） \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+    \begin{tikzpicture}[
+        state/.style={draw=structurecolor, thick, circle, minimum size=1.4cm,
+                      align=center, fill=structurecolor!8, font=\small},
+        every node/.style={font=\small}
+    ]
+        \node[state] (wait)    at (0,0)   {WAIT};
+        \node[state] (ready)   at (3.8,0) {READY};
+        \node[state] (run)     at (7.6,0) {RUN};
+        \node[state] (disable) at (0,-3) {DISABLE};
+        \node[state] (once)    at (3.8,-3){ONCE};
+
+        \draw[-stealth, thick] (wait) -- node[above] {计时达到周期} (ready);
+        \draw[-stealth, thick] (ready) -- node[above] {主循环调度} (run);
+        \draw[-stealth, thick] (run) to[out=150,in=30]
+            node[above, align=center] {运行完成\\更新周期} (wait);
+        \draw[-stealth, thick] (wait) -- node[right] {Task\_Disable} (disable);
+        \draw[-stealth, thick] (disable) to[out=-180,in=180] node[left] {Task\_Enable} (wait);
+        \draw[-stealth, thick] (ready) -- node[right] {Task\_RunOnce} (once);
+        \draw[-stealth, thick] (once) --
+            node[below] {运行完成} (disable);
+    \end{tikzpicture}
+\caption{simple\_task 任务状态转换图} \label{fig:task-state}
+\end{figure}
+
+% ---------------------------------------------------------------------
+\subsection{任务回调与返回值}
+
+为了让任务能够“与调度器对话”，\texttt{simple\_task} 定义了三个核心类型：
+
+\begin{lstlisting}[style=c]
+/**
+ * @brief 任务返回值结构体
+ * @note 由任务回调函数返回，决定下一次行为
+ */
+typedef struct tagTaskRet_T {
+    uint32_t state;      /**< 用户自定义状态（下次回调时传入） */
+    uint16_t nextPeriod; /**< 下次执行周期（单位：ms），设为 TASK_RETURN_EXIT 可禁用任务 */
+} TaskRet_T;
+
+/**
+ * @brief 任务回调函数参数结构体
+ */
+typedef struct tagTaskParam_T {
+    Task_T *currentTask;    /**< 当前任务控制块指针 */
+    uint16_t currentPeriod; /**< 本次执行的实际周期（ms） */
+    const char *taskName;   /**< 任务名称 */
+} TaskParam_T;
+
+/**
+ * @brief 任务回调函数类型
+ * @param param 任务参数（包含状态、名称、参数等）
+ * @return 任务返回值（包含下次状态和周期）
+ */
+typedef TaskRet_T (*TaskCallback)(TaskParam_T *param);
+\end{lstlisting}
+
+任务回调返回 \texttt{TaskRet\_T} 结构体，其中：
+
+\begin{itemize}
+\item \texttt{state}：用户自定义状态，调度器会在下一次调用时原样传回，因此任务可以借助它实现简单的状态机；
+\item \texttt{nextPeriod}：下一次执行的周期。返回 0 之外的任意值都可以动态改变任务周期，返回 \texttt{TASK\_RETURN\_EXIT}（\texttt{0xFFFF}）则执行完后自动禁用该任务。
+\end{itemize}
+
+为了方便构造返回值，调度器提供了三个辅助函数：
+
+\begin{lstlisting}[style=c]
+TaskRet_T Task_Return(uint32_t state, uint16_t nextPeriod); // 同时设置状态与周期
+TaskRet_T Task_Delay(uint16_t nextPeriod);                 // 仅设置周期（状态置0）
+TaskRet_T Task_Exit(void);                                 // 执行后禁用任务
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\subsection{任务控制块}
+
+任务控制块 \texttt{Task\_T} 是调度器的核心数据结构，其中 \texttt{tickCount} 记录已累计的节拍数，\texttt{realPeriod} 记录当前周期。周期可以由回调返回值动态修改，这也是 \texttt{simple\_task} 支持“状态机任务”的关键。
+
+\begin{lstlisting}[style=c]
+struct tagTask_T {
+    /* 用户配置 */
+    TaskCallback callback;          /**< 任务回调函数指针 */
+
+    /* 调度参数 */
+    volatile uint16_t tickCount;    /**< 当前累计计数值（ms），中断累加、主循环清零 */
+    volatile uint16_t realPeriod;   /**< 当前实际周期（ms），主循环更新、中断读取 */
+
+    /* 运行时间统计 */
+    TaskTick_T lastRunTick;         /**< 上次运行耗时（us） */
+    TaskTick_T totalRunTick;        /**< 累计运行总耗时（us） */
+
+    /* 任务名称 */
+    const char *taskName;           /**< 任务名称（字符串常量） */
+
+    /* 状态标志 */
+    volatile uint8_t isUsed;                /**< 任务是否已分配（1=有效） */
+    volatile TaskSystemState_T systemState; /**< 当前系统状态 */
+    volatile uint8_t isInMsgQuene;          /**< 是否在就绪队列中 */
+    volatile uint16_t tickTimeout;          /**< 队列超时计数器（中断/主循环共享） */
+};
+\end{lstlisting}
+
+其中 \texttt{isUsed} 标记任务槽位是否被占用，\texttt{systemState} 表示任务当前处于 \texttt{WAIT}、\texttt{READY}、\texttt{RUN}、\texttt{DISABLE} 与 \texttt{ONCE} 中的哪个状态；\texttt{isInMsgQuene} 用于防止同一个任务被重复放入就绪队列。
+
+% ---------------------------------------------------------------------
+\subsection{硬实时任务控制块}
+
+对于必须在严格周期内执行的代码（如 PWM 波形生成、ADC 定时触发），可以注册“硬实时任务”。它与普通任务最大的区别是：普通任务在中断里“标记”、在主循环里执行；而硬实时任务直接在定时器中断里执行，保证严格的周期性。
+
+\begin{lstlisting}[style=c]
+typedef struct tagHardRealTimeTask_T {
+    TaskCallback callback;          /**< 任务回调函数指针 */
+    uint16_t period;                /**< 当前周期（ms） */
+    uint16_t tickCount;             /**< 累计计数值 */
+    volatile uint8_t isUsed;        /**< 是否已分配 */
+    const char *taskName;           /**< 任务名称 */
+} HardRealTimeTask_T;
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\subsection{调度器全局结构}
+
+调度器有一个全局唯一的 \texttt{TaskList\_T} 实例 \texttt{s\_TaskList}，它包含普通任务池、 FIFO 就绪队列、空闲标志以及系统时钟等。
+
+\begin{lstlisting}[style=c]
+typedef struct tagTaskList_T {
+    Task_T taskPool[TASK_MAX_COUNT];        /**< 静态任务池 */
+    volatile uint8_t isIdleFlag;            /**< 空闲标志（1=无任务执行，中断/主循环共享） */
+    volatile uint16_t maxTaskId;            /**< 当前最大任务ID（主循环添加、中断读取） */
+    volatile TaskTick_T systemTick;         /**< 系统运行时间（中断更新、主循环读取） */
+
+    /* 实时任务计时（用于测量代码段执行时间） */
+    TaskTick_T realTimeTaskStartTick;
+    TaskTick_T realTimeTaskLastTick;
+    TaskTick_T realTimeTotalTick;
+
+    TaskTick_T taskRunTick;                 /**< 所有任务累计运行时间 */
+    uint8_t taskNestDepth;                  /**< 任务嵌套深度（用于统计隔离） */
+
+    TaskErrorCallback errorCallback;        /**< 队列超时错误回调 */
+    Task_T *runQuene[TASK_MAX_COUNT + 1];   /**< 循环队列缓冲区 */
+    volatile uint8_t runQueneFirst;         /**< 队列头指针（消费者/主循环维护） */
+    volatile uint8_t runQueneRear;          /**< 队列尾指针（生产者/中断维护） */
+
+    HardRealTimeTask_T hardRealTimePool[TASK_HARD_REAL_TIME_MAX_COUNT];
+} TaskList_T;
+\end{lstlisting}
+
+其中 \texttt{runQuene} 是一个循环队列（FIFO），队尾由中断中的 \texttt{Task\_Tick} 写入，队首由主循环中的 \texttt{Task\_Loop} 读出，实现了“中断生产、主循环消费”的经典模型。
+
+\begin{anybox}{为什么这些成员要加 volatile}
+\texttt{systemTick} 在中断里累加、在主循环里读取；\texttt{runQueneRear} 由中断写入而主循环判断队列空或满时要读它；\texttt{maxTaskId} 由主循环添加任务时修改、中断遍历任务池时读取；\texttt{isIdleFlag} 在中断入队时清 0、主循环运行结束后置 1。这些变量如果不加 \texttt{volatile}，编译器可能长期使用寄存器中的旧值，导致调度器“看不到”刚发生的中断事件（见第~\ref{sec:volatile-const}~节）。但 \texttt{volatile} 只解决 “每次访问都读内存”，入队和出队这类读-改-写操作仍需要临界区保护。
+
+
+\end{anybox}
+% ---------------------------------------------------------------------
+\section{循环队列（FIFO）缓冲区}
+
+% ---------------------------------------------------------------------
+\subsection{为什么需要 FIFO}
+
+FIFO 是 First-In First-Out（先入先出）的缩写，是一种具有先进先出特点的缓冲区。串口设计 FIFO 的目的是提高通信性能：
+
+\begin{itemize}
+\item 如果没有 FIFO（或缓冲区长度只有 1 字节），每收到一个字节就要进一次中断，频繁进中断会占用大量 CPU 资源；
+\item 如果主循环没有及时读走数据，下一个字节就会覆盖上一个字节，导致数据丢失，这在高波特率场合很容易发生；
+\item 使用 FIFO 后，中断只管把数据写入缓冲区，主循环在合适时机一次性取走一批数据，接收效率大幅提升，数据也不会丢失。
+\end{itemize}
+
+FIFO 就像售票排队窗口：先到的人先买票先走，后来的人排在后面。
+
+% ---------------------------------------------------------------------
+\subsection{FIFO 数据结构}
+
+循环队列用头尾两个下标在固定大小的缓冲区上“转圈”，结构体定义如下：
+
+\begin{lstlisting}[style=c]
+typedef struct tagSerialFifo_T
+{
+    uint8_t  *Buffer;         /* 接收缓冲区数组 */
+    volatile uint16_t StartIndex;  /* 循环队列开始位置（读指针，中断/主循环共享） */
+    volatile uint16_t EndIndex;    /* 循环队列结束位置（写指针，中断/主循环共享） */
+    uint16_t Size;            /* 接收缓冲区大小 */
+    uint8_t  *TempBuffer;     /* 临时缓冲区 */
+    uint16_t TempBufferSize;  /* 临时缓冲区大小 */
+} SerialFifo_T;
+\end{lstlisting}
+
+\texttt{StartIndex} 指向下一个待读取的数据，\texttt{EndIndex} 指向下一个可写入的位置。两者相等时队列为空。为避免“空”和“满”都表现为 \texttt{StartIndex == EndIndex}，代码示例牺牲一个槽位：当 \texttt{(EndIndex + 1) \% Size == StartIndex} 时队列满，因此 FIFO 最多存放 \texttt{Size - 1} 字节。由于 \texttt{EndIndex} 由接收中断（生产者）写入、 \texttt{StartIndex} 由主循环（消费者）更新，而判断“空或满”时双方又需要读取对方的指针，所以这两个成员必须声明为 \texttt{volatile}，防止编译器把队列状态缓存在寄存器中。需要特别说明： \texttt{volatile} 只保证“每次访问都读内存”，并不能让“读-改-写”变成原子操作，因此在主循环读写 FIFO 时仍要按临界区要求关闭对应中断（见下文的“生产-消费模型”）。
+
+% ---------------------------------------------------------------------
+\subsection{计算未处理的数据长度}
+
+\begin{lstlisting}[style=c]
+uint32_t Serial_GetFifoLength(SerialFifo_T *Fifo)
+{
+    return (Fifo->EndIndex + Fifo->Size - Fifo->StartIndex) % Fifo->Size;
+}
+\end{lstlisting}
+
+\textbf{为什么取余之前要加上缓冲区的长度}？因为 \texttt{EndIndex} 可能已经“绕”过了 \texttt{StartIndex} （例如写入时回绕到缓冲区头部），此时 \texttt{EndIndex - StartIndex} 是负数。加上 \texttt{Size} 之后再做取余，可以保证结果恒为非负且小于 \texttt{Size}。这是循环队列最经典的写法，务必理解。
+
+% ---------------------------------------------------------------------
+\subsection{向缓冲区写入数据}
+
+写入时如果数据跨越缓冲区末尾，需要分两段拷贝：先拷到末尾，再从头部拷剩余部分。 \textbf{为什么要拷贝两次}？因为循环队列的物理存储是线性的，但逻辑上是环形，跨过末尾时只能分段写入，如图~\ref{fig:fifo}~所示。
+
+\begin{figure}[htbp]
+\centering
+    \begin{tikzpicture}[
+        cell/.style={draw=structurecolor, thick, minimum size=0.85cm, align=center, font=\small},
+        lab/.style={font=\small},
+        arrow/.style={-stealth, thick}
+    ]
+        \foreach \i/\txt in {0/头,1/1,2/2,3/3,4/4,5/5,6/6,7/尾} {
+            \node[cell] at (\i*0.95,0) {\txt};
+        }
+        \node[lab, font=\scriptsize] at (0.475,-1.1) {已满};
+        \node[lab, font=\scriptsize] at (2.85,-1.1) {待写入区域};
+        \node[lab, font=\scriptsize] at (5.225,-1.1) {剩余空间};
+        \draw[arrow] (0.475,-0.75) -- (1.425,-0.75);
+        \draw[arrow, red] (2.85,-0.75) -- (4.275,-0.75);
+        \draw[arrow, blue] (5.225,-0.75) -- (6.175,-0.75);
+        \node[lab] at (0.475,0.95) {StartIndex};
+        \node[lab] at (2.85,0.95) {EndIndex};
+    \end{tikzpicture}
+\caption{循环队列：写入跨过末尾时分两段拷贝} \label{fig:fifo}
+\end{figure}
+
+\begin{lstlisting}[style=c]
+uint8_t Serial_FifoWriteBuffer(SerialFifo_T *Fifo, uint8_t *data, uint8_t length)
+{
+    /* 如果缓冲区剩余空间不足，则不写入并返回0 */
+    if ((Fifo->Size - 1u) - Serial_GetFifoLength(Fifo) < length) { return 0; }
+
+    /* 无需分段：直接写入 */
+    if (Fifo->EndIndex + length < Fifo->Size) {
+        Memory_Copy(Fifo->Buffer + Fifo->EndIndex, data, length);
+        Fifo->EndIndex += length;
+    } else {
+        /* 需要分段：先写到缓冲区末尾 */
+        uint8_t firstLength = Fifo->Size - Fifo->EndIndex;
+        Memory_Copy(Fifo->Buffer + Fifo->EndIndex, data, firstLength);
+        /* 再从缓冲区头部写剩余部分 */
+        Memory_Copy(Fifo->Buffer, data + firstLength, length - firstLength);
+        Fifo->EndIndex = length - firstLength;
+    }
+    return length;
+}
+\end{lstlisting}
+% ---------------------------------------------------------------------
+\subsection{从缓冲区读取数据}
+
+读取同样要考虑“跨越末尾”的情况，分两段拷贝：
+
+\begin{lstlisting}[style=c]
+uint32_t Serial_FifoReadBuffer(SerialFifo_T *Fifo, uint8_t *data, uint32_t length)
+{
+    /* 缓冲区为空，直接返回 */
+    if (Fifo->EndIndex == Fifo->StartIndex) { return 0; }
+
+    /* 计算实际可读取的长度 */
+    uint32_t ReadLength = Serial_GetFifoLength(Fifo);
+
+    /* 无需分段，直接复制数据 */
+    if (Fifo->StartIndex + ReadLength <= Fifo->Size) {
+        Memory_Copy(data, Fifo->Buffer + Fifo->StartIndex, ReadLength);
+        Fifo->StartIndex += ReadLength;
+    } else {
+        /* 需要分段：先复制从 StartIndex 到缓冲区末尾的数据 */
+        uint32_t firstLength = Fifo->Size - Fifo->StartIndex;
+        Memory_Copy(data, Fifo->Buffer + Fifo->StartIndex, firstLength);
+        /* 再复制从缓冲区起始处到剩余的数据 */
+        Memory_Copy(data + firstLength, Fifo->Buffer, ReadLength - firstLength);
+        Fifo->StartIndex = ReadLength - firstLength;
+    }
+    return ReadLength;
+}
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\subsection{生产-消费模型}
+
+FIFO 天然支持“生产者-消费者”模型：
+
+\begin{itemize}
+\item \textbf{生产者}：串口接收中断，每收到一个字节调用 \texttt{Serial\_FifoWriteBuffer} 写入 \texttt{RxFifo}；
+\item \textbf{消费者}：主循环（或一个周期任务）调用 \texttt{Serial\_FifoReadBuffer} 批量取出数据并解析；
+\item \textbf{临界区}：写入和读取可能同时发生，操作 \texttt{StartIndex} 与 \texttt{EndIndex} 时需要临时屏蔽对应串口中断（或在临界区内完成），防止读写冲突。
+\end{itemize}
+
+这样中断服务函数变得非常短，复杂的协议解析全部放到主循环，既不阻塞中断，也不丢失数据。
+
+% ---------------------------------------------------------------------
+\section{调度核心实现}
+
+% ---------------------------------------------------------------------
+\subsection{系统节拍：Task\_Tick}
+
+\texttt{Task\_Tick} 必须在 1ms 定时器中断中调用（节拍周期由 \texttt{TASK\_TICK\_PERIOD} 配置）。它完成三件事：更新普通任务计时、执行硬实时任务、更新系统时钟。
+
+\begin{lstlisting}[style=c]
+void Task_Tick(void)
+{
+    uint16_t taskNum = 0;
+
+    /* --- 处理普通任务 --- */
+    for (taskNum = 0; taskNum < s_TaskList.maxTaskId; taskNum++) {
+        Task_T *taskPtr = &s_TaskList.taskPool[taskNum];
+        if (!taskPtr->isUsed) continue;
+
+        /* 异常状态修复 */
+        if (Task_IsNotNormalFlag(taskPtr)) {
+            taskPtr->systemState = TASK_SYSTEM_STATE_WAIT;
+            taskPtr->isInMsgQuene = 0;
+            taskPtr->tickTimeout = 0;
+            continue;
+        }
+
+        /* 仅处理 WAIT 或 READY 状态的任务 */
+        if (taskPtr->systemState == TASK_SYSTEM_STATE_WAIT ||
+            taskPtr->systemState == TASK_SYSTEM_STATE_READY) {
+            taskPtr->tickCount += TASK_TICK_PERIOD;
+            if (taskPtr->tickCount >= taskPtr->realPeriod) {
+                taskPtr->systemState = TASK_SYSTEM_STATE_READY;
+                Task_QueueEnqueue(taskPtr);   // 加入 FIFO 就绪队列
+                s_TaskList.isIdleFlag = 0;
+            }
+        }
+    }
+
+    /* --- 处理硬实时任务（在中断上下文直接执行） --- */
+    for (uint8_t i = 0; i < TASK_HARD_REAL_TIME_MAX_COUNT; i++) {
+        HardRealTimeTask_T *rtTask = &s_TaskList.hardRealTimePool[i];
+        if (!rtTask->isUsed) continue;
+
+        rtTask->tickCount += TASK_TICK_PERIOD;
+        if (rtTask->tickCount >= rtTask->period) {
+            rtTask->tickCount = 0;
+            TaskParam_T param = { .currentTask = NULL,
+                                  .currentPeriod = rtTask->period,
+                                  .taskName = rtTask->taskName };
+            if (IS_VALID_FUNCTION_POINTER(rtTask->callback)) {
+                TaskRet_T ret = rtTask->callback(&param);
+                if (ret.nextPeriod >= 1) {
+                    rtTask->period = ret.nextPeriod; // 动态更新周期
+                }
+            }
+        }
+    }
+
+    /* 更新系统时钟（us） */
+    s_TaskList.systemTick += TASK_TICK_PERIOD * 1000;
+}
+\end{lstlisting}
+
+几个值得注意的设计细节：
+
+\begin{itemize}
+\item \textbf{异常状态自愈}：如果任务状态被破坏（例如回调中写坏了状态枚举）， \texttt{Task\_Tick} 会把它重置为 \texttt{WAIT}，防止调度器崩溃；
+\item \textbf{禁用状态不消耗时间}：只有 \texttt{WAIT} 与 \texttt{READY} 状态的任务才累加 \texttt{tickCount}，被禁用的任务直接跳过；
+\item \textbf{硬实时任务隔离}：硬实时任务周期独立、独立累加，且回调中禁止调用 \texttt{Task\_DelayUntil} 等阻塞函数（会破坏中断实时性）。
+\end{itemize}
+
+% ---------------------------------------------------------------------
+\subsection{FIFO 就绪队列}
+
+就绪队列采用循环队列实现（容量为 \texttt{TASK\_MAX\_COUNT + 1}，牺牲一个槽位用于区分 “空”与“满”）。入队操作在中断（生产端）与主循环（消费端）两侧都可能发生，因此必须关闭定时器中断以保护临界区：
+
+\begin{lstlisting}[style=c]
+void Task_QueueEnqueue(Task_T *taskPtr)
+{
+    if (taskPtr == NULL || !taskPtr->isUsed) return;
+    if (taskPtr->isInMsgQuene) return; /* 已在队列则跳过 */
+
+    TASK_DISABLE_TIMER_IRQ(); /* 临界区保护 */
+
+    /* 检查队列是否已满（循环队列：尾+1 == 头） */
+    uint8_t nextRear = (s_TaskList.runQueneRear + 1) % (TASK_MAX_COUNT + 1);
+    if (nextRear == s_TaskList.runQueneFirst) {
+        TASK_ENABLE_TIMER_IRQ();
+        return;
+    }
+
+    /* 入队操作 */
+    s_TaskList.runQuene[s_TaskList.runQueneRear] = taskPtr;
+    s_TaskList.runQueneRear = nextRear;
+    taskPtr->isInMsgQuene = 1;
+    taskPtr->tickTimeout = 0;          /* 重置超时计数器 */
+    s_TaskList.isIdleFlag = 0;         /* 有任务就绪，非空闲 */
+
+    TASK_ENABLE_TIMER_IRQ();
+}
+\end{lstlisting}
+
+使用 FIFO 队列的好处是：同一时刻到期的多个任务按“到期顺序”执行，先到先服务，任务之间不会互相饿死；同时 \texttt{isInMsgQuene} 标志保证了一个任务即使被重复置位也不会在队列中出现两次。
+
+\begin{anybox}{临界区保护}
+FIFO 的入队与出队都必须在临界区中完成：\texttt{volatile} 只保证每次读取新值，不能保证“读-改-写”期间不会被中断打断。
+\end{anybox}
+
+% ---------------------------------------------------------------------
+\subsection{任务执行：Task\_RunTask}
+
+\texttt{Task\_RunTask} 是真正执行任务回调的地方。它记录执行时间、调用回调、解析返回值，并完成状态迁移：
+
+\begin{lstlisting}[style=c]
+void Task_RunTask(Task_T *taskPtr)
+{
+    TaskRet_T temp = { 0 };
+    TaskSystemState_T lastState = taskPtr->systemState;
+
+    /* 记录开始时间（若启用了任务计时） */
+    TaskTick_T startRunTimingTick = TASK_TIMER_GET_TICK();
+    taskPtr->systemState = TASK_SYSTEM_STATE_RUN;
+    s_TaskList.taskNestDepth += 1;
+
+    /* 调用回调函数 */
+    if (IS_VALID_FUNCTION_POINTER(taskPtr->callback)) {
+        TaskParam_T param = {
+            .taskName = taskPtr->taskName,
+            .currentPeriod = taskPtr->realPeriod,
+            .currentTask = taskPtr
+        };
+        temp = taskPtr->callback(&param);
+    }
+
+    /* 计算运行时间 */
+    TaskTick_T endRunTimingTick = TASK_TIMER_GET_TICK();
+    taskPtr->lastRunTick =
+        TASK_TIMER_CALC_DIFF_US(startRunTimingTick, endRunTimingTick);
+    taskPtr->totalRunTick += taskPtr->lastRunTick;
+    if (s_TaskList.taskNestDepth <= 1) {
+        s_TaskList.taskRunTick += taskPtr->lastRunTick;
+    }
+    s_TaskList.taskNestDepth -= 1;
+
+    /* 更新用户状态和周期 */
+    taskPtr->realPeriod = temp.nextPeriod;
+    taskPtr->tickCount = 0; /* 重置计时器，准备下一轮 */
+
+    /* 状态转换：单次执行或返回 EXIT 时禁用，否则回到等待 */
+    if (taskPtr->realPeriod == TASK_RETURN_EXIT ||
+        lastState == TASK_SYSTEM_STATE_ONCE) {
+        taskPtr->systemState = TASK_SYSTEM_STATE_DISABLE;
+    } else {
+        taskPtr->systemState = TASK_SYSTEM_STATE_WAIT;
+    }
+}
+\end{lstlisting}
+
+其中 \texttt{taskNestDepth} 用于统计隔离：如果任务回调内部又通过 \texttt{Task\_DelayInterrupt} 间接调度了其他任务，嵌套执行的任务耗时不会被重复计入总运行时间。
+
+% ---------------------------------------------------------------------
+\subsection{调度主循环：Task\_Loop}
+
+\texttt{Task\_Loop} 在主循环中反复调用。启用队列模式时，它不断从就绪队列取任务执行，直到队列为空；未启用队列时退化为轮询模式，直接遍历任务池。执行完所有就绪任务后，函数返回所有就绪任务中的最小周期，应用层可以用它实现动态调频。
+
+\begin{lstlisting}[style=c]
+uint16_t Task_Loop(void)
+{
+    uint8_t isRunning = 0;
+    uint32_t minPeriod = 0xFFFF;
+
+    /* 队列模式：依次取出队列中的任务执行 */
+    Task_T *taskPtr = Task_QueueDequeue();
+    while (taskPtr != NULL) {
+        /* 异常状态修复 */
+        if (Task_IsNotNormalFlag(taskPtr)) {
+            taskPtr->systemState = TASK_SYSTEM_STATE_WAIT;
+            taskPtr->isInMsgQuene = 0;
+            taskPtr->tickTimeout = 0;
+            taskPtr = Task_QueueDequeue();
+            continue;
+        }
+
+        /* 执行任务（除非被禁用） */
+        if (taskPtr->systemState != TASK_SYSTEM_STATE_DISABLE) {
+            Task_RunTask(taskPtr);
+        }
+        isRunning = 1;
+        if (taskPtr->realPeriod < minPeriod) { minPeriod = taskPtr->realPeriod; }
+
+        /* 取下一个任务 */
+        taskPtr = Task_QueueDequeue();
+    }
+
+    /* 更新空闲标志 */
+    s_TaskList.isIdleFlag = (isRunning == 0) ? 1 : 0;
+    return minPeriod > 0 ? minPeriod : 1;
+}
+\end{lstlisting}
+
+\begin{anybox}{关于空闲标志与低功耗}
+\texttt{isIdleFlag} 为 1 表示当前没有就绪任务，此时如果关闭了调试模式（\texttt{TASK\_DEBUG\_MODE = 0}），\texttt{Task\_Schedule} 会执行 \texttt{TASK\_CPU\_SLEEP()}（即 WFI 指令）让 CPU 进入睡眠，直到下一个定时器中断将其唤醒，从而在空闲时大幅降低功耗。
+
+\end{anybox}
+% ---------------------------------------------------------------------
+\subsection{任务管理接口}
+
+任务管理接口封装了任务池的分配与回收，全部操作都放在临界区（关闭定时器中断）内完成，防止与中断中的 \texttt{Task\_Tick} 产生竞争。API 一览见表~\ref{tab:task-api}~。
+
+\begin{table}[htbp]
+\centering \caption{simple\_task 任务管理 API} \label{tab:task-api}
+    \begin{tabular}{lll}
+        \toprule
+        \textbf{函数} & \textbf{功能} & \textbf{说明} \\
+        \midrule
+        \texttt{Task\_Init()}          & 初始化调度器 & 使用前必须调用一次 \\
+        \texttt{Task\_Add(cb, name)}   & 添加任务 & 返回 TCB 指针，失败返回 NULL \\
+        \texttt{Task\_Delete(ptr)}     & 删除任务 & 槽位可复用 \\
+        \texttt{Task\_Enable(ptr)}     & 启用任务 & 置为就绪 \\
+        \texttt{Task\_Disable(ptr)}    & 禁用任务 & 不参与调度 \\
+        \texttt{Task\_RunImmediately(ptr)} & 立即执行 & 强制置为就绪并入队 \\
+        \texttt{Task\_RunOnce(ptr)}    & 单次执行 & 执行后自动禁用 \\
+        \texttt{Task\_Schedule()}      & 启动调度 & 内部无限循环调用 Task\_Loop \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+以 \texttt{Task\_Add} 为例，它遍历任务池寻找空槽位，找到后初始化任务控制块并返回指针：
+
+\begin{lstlisting}[style=c]
+Task_T *Task_Add(TaskCallback callback, const char *taskName)
+{
+    Task_T *newTaskPtr = NULL;
+    uint16_t taskNum = 0;
+
+    TASK_DISABLE_TIMER_IRQ(); // 进入临界区
+
+    for (taskNum = 0; taskNum < s_TaskList.maxTaskId + 1 && taskNum < TASK_MAX_COUNT; taskNum++) {
+        Task_T *taskPtr = &s_TaskList.taskPool[taskNum];
+        if (!taskPtr->isUsed) {
+            /* 初始化任务控制块 */
+            taskPtr->isUsed = 1;
+            taskPtr->callback = callback;
+            taskPtr->realPeriod = 0;
+            taskPtr->tickCount = 0;
+            taskPtr->systemState = TASK_SYSTEM_STATE_READY;
+            taskPtr->taskName = taskName;
+            newTaskPtr = taskPtr;
+
+            uint16_t currentId = taskNum + 1;
+            if (currentId > s_TaskList.maxTaskId) {
+                s_TaskList.maxTaskId = currentId;
+            }
+            break;
+        }
+    }
+
+    TASK_ENABLE_TIMER_IRQ(); // 退出临界区
+    return newTaskPtr;
+}
+\end{lstlisting}
+% ---------------------------------------------------------------------
+\section{高级特性}
+
+% ---------------------------------------------------------------------
+\subsection{协程式延时：Task\_DelayUntil 与 Task\_DelayInterrupt}
+
+普通任务如果想延时 500ms，直接写 \texttt{Delay\_ms(500)} 会阻塞整个系统。\texttt{simple\_task} 提供了一对“协程式延时”函数：它们在等待期间反复调用 \texttt{Task\_Loop()}，让其他就绪任务仍然可以得到执行，从而实现“任务自己等，系统不阻塞”的效果。
+
+\begin{lstlisting}[style=c]
+/**
+ * @brief 协程式延时（带打断功能）
+ * @param delayMs 延时时间（ms）
+ * @param callback 心跳回调（返回非0则打断）
+ * @return 回调返回值
+ */
+uint8_t Task_DelayInterrupt(uint32_t delayMs, TimerDelayCallback callback)
+{
+    uint32_t startTick = s_TaskList.systemTick;
+    uint8_t callbackRet = 0;
+    delayMs *= 1000; /* 转换为us */
+
+    while ((s_TaskList.systemTick - startTick) < delayMs) {
+        if (IS_VALID_FUNCTION_POINTER(callback)) {
+            callbackRet = callback();
+            if (callbackRet != 0) break;   // 心跳回调要求打断
+        }
+        Task_Loop();                       // 让出CPU，调度其他任务
+#if !TASK_DEBUG_MODE && TASK_USE_IDLE_FLAG
+        if (Task_IsIdle()) { TASK_CPU_SLEEP(); }
+#endif
+    }
+    return callbackRet;
+}
+\end{lstlisting}
+
+\texttt{Task\_DelayInterrupt} 的应用场景很典型：比如等待某个外设（如按键长按）的同时，又不想阻塞其他任务。心跳回调每次循环被调用一次，返回非 0 即可提前退出延时：
+
+\begin{lstlisting}[style=c]
+// 等待按键松开，最长等待 3 秒，期间其他任务正常调度
+uint8_t WaitKeyRelease(void)
+{
+    if (KEY_Get() == KEY_RELEASED) { return 1; } /* 按键已松开，打断延时 */
+    return 0;
+}
+
+void Key_Task(TaskParam_T *param)
+{
+    if (KEY_Get() == KEY_PRESSED) {
+        Task_DelayInterrupt(3000, WaitKeyRelease); /* 最多等3秒 */
+    }
+    return Task_Delay(20);
+}
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\subsection{运行时间统计与 CPU 占用率}
+
+调度器借助 DWT（Data Watchpoint and Trace）内核定时器实现微秒级计时。每次任务执行前后各取一次时间戳，即可得到单次运行耗时；累加所有任务的耗时，再除以系统运行时间，就得到了 CPU 占用率。
+
+\begin{lstlisting}[style=c]
+TaskTick_T Task_GetTaskRunTick(void) {          // 所有任务累计运行时间
+    return s_TaskList.taskRunTick;
+}
+
+float Task_GetIndividualUsage(Task_T *taskPtr) { // 个体 CPU 占用率（%）
+    if (s_TaskList.taskRunTick == 0) return 0.0f;
+    return (float)taskPtr->totalRunTick / s_TaskList.taskRunTick * 100.0f;
+}
+\end{lstlisting}
+
+在任务回调中还可以用 \texttt{Task\_ReadTimeTaskBegin()} 与 \texttt{Task\_ReadTimeTaskEnd()} 精确测量某一段代码的执行时间，测量结果通过 \texttt{Task\_GetReadTimeTaskRunTick()} 获取。
+
+% ---------------------------------------------------------------------
+\subsection{系统信息输出：Task\_GetInfo}
+
+调试时调用 \texttt{Task\_GetInfo(buf, len)} 可以输出当前系统的完整运行状态，包括任务列表、状态、周期、个体占用率与上次耗时：
+
+\begin{lstlisting}[style=c]
+char info[512];
+Task_GetInfo(info, sizeof(info));
+printf("%s", info);
+\end{lstlisting}
+
+输出效果类似：
+
+\begin{lstlisting}[style=c]
+--- 活动任务列表 (总计: 3/16) ---
+系统总运行时间: 0.10 s
+调度任务历史累计CPU占用率: 0.75%
+实时任务历史累计CPU占用率: 0.50%
+------------------------------------------------------------
+序号 | 任务名称       | 状态   | 周期 | 个体占用 | 上次耗时
+-----+----------------+--------+------+----------+----------
+   0 | LED_Task       | 等待   |  500 |  22.30% |  1.000 ms
+   1 | Key_Task       | 等待   |   20 |  12.50% |  0.080 ms
+   2 | Show_Task      | 等待   | 1000 |  65.20% |  3.500 ms
+------------------------------------------------------------
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\section{配置与裁剪}
+
+\texttt{simple\_task\_config.h} 集中管理所有配置宏，编译时按需裁剪。主要配置项见表~\ref{tab:task-config}~。
+
+\begin{table}[htbp]
+\centering \caption{simple\_task\_config.h 主要配置宏} \label{tab:task-config}
+    \begin{tabular}{lll}
+        \toprule
+        \textbf{配置宏} & \textbf{默认值} & \textbf{作用} \\
+        \midrule
+        \texttt{TASK\_MAX\_COUNT}              & 16   & 最大普通任务数量（静态分配） \\
+        \texttt{TASK\_TICK\_PERIOD}            & 1    & 系统节拍周期（ms） \\
+        \texttt{TASK\_QUEUE\_TIMEOUT}          & 1000 & 队列等待超时（ms） \\
+        \texttt{TASK\_DEBUG\_MODE}             & 1    & 调试模式（影响空闲 CPU 睡眠） \\
+        \texttt{TASK\_USE\_USER\_TIMER}        & 1    & 使用 DWT 微秒级计时 \\
+        \texttt{TASK\_USE\_QUENE}              & 1    & 启用 FIFO 队列调度 \\
+        \texttt{TASK\_USE\_TASK\_TIMER}        & 1    & 任务运行时间统计 \\
+        \texttt{TASK\_USE\_IDLE\_FLAG}         & 1    & 空闲标志（可低功耗睡眠） \\
+        \texttt{TASK\_USE\_STATE\_ONCE}        & 0    & 单次执行状态 \\
+        \texttt{TASK\_USE\_STATE\_DISABLE}     & 1    & 禁用状态 \\
+        \texttt{TASK\_USE\_USER\_STATE}        & 0    & 用户自定义状态 \\
+        \texttt{TASK\_USE\_USER\_PARAM}        & 0    & 用户参数指针 \\
+        \texttt{TASK\_USE\_TASK\_NAME}         & 1    & 任务名称（调试输出） \\
+        \texttt{TASK\_USE\_ADVANCE\_FUNCTION}  & 1    & 协程式延时 \\
+        \texttt{TASK\_USE\_REAL\_TASK\_TIMER}  & 1    & 代码段计时 \\
+        \texttt{TASK\_USE\_HARD\_REAL\_TIME\_TASK} & 1 & 硬实时任务 \\
+        \texttt{TASK\_HARD\_REAL\_TIME\_MAX\_COUNT} & 2 & 最大硬实时任务数 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+裁剪的原则是“按需开关”：例如纯协作式调度不需要硬实时任务，可以把 \texttt{TASK\_USE\_HARD\_REAL\_TIME\_TASK} 置 0，减少中断处理时间；不需要调试输出时可以关闭任务名称与统计功能，节省 RAM。
+
+% ---------------------------------------------------------------------
+\section{应用示例}
+
+下面给出一个完整的 STM32 使用示例：LED 每 500ms 翻转一次，按键按下时立即点亮一次 LED2，同时用任务名称方便调试。
+
+\begin{lstlisting}[style=c]
+#include "simple_task.h"
+#include "LED.h"
+#include "Key.h"
+
+/* 任务1：周期任务，每500ms翻转一次LED1 */
+TaskRet_T LED1_Task(TaskParam_T *param)
+{
+    LED1_Turn();
+    return Task_Delay(500);
+}
+
+/* 任务2：按键触发任务，每20ms扫描一次 */
+TaskRet_T Key_Task(TaskParam_T *param)
+{
+    if (Key_IsClicked(KEY_ENTER)) {
+        LED2_ON();                 // 单击点亮LED2
+        return Task_Delay(300);    // 300ms后自动熄灭
+    }
+    if (Key_IsClicked(KEY_EXIT)) {
+        LED2_OFF();
+    }
+    return Task_Delay(20);
+}
+
+Task_T *g_LedTask;
+
+int main(void)
+{
+    LED_Init();
+    Key_Init();
+    Timer_Init();                  // 1ms定时器中断
+
+    Task_Init();
+    g_LedTask = Task_Add(LED1_Task, "LED1");
+    Task_Add(Key_Task, "KEY");
+
+    Task_Schedule();               // 内部 while(1) { Task_Loop(); }
+}
+
+/* 定时器中断：1ms */
+void TIM6_IRQHandler(void)
+{
+    Task_Tick();
+}
+\end{lstlisting}
+
+注意：\texttt{Task\_Add} 之后任务默认是 \texttt{READY} 状态，但 \texttt{realPeriod} 为 0，因此它不会立刻进入计时；首次执行时回调返回的周期（\texttt{Task\_Delay(500)}）会成为任务的实际周期。
+
+% ---------------------------------------------------------------------
+\section{PC 仿真测试}
+
+调度器的行为与硬件无关，因此可以在 PC 上做完整的自动化测试。\texttt{Chapter-simple-task/SimpleTask/Test} 目录下的 \texttt{test\_simple\_task.c} 用软件模拟了 1ms 定时器中断和 DWT 微秒时钟，共 12 个测试用例：
+
+\begin{enumerate}
+\item 定时运行：按 100ms 周期调度，验证执行次数；
+\item 任务内 Delay 动态周期：第一次延时 5ms，之后每次 25ms；
+\item 单次运行任务：仅执行 1 次后自动禁用，重新启用后可再次执行；
+\item 任务禁用与启用：禁用期间不被调度，启用后恢复；
+\item 任务删除：删除后不再运行，槽位可复用；
+\item 立即执行：唤醒任务使其在下一次循环执行；
+\item 任务情况输出：\texttt{Task\_GetInfo} 大、小缓冲区均安全输出；
+\item 任务占用时间统计：单次耗时、累计耗时、个体占用率均正确；
+\item 空闲标志：无就绪任务时置位，任务运行后复位；
+\item 队列去重：连续多次 Loop 不会重复执行未到期任务；
+\item 空指针与空队列安全：全部空指针、空队列调用未崩溃；
+\item 任务内阻塞延时：\texttt{DelayUntil} 阻塞满 20ms、心跳持续触发、协作任务保持调度、\texttt{DelayInterrupt} 可被心跳打断。
+\end{enumerate}
+
+测试运行结果节选：
+
+\begin{lstlisting}[style=c]
+===== 用例1：定时运行（周期任务） =====
+[PASS] 周期任务按 100ms 周期调度（实际运行次数=11）
+
+===== 用例2：任务内Delay动态周期 =====
+[PASS] 第一次延时 5ms 生效（间隔=5000 us）
+[PASS] 第二次延时 25ms 生效（间隔=25000 us）
+
+===== 用例12：任务内阻塞延时 =====
+[PASS] DelayUntil阻塞满 20ms（实际=20000 us）
+[PASS] 阻塞期间心跳持续触发（实际=20次）
+[PASS] 阻塞期间协作任务保持调度（实际=3次）
+[PASS] DelayInterrupt被心跳打断并提前退出（返回=1 心跳=5）
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\section{移植要点}
+
+将 \texttt{simple\_task} 移植到新的 32 位单片机时，只需要修改 \texttt{bsp\_system.h} 中的底层接口，见表~\ref{tab:task-port}~。
+
+\begin{table}[htbp]
+\centering \caption{bsp\_system.h 需要实现的底层接口} \label{tab:task-port}
+    \begin{tabular}{lll}
+        \toprule
+        \textbf{接口} & \textbf{功能} & \textbf{实现建议} \\
+        \midrule
+        \texttt{IS\_VALID\_FUNCTION\_POINTER(p)} & 函数指针有效性检查 & 非空判断即可 \\
+        \texttt{TASK\_ENABLE\_TIMER\_IRQ()} & 开定时器中断 & LL 与 HAL 库打开 TIM6 更新中断 \\
+        \texttt{TASK\_DISABLE\_TIMER\_IRQ()} & 关定时器中断 & 用于临界区保护 \\
+        \texttt{TASK\_CPU\_SLEEP()} & CPU 睡眠 & \texttt{\_\_WFI()} \\
+        \texttt{TASK\_TIMER\_GET\_TICK()} & 获取高精度时间戳 & DWT 计数器 \\
+        \texttt{TASK\_TIMER\_CALC\_DIFF\_US(s,e)} & 计算微秒差值 & DWT 差值换算 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+移植步骤归纳如下：
+
+\begin{enumerate}
+\item 把 \texttt{simple\_task.c}、\texttt{simple\_task.h} 与 \texttt{simple\_task\_config.h} 加入工程；
+\item 新建 \texttt{bsp\_system.h}，按上表实现底层接口；
+\item 配置一个 1ms 定时器中断，在中断服务函数中调用 \texttt{Task\_Tick()}；
+\item 按需修改 \texttt{simple\_task\_config.h} 裁剪功能；
+\item 编写任务回调，在 \texttt{main} 中 \texttt{Task\_Init()} 后 \texttt{Task\_Add()}，最后进入 \texttt{Task\_Schedule()}（或在主循环中反复调用 \texttt{Task\_Loop()}）。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{单片机移植实现}
+
+\begin{figure}[htbp]
+\centering
+    % TODO: 在此插入第3章 simple_task 移植实测截图
+\caption{第3章实验记录图（待补充）} \label{fig:ch3-placeholder}
+\end{figure}
+
+% ---------------------------------------------------------------------
+\begin{problemset}
+\item 请说明 \texttt{Task\_Tick}（中断侧）与 \texttt{Task\_Loop}（主循环侧）在调度器中各自扮演的角色。
+\item 循环队列为什么通常要“牺牲一个槽位”来区分空与满？如果改成记录长度字段，还需要牺牲槽位吗？
+\item \texttt{Task\_DelayUntil} 与 \texttt{Task\_DelayInterrupt} 的语义有什么区别？分别适合什么场景？
+\item 任务回调中访问全局变量时，为什么经常要加 \texttt{volatile}？\texttt{volatile} 能替代临界区吗？
+\item 调度器的任务池为什么要“静态分配”？如果用 \texttt{malloc/free} 动态创建任务，会带来哪些风险？
+\item 假设系统里有 3 个任务在同一时刻到期，请说明就绪 FIFO 会按什么顺序执行它们，并解释为什么不会发生饿死。
+\end{problemset}

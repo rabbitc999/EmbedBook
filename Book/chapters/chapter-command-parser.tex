@@ -1,0 +1,496 @@
+\chapter{字符串命令解析器设计} \label{ch:command-parser}
+
+人机交互不只有按键和菜单。当设备需要接收 \texttt{"led on"}、\texttt{"add 12 30"} 这类文本命令时，就需要一个字符串命令解析器：它把一行字符串拆成“命令名 + 参数”，再调用对应的处理函数。本章先介绍最直接的字符串比较方法，再引出词法分析，最后用哈希表构建可扩展的命令注册表。在此基础上，本章还会把参数从“字符串数组”升级为带有动态类型的 \texttt{Param\_T}，让命令处理函数可以直接用 \texttt{INT\_PARAM}、\texttt{FLOAT\_PARAM} 和 \texttt{STR\_PARAM} 读取参数。完整代码位于 \texttt{Chapter-command-parser/字符串命令解析器/} 目录。
+
+\medskip \textbf{本章涉及到的实验内容：}
+\begin{enumerate}
+\item 字符串比较命令分发；
+\item 空格或制表符参数切分（词法分析）；
+\item 基于哈希表 + 线性探测的命令注册与查找。
+\item 动态类型解析（INT、UINT、FLOAT 和 STRING）；
+\item 通过适配器调用 \texttt{LED\_CMD(int)}、\texttt{Car\_Run(float, float, float)} 等不同签名的业务函数。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{常规解析方法}
+
+最简单的方法是把整行命令与预定义字符串逐个比较：
+
+\begin{lstlisting}[style=c]
+if (strcmp(line, "led on") == 0) {
+    Led_On();
+} else if (strcmp(line, "led off") == 0) {
+    Led_Off();
+} else if (strcmp(line, "help") == 0) {
+    PrintHelp();
+} else {
+    printf("unknown command\n");
+}
+\end{lstlisting}
+
+这种写法在小规模演示中很直观，但存在三个问题：
+
+\begin{enumerate}
+\item \textbf{没有参数概念}：\texttt{"led on"} 与 \texttt{"led off"} 是两条完全独立的命令，命令一多就会成倍膨胀；
+\item \textbf{代码无法扩展}：新增一条命令必须修改主分发函数，违反“新增不改旧”的模块化原则；
+\item \textbf{性能线性}：命令数量达到几十条后，每次都要从头做字符串比较。
+\end{enumerate}
+
+\begin{table}[htbp]
+\centering \caption{字符串命令解析的三种常用方式对比} \label{tab:cmd-method}
+    \begin{tabular}{lllll}
+        \toprule
+        \textbf{方法} & \textbf{参数切分} & \textbf{查找方式} & \textbf{新增命令} & \textbf{适合规模} \\
+        \midrule
+        if-else 字符串比较 & 无 & 顺序 strcmp & 修改主函数 & 少量固定命令 \\
+        strcmp 命令表 & 无 & 线性遍历表 & 追加表项 & 中等规模 \\
+        词法分析 + 哈希表 & 有 & 哈希查找 & 注册表项 & 命令较多且频繁 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+因此工程化做法是“命令表驱动”：命令名 + 处理函数指针构成一张表，解析器只负责查表调用。本章示例中，命令表定义如下：
+
+\begin{lstlisting}[style=c]
+typedef int8_t (*CmdHandler_F)(uint8_t argc, Param_T *argv);
+
+typedef struct __CmdItem_T
+{
+    char name[CMD_NAME_MAX]; /* 命令名 */
+    CmdHandler_F handler;    /* 处理函数 */
+    uint8_t used;            /* 是否已注册 */
+} CmdItem_T;
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\section{词法分析器}
+
+“词法分析”在这里指把一行命令切分成最小有意义的单元（Token）。对于空格分隔的命令行，只需两步：
+
+\begin{enumerate}
+\item 跳过连续空格或制表符；
+\item 记录当前参数起点，一直走到下一个空白或行尾，把该位置替换为 \texttt{'\textbackslash0'}。
+\end{enumerate}
+
+示例实现如下（\texttt{argv} 指向原缓冲区中的各个参数起点）：
+
+\begin{lstlisting}[style=c]
+static uint8_t Cmd_Tokenize(char *pLine, char *argv[], uint8_t maxArgs)
+{
+    uint8_t argc = 0;
+    char *p = pLine;
+
+    while (*p != '\0') {
+        while ((*p == ' ') || (*p == '\t')) {
+            p++;                 /* 跳过空白 */
+        }
+        if (*p == '\0') {
+            break;
+        }
+        if (argc >= maxArgs) {
+            break;               /* 防止 argv 越界 */
+        }
+
+        argv[argc++] = p;        /* 记录参数起点 */
+
+        while ((*p != '\0') && (*p != ' ') && (*p != '\t')) {
+            p++;                 /* 移动到参数末尾 */
+        }
+        if (*p != '\0') {
+            *p = '\0';           /* 用结束符切开参数 */
+            p++;
+        }
+    }
+    return argc;
+}
+\end{lstlisting}
+
+切分后，\texttt{"led on"} 会变成 \texttt{argv[0] = "led"}、\texttt{argv[1] = "on"}。词法分析器的要点是：\textbf{边界检查比算法本身更重要}——行太长、参数太多、空命令都要在这一层拦截，避免处理函数访问越界。
+
+\begin{figure}[htbp]
+\centering
+    \begin{tikzpicture}[
+        tok/.style={draw=structurecolor, thick, rounded corners=2pt,
+                    minimum width=2.2cm, minimum height=0.9cm, align=center,
+                    fill=structurecolor!8, font=\small},
+        lab/.style={font=\small},
+        arrow/.style={-stealth, thick}
+    ]
+        \node[tok] (input) at (0,1.8) {命令字符串\\ \texttt{"led on"}};
+
+        \node[tok] (t0) at (-2.2,-1.2) {\texttt{argv[0]}\\ \texttt{"led"}};
+        \node[tok] (t1) at (2.2,-1.2)  {\texttt{argv[1]}\\ \texttt{"on"}};
+
+        \draw[arrow] (input.south) -- node[left]  {} (t0.north);
+        \draw[arrow] (input.south) -- node[right] {} (t1.north);
+
+        \node[lab] at (0,-2.7) {\texttt{argc = 2}，每个参数以 \texttt{'\textbackslash0'} 结尾};
+    \end{tikzpicture}
+\caption{词法分析：一行命令被切分成命令名与参数} \label{fig:cmd-token}
+\end{figure}
+
+% ---------------------------------------------------------------------
+\section{HASH 表的构建}
+
+当命令数量较多时，顺序查找 \texttt{"led"}、\texttt{"add"}、\texttt{"help"}……效率低。可以让命令名先经过一个哈希函数映射到数组下标，再在对应位置插入与查找。哈希冲突用\textbf{线性探测}解决：
+
+\begin{lstlisting}[style=c]
+static uint8_t Cmd_CalcHash(const char *pName)
+{
+    uint32_t hash = 2166136261u;   /* FNV-1a 初始值 */
+    const uint8_t *p = (const uint8_t *)pName;
+
+    while (*p != '\0') {
+        hash ^= (uint32_t)*p++;
+        hash *= 16777619u;
+    }
+    return (uint8_t)(hash % CMD_TABLE_CAP);
+}
+\end{lstlisting}
+
+两个不同命令名可能算出同一个下标（冲突），线性探测的处理方式是：从哈希位置开始向后找第一个空槽，把命令放进去；查找时也从哈希位置开始，遇到相同命令名返回，遇到空槽说明命令不存在：
+
+\begin{lstlisting}[style=c]
+/* 注册：找到空槽位或同名项 */
+start = Cmd_CalcHash(pCmdName);
+index = start;
+while (loop < CMD_TABLE_CAP) {
+    if (table[index].used == 0u) {
+        /* 插入新命令 */
+        break;
+    }
+    if (strcmp(table[index].name, pCmdName) == 0) {
+        /* 重复注册，更新 handler */
+        break;
+    }
+    index = (index + 1u) % CMD_TABLE_CAP;   /* 线性探测 */
+    loop++;
+}
+\end{lstlisting}
+
+\begin{figure}[htbp]
+\centering
+    \begin{tikzpicture}[
+        cell/.style={draw=structurecolor, thick, minimum width=1.5cm,
+                     minimum height=0.9cm, align=center, font=\small},
+        used/.style={fill=structurecolor!20},
+        lab/.style={font=\small},
+        arrow/.style={-stealth, thick}
+    ]
+        \node[cell]       (c0) at (0,0)   {0};
+        \node[cell]       (c1) at (1.6,0) {1};
+        \node[cell, used] (c2) at (3.2,0) {help};
+        \node[cell]       (c3) at (4.8,0) {3};
+        \node[cell, used] (c4) at (6.4,0) {add};
+        \node[cell, used] (c5) at (8.0,0) {led};
+        \node[cell]       (c6) at (9.6,0) {6};
+        \node[cell]       (c7) at (11.2,0){7};
+
+        \node[lab] at (6.4,1.2) {\texttt{hash("add") = 4}};
+        \node[lab] at (8.0,-1.2) {\texttt{hash("led") = 4，探测到 5}};
+        \node[lab, red] at (8.5,1.2) {冲突};
+
+        \draw[arrow, red] (8.15,0.9) -- (8.95,0.9);
+    \end{tikzpicture}
+\caption{哈希表线性探测：命令冲突时向后寻找空槽} \label{fig:hash-linear}
+\end{figure}
+
+线性探测适合“启动时注册、运行期只查找”的场景：命令表在初始化阶段填好，之后不再删除，因此不需要墓碑（tombstone）标记。哈希表的优点是把“字符串比较”的次数从 $O(n)$ 降为接近 $O(1)$，缺点是必须保证表容量大于实际命令数，否则会退化为线性查找。
+
+% ---------------------------------------------------------------------
+\section{命令注册与执行流程}
+
+综合以上两部分，命令解析器的公共 API 只需要三个函数：
+
+\begin{enumerate}
+\item \texttt{Cmd\_ParserInit}：清空命令表；
+\item \texttt{Cmd\_ParserRegister}：注册命令名与处理函数；
+\item \texttt{Cmd\_ParserRun}：接收一行字符串，切词后查表并调用处理函数。
+\end{enumerate}
+
+\texttt{Cmd\_ParserRun} 的执行流程：
+
+\begin{enumerate}
+\item 检查行长度，复制到内部缓冲（不能直接修改 \texttt{const} 输入）；
+\item 调用 \texttt{Cmd\_Tokenize} 得到 \texttt{argc} 与 \texttt{argv}；
+\item 用 \texttt{argv[0]} 查哈希表；
+\item 找到后调用 \texttt{handler(argc, argv)}，并透传其返回码。
+\end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+    \begin{tikzpicture}[
+        box/.style={draw=structurecolor, thick, rounded corners=2pt,
+                    minimum width=3.6cm, minimum height=0.9cm, align=center,
+                    fill=structurecolor!8, font=\small},
+        arrow/.style={-stealth, thick}
+    ]
+        \node[box] (in)  at (0,3.0)   {命令行字符串};
+        \node[box] (len) at (0,1.5)   {长度检查与复制};
+        \node[box] (tok) at (0,0)     {\texttt{Cmd\_Tokenize}};
+        \node[box] (hash) at (0,-1.5) {哈希查表 \texttt{argv[0]}};
+        \node[box] (run) at (0,-3.0)  {\texttt{handler(argc, argv)}};
+
+        \draw[arrow] (in.south)   -- (len.north);
+        \draw[arrow] (len.south)  -- (tok.north);
+        \draw[arrow] (tok.south)  -- (hash.north);
+        \draw[arrow] (hash.south) -- (run.north);
+    \end{tikzpicture}
+\caption{\texttt{Cmd\_ParserRun} 的处理流程} \label{fig:cmd-flow}
+\end{figure}
+
+处理函数示例：
+
+\begin{lstlisting}[style=c]
+static int8_t Cmd_HandleLed(uint8_t argc, Param_T *argv)
+{
+    if (argc < 2u) {
+        printf("usage: led on|off\n");
+        return CMD_ERR_EXEC;
+    }
+    if (strcmp(STR_PARAM(argv, 1), "on") == 0) {
+        Led_On();
+        return CMD_ERR_OK;
+    }
+    if (strcmp(STR_PARAM(argv, 1), "off") == 0) {
+        Led_Off();
+        return CMD_ERR_OK;
+    }
+    return CMD_ERR_EXEC;
+}
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\section{第二部分：动态类型参数解析（Param\_T）}
+
+如果 handler 只能收到字符串，那么每个命令都要自己写 \texttt{atoi} 与 \texttt{atof}，而且很容易漏掉格式错误。更好的做法是让解析器在切词后立刻尝试识别每个参数的类型，把“参数”封装成 \texttt{Param\_T}：
+
+\begin{lstlisting}[style=c]
+typedef enum __ParamType_T
+{
+    PARAM_TYPE_NONE = 0,
+    PARAM_TYPE_INT,       /* 12、-3 */
+    PARAM_TYPE_UINT,      /* 0x10、255 */
+    PARAM_TYPE_FLOAT,     /* 3.5、1e2 */
+    PARAM_TYPE_STRING     /* led、on */
+} ParamType_T;
+
+typedef struct __Param_T
+{
+    ParamType_T type;              /* 识别出的参数类型 */
+    char text[CMD_PARAM_TEXT_MAX]; /* 原始字符串 */
+    int32_t intValue;              /* 按整数解释 */
+    uint32_t uintValue;            /* 按无符号整数解释 */
+    float floatValue;              /* 按浮点数解释 */
+} Param_T;
+\end{lstlisting}
+
+之所以同时保存三种数值而不是只保存一种，是因为不同命令对同一文本的解释不同：对于 \texttt{"3.9"}，\texttt{INT\_PARAM} 希望得到 3，\texttt{FLOAT\_PARAM} 希望得到 3.9；对于 \texttt{"12"}，\texttt{FLOAT\_PARAM} 又希望得到 12.0。三种解释字段独立存放后，handler 想按什么类型读都可以。
+
+参数识别规则如下：
+
+\begin{table}[htbp]
+\centering \caption{动态类型识别规则示例} \label{tab:param-type}
+    \begin{tabular}{llll}
+        \toprule
+        \textbf{原始文本} & \textbf{type} & \textbf{INT\_PARAM} & \textbf{FLOAT\_PARAM} \\
+        \midrule
+        \texttt{12}      & INT   & 12        & 12.0 \\
+        \texttt{-3}      & INT   & -3        & -3.0 \\
+        \texttt{0x10}    & UINT  & 16        & 16.0 \\
+        \texttt{3.9}     & FLOAT & 3         & 3.9 \\
+        \texttt{1e2}     & FLOAT & 100       & 100.0 \\
+        \texttt{led}     & STRING & 无效      & 无效 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+处理函数中读取参数只需使用宏：
+
+\begin{lstlisting}[style=c]
+int   n     = INT_PARAM(argv, 1);    /* 以 int 类型读取 argv[1] */
+uint32_t u  = UINT_PARAM(argv, 2);   /* 以无符号整数读取 argv[2] */
+float speed = FLOAT_PARAM(argv, 3);  /* 以 float 读取 argv[3] */
+const char *s = STR_PARAM(argv, 4);  /* 以字符串读取 argv[4] */
+\end{lstlisting}
+
+\begin{anybox}{宏的参数名可以任意取}
+写成 \texttt{INT\_PARAM(argv, 1)} 或 \texttt{INT\_PARAM(paramList, 1)} 效果相同，只要第一个参数是 \texttt{Param\_T} 数组即可。
+
+\begin{anybox}{动态类型解释}
+\texttt{Param\_T} 只是把一段文本同时解析成整数、浮点与字符串三种候选值；最终按哪种类型读取，由命令处理函数选择对应的 \texttt{INT\_PARAM}、\texttt{FLOAT\_PARAM} 或 \texttt{STR\_PARAM} 决定。
+\end{anybox}
+
+\end{anybox}
+% ---------------------------------------------------------------------
+\section{第三部分：适配不同的函数列表}
+
+有了 \texttt{Param\_T}，命令层与业务层就可以分离了。假设设备层已经有如下两个业务函数，它们的签名完全不同：
+
+\begin{lstlisting}[style=c]
+/* 业务函数 1：只接收一个 int */
+static void Led_Cmd(int n)
+{
+    printf("LED_CMD(%d)\n", n);
+}
+
+/* 业务函数 2：接收三个 float */
+static void Car_Run(float x, float y, float speed)
+{
+    printf("Car_Run(x=%.2f, y=%.2f, speed=%.2f)\n", x, y, speed);
+}
+\end{lstlisting}
+
+C 语言在运行时并不知道命令表里的 handler 应该调用哪个函数、参数是什么类型，因此每个命令需要写一个“适配器”：负责检查参数个数，把 \texttt{Param\_T} 转成具体函数需要的实参。
+
+\begin{lstlisting}[style=c]
+/* 适配器 1：intcmd 7 -> Led_Cmd(7) */
+static int8_t Cmd_HandleIntCmd(uint8_t argc, Param_T *argv)
+{
+    if (argc < 2u) {
+        printf("usage: intcmd n\n");
+        return CMD_ERR_EXEC;
+    }
+    Led_Cmd(INT_PARAM(argv, 1));
+    return CMD_ERR_OK;
+}
+
+/* 适配器 2：car x y speed -> Car_Run(x, y, speed) */
+static int8_t Cmd_HandleCar(uint8_t argc, Param_T *argv)
+{
+    if (argc < 4u) {
+        printf("usage: car x y speed\n");
+        return CMD_ERR_EXEC;
+    }
+    Car_Run(FLOAT_PARAM(argv, 1),
+            FLOAT_PARAM(argv, 2),
+            FLOAT_PARAM(argv, 3));
+    return CMD_ERR_OK;
+}
+\end{lstlisting}
+
+这里的“函数列表”就是命令注册表。每接入一个业务函数，只需要追加一个适配器并注册一次：
+
+\begin{lstlisting}[style=c]
+Cmd_ParserInit(&parser);
+
+Cmd_ParserRegister(&parser, "led",    Cmd_HandleLed);      /* 字符串参数 */
+Cmd_ParserRegister(&parser, "intcmd", Cmd_HandleIntCmd);   /* int 参数 */
+Cmd_ParserRegister(&parser, "car",    Cmd_HandleCar);      /* 3 个 float 参数 */
+Cmd_ParserRegister(&parser, "add",    Cmd_HandleAdd);      /* 2 个 int 参数 */
+\end{lstlisting}
+
+注册表与业务函数的对应关系如表~\ref{tab:cmd-adapter}~所示。
+
+\begin{table}[htbp]
+\centering \caption{命令 -> 适配器 -> 业务函数} \label{tab:cmd-adapter}
+    \begin{tabular}{llll}
+        \toprule
+        \textbf{命令示例} & \textbf{适配器} & \textbf{业务函数} & \textbf{参数类型} \\
+        \midrule
+        \texttt{led on} & \texttt{Cmd\_HandleLed}   & \texttt{Led\_On()} & STRING \\
+        \texttt{intcmd 7} & \texttt{Cmd\_HandleIntCmd} & \texttt{Led\_Cmd(int)} & INT \\
+        \texttt{car 1.5 2.5 0.8} & \texttt{Cmd\_HandleCar} & \texttt{Car\_Run(float,float,float)} & FLOAT \\
+        \texttt{add 12 30} & \texttt{Cmd\_HandleAdd} & 加法实现 & INT \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+需要说明的是：适配器不能完全省掉。若想做到“一张参数描述表自动调用任意函数”，必须在编译期生成代码（例如用宏按参数类型展开），或使用 C++ 模板或反射；在纯 C 的裸机环境中， “每个函数写一个小适配器”是最直观、最容易调试的方式。
+
+% ---------------------------------------------------------------------
+\section{完整示例代码}
+
+完整可运行的代码位于 \texttt{Chapter-command-parser/字符串命令解析器/}：
+
+\begin{itemize}
+\item \texttt{cmd\_parser.h}：命令表、\texttt{Param\_T}、错误码、API；
+\item \texttt{cmd\_parser.c}：哈希函数、动态类型切分、命令注册与查找；
+\item \texttt{main.c}：注册 \texttt{help}、\texttt{led}、\texttt{intcmd}、\texttt{car}、\texttt{add} 和 \texttt{types} 并测试。
+\end{itemize}
+
+在 PC 上使用 \texttt{gcc cmd\_parser.c main.c} 即可编译运行，输出结果如下：
+
+\begin{lstlisting}
+>>> help
+>>> led on
+LED 已打开
+>>> intcmd 7
+LED_CMD(7)
+>>> car 1.5 2.5 0.8
+Car_Run(x=1.50, y=2.50, speed=0.80)
+>>> add 12 30
+12 + 30 = 42
+>>> types 12 -3 0x10 3.5 led
+argv[1] = 12       type = INT
+argv[2] = -3       type = INT
+argv[3] = 0x10     type = UINT
+argv[4] = 3.5      type = FLOAT
+argv[5] = led      type = STRING
+>>> unknown_cmd
+未知命令
+\end{lstlisting}
+
+把处理函数中的 \texttt{printf} 换成真实外设操作后，这套代码就能直接移植到串口调试命令行中。
+
+% ---------------------------------------------------------------------
+\section{单片机实验：串口命令解析移植与实测}
+
+本节实验把 PC 上的命令解析器接到单片机串口，通过电脑串口助手或调试终端输入命令。实验代码参考 \texttt{Chapter-command-parser/字符串命令解析器/}，作者先给出实验框架，后续补充接线照片与运行日志。
+
+\begin{anybox}{实验目的}
+
+\begin{enumerate}
+\item 在单片机串口中断或 FIFO 之上实现“收到一行 -> 解析 -> 执行”；
+\item 验证 \texttt{INT\_PARAM}、\texttt{FLOAT\_PARAM} 和 \texttt{STR\_PARAM} 对真实参数的解析；
+\item 通过命令直接控制 LED、小车等业务函数。
+\end{enumerate}
+
+\end{anybox}
+\begin{anybox}{建议实验步骤}
+
+\begin{enumerate}
+\item 把命令解析源码加入工程，接入串口 FIFO 接收；
+\item 注册 \texttt{led}、\texttt{intcmd}、\texttt{car}、\texttt{add}、\texttt{types} 命令；
+\item 用串口发送 \texttt{intcmd 7}，观察 LED 动作；
+\item 发送 \texttt{car 1.5 2.5 0.8}，观察电机或串口回显；
+\item 发送 \texttt{types 12 -3 0x10 3.5 led}，确认动态类型识别正确；
+\item 测试超长行、空命令、未知命令不会死机。
+\end{enumerate}
+
+\end{anybox}
+\begin{anybox}{验收标准}
+\begin{itemize}
+\item 每条命令有清晰回显与错误提示；
+\item 输入非法参数时不会调用业务函数；
+\item 长时间连续输入命令不会导致缓冲区溢出或 HardFault。
+\end{itemize}
+
+\medskip \noindent\textbf{待补充实验记录}：
+
+\begin{itemize}
+\item 单片机与 USB-TTL 接线照片；
+\item 串口助手输入与输出截图；
+\item 非法输入与边界测试日志。
+\end{itemize}
+\end{anybox}
+
+\begin{figure}[htbp]
+\centering
+    % TODO: 在此插入串口接线照片
+\caption{串口命令解析实验硬件接线（待补充）} \label{fig:ch9-mcu-hw}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+    % TODO: 在此插入串口助手运行截图
+\caption{串口命令解析运行日志（待补充）} \label{fig:ch9-mcu-log}
+\end{figure}
+% ---------------------------------------------------------------------
+\begin{problemset}
+\item 字符串命令解析的第一步通常是“切词”。请说明 \texttt{空格/制表符} 作为分隔符时，如何支持参数中带空格的字符串。
+\item 用哈希表管理命令相比顺序 \texttt{if/strcmp} 有什么好处？哈希冲突时，本章采用了什么解决方案？
+\item 命令注册表把“命令名、处理函数、帮助文本”放在一起，对新增命令和命令数量增加分别有什么影响？
+\item \texttt{Param\_T} 用一个联合体保存多种参数类型，靠什么字段知道“应该按 int 还是按 float 读取”？
+\item 为什么纯 C 中很难做到“参数描述表自动调用任意函数”？请说明宏或 C++ 模板能简化这一过程的原因。
+\end{problemset}

@@ -1,0 +1,629 @@
+\chapter{增强版的协程调度器} \label{ch:coroutine-scheduler}
+
+第~\ref{ch:simple-task}~章实现的 \texttt{simple\_task} 是一个“无栈”的协作式调度器：定时器中断负责计时，主循环负责执行任务，任务回调每次运行后都会返回，下一次运行再从回调函数的入口重新开始。这种模型简单、可靠，但它有一个天然的局限：任务无法“运行到一半时暂停，等条件满足后再从暂停的地方继续”。
+
+例如，下面的代码在普通函数里是理所当然的：
+
+\begin{lstlisting}[style=c]
+void SensorTask(void)
+{
+    Sensor_Start();        /* 启动一次传感器转换 */
+    WaitConvertDone();     /* 希望在这里暂停，转换完成后继续 */
+    value = Sensor_Read();
+    SendResult(value);
+}
+\end{lstlisting}
+
+在 \texttt{simple\_task} 里，如果不想使用状态机，就只能用“延时返回”模拟这种效果。但一旦任务的暂停点藏在一个多层的函数调用里，或者暂停时需要保留大量局部变量，无栈模型就会变得非常别扭。
+
+本章的“增强版协程调度器”换了一种思路：让任务在任意位置真正暂停，把 CPU 交给其他任务，之后还能精确回到原来的暂停点继续执行。它的实现基础是 C 标准库的 \texttt{setjmp} 与 \texttt{longjmp}，配合为每个任务准备的独立栈（或共享栈备份），把一个普通 C 函数变成可以“挂起和恢复”的协程。
+
+\medskip \textbf{本章涉及到的实验内容：}
+\begin{enumerate}
+\item setjmp 与 longjmp 上下文跳转实验；
+\item 独立栈协程任务创建与恢复实验；
+\item Task\_Wait 定时挂起实验；
+\item 共享栈任务与栈备份实验；
+\item Task\_Join 与条件变量实验。
+\end{enumerate}
+
+完整代码位于 \texttt{Chapter-coroutine-scheduler/协程调度器setjmp/} 目录，包括主文件 \texttt{task\_scheduler.c} 与 \texttt{task\_scheduler.h}、配置文件\texttt{task\_scheduler\_config.h} 和演示用的 \texttt{main.c}。
+
+% ---------------------------------------------------------------------
+\section{setjmp 与 longjmp：C 语言里的“现场保存和恢复”}
+
+\texttt{setjmp} 与 \texttt{longjmp} 是 C 标准库提供的非局部跳转工具，头文件为 \texttt{<setjmp.h>}。它们能让程序保存“当前执行现场”，并在之后的任意时刻恢复这个现场，使控制流回到保存现场的位置。
+
+\begin{itemize}
+\item \texttt{setjmp(jmp\_buf env)}：把当前函数调用现场（寄存器、栈指针、程序计数器等）保存到 \texttt{env}，第一次调用时返回 0；
+\item \texttt{longjmp(jmp\_buf env, int val)}：恢复 \texttt{env} 保存的现场，并让对应位置的 \texttt{setjmp} 以 \texttt{val} 作为返回值返回，程序就像“从刚才暂停的地方继续”一样。
+\end{itemize}
+
+一个最直观的例子：
+
+\begin{lstlisting}[style=c]
+#include <stdio.h>
+#include <setjmp.h>
+
+jmp_buf env;
+
+int main(void)
+{
+    if (setjmp(env) == 0) {
+        /* 第一次到达这里 */
+        printf("第一次运行\n");
+        longjmp(env, 1);   /* 跳回 setjmp，并让它返回 1 */
+    } else {
+        /* longjmp 之后，程序回到这里继续执行 */
+        printf("从 longjmp 恢复\n");
+    }
+    return 0;
+}
+\end{lstlisting}
+
+从表面看，\texttt{setjmp} 只“执行”了一次，却可能“返回”两次：第一次返回 0，表示现场刚被保存；之后每次 \texttt{longjmp} 回到该位置时，都以非零值返回，表示“现场被恢复了”。
+
+\begin{anybox}{使用 setjmp 与 longjmp 的注意事项}
+
+\begin{enumerate}
+\item \texttt{setjmp} 保存的是“CPU 现场”，不是“整个内存”。局部变量若在 \texttt{setjmp} 之后被修改，恢复后这些修改是否保留取决于编译器实现，因此跨 \texttt{setjmp} 使用的局部变量建议声明为 \texttt{volatile}；
+\item \texttt{jmp\_buf} 只在保存现场的函数仍处于活动状态时有效。如果函数已经返回，再对它的 \texttt{jmp\_buf} 调用 \texttt{longjmp} 属于未定义行为；
+\item \texttt{longjmp} 不是普通函数调用，它不会“展开”栈帧，也不会调用析构和清理逻辑，因此不能代替 C++ 异常或 \texttt{return}；
+\item 恢复现场时，栈指针会变回保存时刻的值。这也是为什么协程必须认真管理“每个任务的栈”。
+\end{enumerate}
+
+\end{anybox}
+% ---------------------------------------------------------------------
+\section{为什么栈空间如此重要}
+
+一个正在运行的 C 函数，其状态并不只保存在“变量”里，还保存在调用栈上：
+
+\begin{itemize}
+\item 函数每调用一层，就把返回地址、参数、局部变量压栈；
+\item 函数返回时，再把这些数据从栈上弹出；
+\item 栈指针（SP）指向当前栈顶，它决定了“下一条返回地址在哪里”。
+\end{itemize}
+
+因此，“暂停一个任务”并不仅仅意味着保存几个变量的值，而是要把整个调用栈的状态保存下来。只要任务是在 \texttt{TaskFunc1} 的某次循环里暂停，暂停点之上可能还有 \texttt{printf}、传感器库函数等好几层栈帧，每一层都包含局部变量和返回地址。恢复任务时，这些栈帧必须原封不动地回来，函数才能“像什么都没发生一样”继续执行。
+
+\begin{anybox}{栈与暂停深度}
+任务的“暂停点”越深，需要保存的调用栈帧就越多，这正是协程调度器必须为每个任务准备独立栈（或共享栈备份）的根本原因。
+\end{anybox}
+
+如果所有任务都使用同一个栈，会发生什么？
+
+\begin{enumerate}
+\item 任务 A 调用到第三层函数后暂停，此时栈上有 A 的完整调用链；
+\item 调度器切换给任务 B，B 开始压栈，A 的栈帧被新数据覆盖；
+\item 等 A 再次被调度时，它的栈内容已经被破坏，程序必然崩溃。
+\end{enumerate}
+
+解决办法有两种：
+
+\begin{itemize}
+\item \textbf{每个任务拥有独立栈}：任务暂停后，它的栈原封不动地留在自己的内存区域，切换任务只需把栈指针切到另一个任务的栈顶即可；
+\item \textbf{共享栈 + 备份区}：多个任务共用同一个运行栈，任务暂停前把当前栈内容整体拷贝到自己的备份缓冲区，恢复时再拷贝回去。这种方法节省 RAM，但每次切换都要付出拷贝成本，且必须精确计算实际使用的栈大小。
+\end{itemize}
+
+本章的调度器两种模式都支持：\texttt{Task\_CreateWithStack} 创建独立栈任务， \texttt{Task\_Create} 创建共享栈任务。
+
+% ---------------------------------------------------------------------
+\subsection{独立栈任务}
+
+独立栈任务的示意图如图~\ref{fig:unique-stack}~所示：每个任务拥有一段互不重叠的静态数组作为自己的栈，调度器切换任务时改变栈指针即可。
+
+\begin{lstlisting}[style=c]
+/* 任务栈（独立栈）：每个任务分配自己的内存 */
+static uint8_t s_Stack1[1024 * 10];
+static uint8_t s_Stack2[1024 * 10];
+
+Task_CreateWithStack(TaskFunc1, "task1", s_Stack1, sizeof(s_Stack1), 10);
+Task_CreateWithStack(TaskFunc2, "task2", s_Stack2, sizeof(s_Stack2), 20);
+\end{lstlisting}
+
+\begin{figure}[htbp]
+\centering
+    \begin{tikzpicture}[
+        stack/.style={draw=structurecolor, thick, minimum width=3.6cm,
+                      minimum height=4.8cm, align=center, font=\small},
+        lab/.style={font=\small}
+    ]
+        \node[stack] (s1) at (0,0) {任务 1 栈\\[4pt]
+            \texttt{s\_Stack1[10240]}};
+        \node[stack] (s2) at (6.2,0) {任务 2 栈\\[4pt]
+            \texttt{s\_Stack2[10240]}};
+		\node[lab, align=center] at (0,-2.9) {任务1暂停后\\栈内容保留};
+		\node[lab, align=center] at (6.2,-2.9) {任务2运行\\使用自己的栈};
+        \node[lab] at (-2.7,2.2) {\texttt{stackTop}};
+        \draw[-stealth, thick] (-2.2,1.8) -- (-1.0,1.8);
+        \node[lab] at (3.5,2.2) {\texttt{stackTop}};
+        \draw[-stealth, thick] (4.0,1.8) -- (5.2,1.8);
+    \end{tikzpicture}
+\caption{独立栈任务：每个任务拥有自己的栈空间} \label{fig:unique-stack}
+\end{figure}
+
+独立栈的优点是恢复速度最快，缺点是 RAM 开销大。任务栈大小必须大于该任务“最坏调用深度”下实际占用的栈，否则会发生栈溢出，悄悄破坏相邻内存。
+
+% ---------------------------------------------------------------------
+\subsection{共享栈任务与栈备份}
+
+共享栈任务没有自己的运行栈，而是在任务暂停前把“当前栈上用过的部分”备份到私有缓冲区：
+
+\begin{lstlisting}[style=c]
+static void Task_BackupSharedStack(TaskControlBlock_T *pTCB)
+{
+    /* 计算从栈顶到当前栈指针之间实际使用了多少字节 */
+    pTCB->stackUsed = s_TaskScheduler.pfnCalcStackUsage(pTCB);
+
+    /* 若备份空间不足，死循环提示增大配置 */
+    while (pTCB->stackUsed > TASK_SHARED_BAK_STACK_SIZE);
+
+    /* 把用过的栈内容拷贝到任务自己的备份区 */
+    Task_MemCopy(pTCB->pBackupStack,
+                 (uint8_t *)(pTCB->stackTop - pTCB->stackUsed),
+                 pTCB->stackUsed);
+}
+\end{lstlisting}
+
+共享栈的优点是多个任务只需少量备份空间，RAM 占用小；缺点是每次挂起和恢复都要执行一次内存拷贝，切换成本更高，而且要求所有共享栈任务的“实际最大栈用量”之和小于一个备份区能容纳的上限。这正是配置项 \texttt{TASK\_SHARED\_BAK\_STACK\_SIZE} 存在的原因。
+
+% ---------------------------------------------------------------------
+\section{任务控制块：记录“现场”与“栈”}
+
+调度器为每个任务维护一个任务控制块（TCB），本章的 \texttt{TaskControlBlock\_T} 比 \texttt{simple\_task} 的任务池多了两类关键信息：
+
+\begin{enumerate}
+\item \textbf{栈信息}：\texttt{stackTop}、\texttt{stackSize}、\texttt{stackType}，记录任务栈在哪里、有多大；
+\item \textbf{跳转现场}：\texttt{jmp\_buf env}，记录任务被挂起时的 CPU 现场；
+\item \textbf{唤醒条件}：\texttt{nextRunTime}（定时唤醒）和 \texttt{pWaitCondition}（条件唤醒）。
+\end{enumerate}
+
+\begin{lstlisting}[style=c]
+typedef struct __TaskControlBlock_T {
+    char name[TASK_NAME_LENGTH];
+    uint16_t pid;
+    uint8_t state;                  /* 任务状态 */
+    TaskCondition_T condition;      /* 任务退出条件 */
+
+    size_t stackTop;                /* 栈顶地址（高地址） */
+    size_t stackSize;               /* 独立栈总大小 */
+    TaskStackType_T stackType;      /* 独立栈 or 共享栈 */
+
+    uint32_t nextRunTime;           /* 下次唤醒的绝对时间（ms） */
+    int entryArg;
+    jmp_buf env;                    /* 任务挂起现场 */
+    TaskEntry_f pfnEntry;
+    TaskCondition_T *pWaitCondition;
+
+#if (TASK_MAX_SHARED_TASK > 0)
+    uint8_t *pBackupStack;          /* 共享栈备份缓冲区 */
+    size_t stackUsed;               /* 实际使用的栈大小 */
+#endif
+    struct __TaskControlBlock_T *pNext;
+} TaskControlBlock_T;
+\end{lstlisting}
+
+可以看到，TCB 是“任务控制信息”和“任务执行现场”的桥梁：状态机决定任务什么时候能跑， \texttt{jmp\_buf} 决定跑起来后从哪里继续，栈信息则保证恢复现场时有地方可回。
+
+% ---------------------------------------------------------------------
+\section{调度器的状态机}
+
+本章调度器把任务抽象成 5 个状态，如表~\ref{tab:coro-state}~所示。
+
+\begin{table}[htbp]
+\centering \caption{增强版协程调度器的任务状态} \label{tab:coro-state}
+    \begin{tabular}{llp{8cm}}
+        \toprule
+        \textbf{状态} & \textbf{含义} & \textbf{说明} \\
+        \midrule
+        \texttt{INIT}     & 初始态 & 任务刚创建，尚未进入入口函数 \\
+        \texttt{READY}    & 就绪态 & 时间到或条件满足，等待被选中执行 \\
+        \texttt{RUNNING}  & 运行态 & 正在使用 CPU 的任务 \\
+        \texttt{SUSPEND}  & 挂起态 & 任务调用了 \texttt{Task\_Wait} 或条件等待，正在休眠 \\
+        \texttt{DELETED}  & 结束态 & 任务入口函数返回，等待回收 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+状态转移可以概括为：
+
+\begin{center}
+\texttt{INIT} $\rightarrow$ \texttt{RUNNING} $\rightarrow$ \texttt{SUSPEND} $\rightarrow$ \texttt{READY} $\rightarrow$ \texttt{RUNNING} $\rightarrow$ \dots $\rightarrow$ \texttt{DELETED}
+\end{center}
+
+其中：
+
+\begin{itemize}
+\item \texttt{INIT} $\rightarrow$ \texttt{RUNNING}：调度器首次启动该任务；
+\item \texttt{RUNNING} $\rightarrow$ \texttt{SUSPEND}：任务调用 \texttt{Task\_Wait} 与 \texttt{Task\_ConditionWait}，主动让出 CPU；
+\item \texttt{SUSPEND} $\rightarrow$ \texttt{READY}：定时时间到或条件被置位；
+\item \texttt{READY} $\rightarrow$ \texttt{RUNNING}：调度器选中该任务并 \texttt{longjmp} 回到它的现场；
+\item \texttt{RUNNING} $\rightarrow$ \texttt{DELETED}：任务入口函数正常返回。
+\end{itemize}
+
+% ---------------------------------------------------------------------
+\section{状态机“被简化”在哪里}
+
+\texttt{simple\_task} 的状态机写在调度器的数据结构和循环里；而本章协程的状态机，很大一部分被“藏”进了 \texttt{setjmp} 与 \texttt{longjmp}。任务代码本身不需要手写 \texttt{switch(state)} 来记住自己执行到哪一步。
+
+以 \texttt{Task\_Wait} 为例，任务“暂停”和“恢复”只需要几行：
+
+\begin{lstlisting}[style=c]
+void Task_Wait(uint32_t timeMs)
+{
+    /* 1. 记录唤醒时间，进入挂起态 */
+    s_TaskScheduler.pCurrent->nextRunTime =
+        s_TaskScheduler.pfnGetTime() + timeMs;
+    s_TaskScheduler.pCurrent->state = TASK_STATUS_SUSPEND;
+
+    /* 2. 保存当前任务现场；若被恢复，setjmp 会返回 TASK_COMMON_RUN */
+    if (setjmp(s_TaskScheduler.pCurrent->env) != TASK_COMMON_RUN) {
+        /* 3. 共享栈任务先备份自己的栈 */
+        if (s_TaskScheduler.pCurrent->pBackupStack != NULL) {
+            Task_BackupSharedStack(s_TaskScheduler.pCurrent);
+        }
+        /* 4. 让出 CPU，寻找下一个可运行任务 */
+        Task_JumpNext(&s_TaskScheduler);
+    }
+
+    /* 5. 被唤醒后从 setjmp 之后继续执行 */
+    TASK_ENABLE_IRQ();
+}
+\end{lstlisting}
+
+\texttt{Task\_ConditionWait} 的结构完全相同，只是唤醒条件从“时间到”换成“条件变量的标志被置位”。这两段代码共享同一个状态机模板：\textbf{置 SUSPEND → 保存现场 → 备份栈 → 让出 CPU → 恢复时继续}。
+
+由于现场保存在 \texttt{jmp\_buf} 中，任务函数里不需要手动记录：
+
+\begin{lstlisting}[style=c]
+void TaskFunc1(int arg)
+{
+    int cnt = 5;               /* 暂停期间保存在独立栈中 */
+    while (cnt--) {
+        Task_Wait(1000);       /* 挂起 1 秒，之后从下一行继续 */
+        printf("TaskFunc1 loop\n");
+    }
+}
+\end{lstlisting}
+
+这就是“状态机简化”的核心：用户把任务写成顺序结构，编译器生成的调用栈负责记忆执行位置，调度器只负责在合适的时候切换现场。
+
+% ---------------------------------------------------------------------
+\section{调度器如何选择下一个任务}
+
+负责选择任务的是 \texttt{Task\_JumpNext}，它的执行过程可以拆成三步：
+
+\begin{enumerate}
+\item \textbf{扫描唤醒条件}：遍历环形任务链表，把定时到点或条件满足的任务从 \texttt{SUSPEND} 置为 \texttt{READY}；
+\item \textbf{消费条件}：清除已被就绪任务“看到”的条件标志；
+\item \textbf{选择可运行任务}：从当前任务的下一个任务开始，找到第一个 \texttt{READY} 任务（或未启动的 \texttt{INIT} 任务），通过 \texttt{longjmp} 切换到它。
+\end{enumerate}
+
+\begin{lstlisting}[style=c]
+static void Task_JumpNext(TaskScheduler_T *pObj)
+{
+    while (1) {
+        TaskControlBlock_T *p = pObj->pTaskList;
+
+        /* 1. 扫描：把到点/条件满足的任务置为 READY */
+        do {
+            if (p->state != TASK_STATUS_DELETED &&
+                p->state != TASK_STATUS_INIT) {
+                if ((p->nextRunTime != 0 &&
+                     pObj->pfnGetTime() > p->nextRunTime) ||
+                    (p->pWaitCondition != NULL &&
+                     p->pWaitCondition->flag == 1)) {
+                    p->state = TASK_STATUS_READY;
+                }
+            }
+            p = p->pNext;
+        } while (p != pObj->pTaskList);
+
+        /* 2. 找到 READY/INIT 任务并切换 */
+        p = pObj->pCurrent->pNext;
+        do {
+            if (p->state == TASK_STATUS_READY) {
+                pObj->pCurrent = p;
+                pObj->pCurrent->state = TASK_STATUS_RUNNING;
+                longjmp(pObj->pCurrent->env, TASK_COMMON_RUN);
+            } else if (p->state == TASK_STATUS_INIT) {
+                s_TaskScheduler.pCurrent = p;
+                longjmp(s_TaskScheduler.envMain, TASK_MAIN_START_TASK);
+            }
+            p = p->pNext;
+        } while (p != pObj->pCurrent->pNext);
+    }
+}
+\end{lstlisting}
+
+注意：如果暂时没有任务处于 \texttt{READY}，\texttt{Task\_JumpNext} 会继续扫描，直到某个任务到点。因此本章示例是一个“时间驱动”的调度器：当前任务调用 \texttt{Task\_Wait} 后，调度器会一直检查所有挂起任务的唤醒时间。
+
+\texttt{Task\_Start} 使用 \texttt{envMain} 保存“调度器自己”的现场，并用 \texttt{TASK\_MAIN\_*} 系列常量区分返回原因：
+
+\begin{lstlisting}[style=c]
+int Task_Start(void)
+{
+    int ret = setjmp(s_TaskScheduler.envMain);
+
+    if (ret == TASK_MAIN_INIT) {
+        /* 首次启动：从第一个任务开始 */
+        s_TaskScheduler.pCurrent = s_TaskScheduler.pTaskList;
+        longjmp(s_TaskScheduler.envMain, TASK_MAIN_START_TASK);
+    } else if (ret == TASK_MAIN_START_TASK) {
+        if (s_TaskScheduler.pCurrent->stackType == TASK_STACK_UNIQUE) {
+            /* 独立栈：直接切换栈指针后运行入口函数 */
+            TASK_SET_STACK(s_TaskScheduler.pCurrent->stackTop);
+            s_TaskScheduler.pfnRunTask(TCB_MAGIC_WORD);
+        } else {
+            Task_StartShared();   /* 共享栈：需要保护跳转栈空间 */
+        }
+    }
+    return 0;
+}
+\end{lstlisting}
+
+其中 \texttt{TASK\_SET\_STACK} 是一个汇编级的栈指针切换宏。当前代码示例提供的是 x86\_64 版本：
+
+\begin{lstlisting}[style=c]
+#define TASK_SET_STACK(p) \
+    __asm__ volatile("mov %0, %%rsp" : : "r" (p) : "memory");
+\end{lstlisting}
+
+移植到 Cortex-M 时，应改成修改 MSP 与 PSP 寄存器（如 \texttt{\_\_set\_MSP}），或者使用每个架构提供的上下文切换汇编。
+
+% ---------------------------------------------------------------------
+\section{独立栈与共享栈的调度差异}
+
+\subsection{独立栈任务}
+
+独立栈任务的切换不涉及栈内容拷贝。启动流程是：
+
+\begin{enumerate}
+\item \texttt{Task\_Start} 用 \texttt{TASK\_SET\_STACK} 把栈指针切到任务栈顶；
+\item 任务正常执行；
+\item 任务调用 \texttt{Task\_Wait} 时，\texttt{setjmp} 把现场保存在自己的 \texttt{env} 中，此时栈指针指向它自己的栈；
+\item 任务被再次选中时，\texttt{longjmp} 恢复 \texttt{env}，栈指针回到自己的栈顶，局部变量仍然完好。
+\end{enumerate}
+
+\subsection{共享栈任务}
+
+共享栈任务运行在调度器的主栈上，因此切换时必须先“把主栈备份出去”，等它再次被选中时再“搬回来”。代码中对应 \texttt{Task\_StartShared}、\texttt{Task\_BackupSharedStack} 和 \texttt{Task\_RestoreSharedStack}：
+
+\begin{lstlisting}[style=c]
+static void Task_StartShared(void)
+{
+    /* 预留一块安全区，防止恢复共享栈时把跳转现场压坏 */
+    volatile char reserve[TASK_SHARED_JMP_STACK_SIZE];
+    reserve[0] = 0;
+
+    s_TaskScheduler.pCurrent->stackTop =
+        s_TaskScheduler.pfnGetStackTop();
+
+    if (setjmp(s_TaskScheduler.pCurrent->env) == TASK_COMMON_INIT) {
+        s_TaskScheduler.pfnRunTask(TCB_MAGIC_WORD);
+    }
+}
+\end{lstlisting}
+
+\texttt{reserve} 数组的存在很关键：它保证了从“备份共享栈”到“longjmp 回调度器主循环”这段过程中，跳转本身需要的栈帧不会被任务数据覆盖。
+
+% ---------------------------------------------------------------------
+\section{栈溢出保护}
+
+独立栈虽然简单，但栈大小完全由用户指定，一旦给少了就会越界写入相邻变量。本章代码在任务入口处使用了一个“魔法字”做粗略检测：
+
+\begin{lstlisting}[style=c]
+static void Task_RunEntry(uint32_t magic)
+{
+    TASK_ENABLE_IRQ();
+    s_TaskScheduler.pCurrent->state = TASK_STATUS_RUNNING;
+    s_TaskScheduler.pCurrent->pfnEntry(s_TaskScheduler.pCurrent->entryArg);
+
+    /* 如果栈被破坏，magic 参数不可能还等于 TCB_MAGIC_WORD */
+    while (magic != TCB_MAGIC_WORD);
+
+    s_TaskScheduler.pCurrent->state = TASK_STATUS_DELETED;
+}
+\end{lstlisting}
+
+\texttt{magic} 是任务启动时从调用方一路传进来的参数，正常返回时它的值必须仍然是 \texttt{0xDEADBEEF}。如果任务执行期间栈溢出把参数覆盖了，代码会停在 \texttt{while} 循环里，让开发者立刻意识到栈太小。这只是防御性检测，正确做法仍然是在开发阶段给每个任务留足余量，并通过“压栈填充 + 水位检查”工具测量实际最大栈用量。
+
+% ---------------------------------------------------------------------
+\section{与 simple\_task 状态机的对比}
+
+把本章调度器与第~\ref{ch:simple-task}~章的 \texttt{simple\_task} 放在一起，可以更清楚地看到两种设计的分界线，如表~\ref{tab:coro-vs-simple}~所示。
+
+\begin{table}[htbp]
+	\centering
+	\small
+	\caption{增强版协程调度器与 simple\_task 的对比}
+	\label{tab:coro-vs-simple}
+	\begin{tabularx}{\textwidth}{l X X}   % 后两列自动换行
+		\toprule
+		\textbf{对比项} & \textbf{simple\_task} & \textbf{本章协程调度器} \\
+		\midrule
+		状态集合 & WAIT、READY、RUN、DISABLE 与 ONCE & INIT、READY、RUNNING、SUSPEND 与 DELETED \\
+		\midrule
+		任务能否中途挂起 & 不能，回调每次运行后返回 & 能，可在任意函数内暂停后恢复 \\
+		\midrule
+		暂停方式 & 返回延时值，下次从回调入口重跑 & setjmp 保存现场，longjmp 恢复现场 \\
+		\midrule
+		栈管理 & 任务共用主循环栈 & 独立栈，或共享栈+备份拷贝 \\
+		\midrule
+		状态迁移位置 & Task\_Tick 与 Task\_RunTask 显式迁移 & Task\_JumpNext + longjmp 集中迁移 \\
+		\midrule
+		定时来源 & 1ms 定时器中断计数 & 外部毫秒时间回调 \\
+		\midrule
+		就绪队列 & FIFO 队列（可关闭） & 环形任务链表轮询扫描 \\
+		\midrule
+		优点 & 纯 C、RAM 小、可移植性高 & 代码写法接近顺序执行，适合复杂流程 \\
+		\midrule
+		代价 & 复杂流程必须拆成状态机 & 需要栈空间和汇编支持，移植成本高 \\
+		\bottomrule
+	\end{tabularx}
+\end{table}
+
+从状态机角度看，两者都要回答同一个问题：\textbf{一个任务什么时候能跑、跑完把状态切成什么}。区别在于：
+
+\begin{enumerate}
+\item \textbf{simple\_task 是“数据驱动的显式状态机”}：任务状态存在 \texttt{Task\_T.systemState} 中，定时器中断里的点滴函数 \texttt{Task\_Tick} 负责 WAIT→READY，主循环里的 \texttt{Task\_RunTask} 负责 READY→RUN→WAIT/DISABLE。用户看到的状态机是“可见”的；
+\item \textbf{本章协程是“现场驱动的隐式状态机”}：任务暂停点就是状态机的一个分支，状态保存在 \texttt{jmp\_buf} 和任务栈中。用户看到的是顺序代码，切换细节被封装进 \texttt{Task\_Wait} 与 \texttt{Task\_ConditionWait}。
+\end{enumerate}
+
+在 \texttt{simple\_task} 中，一个按键长按+双击+重复的复杂流程，通常要拆成回调里的一堆用户状态；在本章协程中，可以直接写成：
+
+\begin{lstlisting}[style=c]
+void KeyFlowTask(int arg)
+{
+    while (1) {
+        Task_Wait(Key_GetPressMs());     /* 等待按键事件 */
+        if (Key_IsDouble()) {
+            HandleDoubleClick();
+            Task_Wait(Key_ReleaseDone());
+        } else if (Key_IsLong()) {
+            HandleLongPress();
+        }
+    }
+}
+\end{lstlisting}
+
+这不是说协程一定优于 \texttt{simple\_task}。对于大量短小的周期任务（每 1ms 或 10ms 翻转一个 LED、轮询一个按键），\texttt{simple\_task} 更轻、更省内存、更好调试；对于包含“等待外部事件→处理→继续等待”的复杂协议流程，有栈协程能让代码结构更接近人的思维。
+
+% ---------------------------------------------------------------------
+\section{示例：两个任务的配合}
+
+\texttt{main.c} 演示了“生产-通知-等待”模式：\texttt{TaskFunc1} 每 1 秒通知一次条件变量， \texttt{TaskFunc2} 等待条件变量后打印消息：
+
+\begin{lstlisting}[style=c]
+TaskCondition_T g_Condition;
+
+void TaskFunc1(int arg)
+{
+    int cnt = 5;
+    while (cnt--) {
+        Task_Wait(1000);                    /* 挂起 1 秒 */
+        printf("TaskFunc1 loop\n");
+        Task_ConditionNotify(&g_Condition); /* 唤醒等待者 */
+    }
+}
+
+void TaskFunc2(int arg)
+{
+    while (1) {
+        Task_ConditionWait(&g_Condition);   /* 没有通知就一直挂起 */
+        printf("TaskFunc2 got condition\n");
+    }
+}
+
+int main(void)
+{
+    Task_Init(GetTimerMs);
+    Task_ConditionInit(&g_Condition);
+
+    Task_CreateWithStack(TaskFunc1, "task1", s_Stack1, sizeof(s_Stack1), 10);
+    Task_CreateWithStack(TaskFunc2, "task2", s_Stack2, sizeof(s_Stack2), 20);
+    Task_Create(TaskFunc1, "task3", 30);    /* 共享栈任务 */
+
+    Task_Start();                           /* 不会返回 */
+    return 0;
+}
+\end{lstlisting}
+
+当 \texttt{TaskFunc2} 调用 \texttt{Task\_ConditionWait} 时，它会被挂起并让出 CPU；1 秒后 \texttt{TaskFunc1} 调用任务通知函数 \texttt{Task\_ConditionNotify} 把条件置 1，下一次 \texttt{Task\_JumpNext} 扫描时就把 \texttt{TaskFunc2} 置为 READY 并恢复它。
+
+% ---------------------------------------------------------------------
+\section{移植要点与限制}
+
+\subsection{移植时至少需要提供}
+
+\begin{enumerate}
+\item \texttt{TaskGetTime\_f}：可用的毫秒时间源（如 SysTick、HAL\_GetTick）；
+\item \texttt{TASK\_DISABLE\_IRQ} 与 \texttt{TASK\_ENABLE\_IRQ}：调度临界区的中断开关；
+\item \texttt{TASK\_SET\_STACK}：修改当前栈指针的底层实现，需按架构编写；
+\item 栈区必须满足 16 字节对齐，并保证不与全局变量或堆重叠。
+\end{enumerate}
+
+\subsection{使用限制}
+
+\begin{itemize}
+\item 不要在任务入口外的普通函数里调用 \texttt{Task\_Wait} 后，还依赖该函数的 \texttt{jmp\_buf} 在其返回后继续生效；
+\item 共享栈任务禁止在深层嵌套的递归函数中挂起，否则备份区会溢出；
+\item \texttt{longjmp} 不能跨越已释放的栈帧，因此要等待任务结束后再回收它的 TCB；
+\item 当前版本是协作式调度：任务自己不 \texttt{Task\_Wait}，其他任务就得不到 CPU，不适合硬实时或抢占需求。
+\end{itemize}
+
+% ---------------------------------------------------------------------
+\section{单片机实验：协程调度器移植与实测}
+
+PC 示例只是第一步。真正检验本章调度器的是把它移植到自己的开发板：需要补上时间源、中断开关和架构相关的栈指针切换。实验代码参考 \texttt{Chapter-coroutine-scheduler/协程调度器setjmp/}，作者先给出移植实验框架，实物照片与运行截图稍后补充。
+
+\begin{anybox}{实验目的}
+
+\begin{enumerate}
+\item 在 Cortex-M 上实现 \texttt{TASK\_SET\_STACK} 与中断开关宏；
+\item 验证独立栈任务在 \texttt{Task\_Wait} 挂起后能准确恢复；
+\item 验证共享栈任务的备份和恢复机制不会破坏局部变量；
+\item 观察两种任务模式的 RAM 占用差异。
+\end{enumerate}
+
+\end{anybox}
+\begin{anybox}{建议实验步骤}
+
+\begin{enumerate}
+\item 提供毫秒时间源（如 SysTick 计数器），实现 \texttt{GetTimerMs}；
+\item 根据开发板架构实现 \texttt{TASK\_SET\_STACK}（Cortex-M 可改用修改 MSP 与 PSP 的汇编或内联函数）；
+\item 为两个独立栈任务分别分配 2$\sim$4 KB 栈区；
+\item 使用 LED 与串口任务验证：任务 A 每 500ms 翻转 LED，任务 B 每 1s 打印日志；
+\item 再创建一个共享栈任务，观察它与独立栈任务是否都能正常恢复。
+\end{enumerate}
+
+\end{anybox}
+\begin{anybox}{验收标准}
+\begin{itemize}
+\item LED 周期与串口打印节奏正确，任务局部变量在多次挂起和恢复后保持正确；
+\item 故意把某任务栈改小后能触发魔法字检测（或明确观察到异常）；
+\item 调度过程中不会进入 HardFault。
+\end{itemize}
+
+\medskip \noindent\textbf{待补充实验记录}：
+
+\begin{itemize}
+\item 开发板实物照片；
+\item LED 与串口运行视频截图或逻辑分析仪波形；
+\item 独立栈与共享栈 RAM 占用对比表。
+\end{itemize}
+\end{anybox}
+
+\begin{figure}[htbp]
+\centering
+    % TODO: 在此插入开发板实物照片
+\caption{协程调度器移植实验硬件照片（待补充）} \label{fig:ch11-mcu-hw}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+    % TODO: 在此插入串口任务日志截图
+\caption{协程任务串口日志（待补充）} \label{fig:ch11-mcu-log}
+\end{figure}
+% ---------------------------------------------------------------------
+\section{小结}
+
+本章用 \texttt{setjmp} 与 \texttt{longjmp} 实现了一个有栈协程调度器，核心收获有三点：
+
+\begin{enumerate}
+\item \textbf{setjmp 与 longjmp 是“现场保存和恢复”原语}：它把一个普通 C 函数变成可以挂起、恢复的协程；
+\item \textbf{栈是任务暂停时的“记忆”}：自动变量和调用链都存放在栈上，所以任务需要独立栈，或用备份区把共享栈内容保存下来；
+\item \textbf{状态机可以被“藏”进上下文切换}：\texttt{simple\_task} 用枚举+循环显式表达状态，本章调度器用 \texttt{jmp\_buf} 隐式记住执行位置。两者不是替代关系，而是 “轻量周期任务”与“复杂阻塞流程”两种场景下的不同工具。
+\end{enumerate}
+
+如果读者需要在资源更受限的 51 或 STM8 上实现类似效果，可以只保留“独立栈+状态机”的子集，把汇编级栈切换换成纯状态机；如果追求代码最接近顺序思维，则可以在此基础上继续引入 Protothreads、协程宏或完整 RTOS 的线程模型。
+
+% ---------------------------------------------------------------------
+\begin{problemset}
+\item \texttt{setjmp} 保存了什么现场？\texttt{longjmp} 恢复现场后，哪些局部变量不能假设其值仍然有效？
+\item 为什么每个协程任务需要“独立栈”？如果改用共享栈，切换时为什么必须备份栈内容？
+\item 请画出本章协程调度器从 READY→RUNNING→SUSPEND→READY 的状态迁移，并说明哪些操作发生在中断里。
+\item 与 \texttt{simple\_task} 的显式状态机相比，协程把状态“藏”在哪里？这带来什么优点和调试难点？
+\item 协程任务栈发生溢出时会破坏什么？你能设计一个“栈水印”来检测最大栈用量吗？
+\item Cortex-M 的 MSP 与 PSP 有什么区别？切换任务栈时需要修改哪一个寄存器？
+\end{problemset}

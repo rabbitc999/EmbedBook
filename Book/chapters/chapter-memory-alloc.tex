@@ -1,0 +1,492 @@
+\chapter{单片机内存分配实现} \label{ch:memory-alloc}
+
+前几章的菜单、协议栈、命令表都是“静态分配”：要么在编译期把数组定死，要么使用固定大小的全局池。很多从 PC 转到单片机的读者会问：为什么不能直接 \texttt{malloc} 与 \texttt{free}？本章从单片机的内存布局讲起，说明动态内存分配在裸机环境下的风险，并实现一个简单、可靠的“固定块内存池”（Memory Pool），用它统一管理同尺寸对象。
+
+\medskip \textbf{本章涉及到的实验内容：}
+\begin{enumerate}
+\item 内存区域与 \texttt{malloc} 风险分析；
+\item 固定块内存池初始化；
+\item 内存池申请、释放与越界指针校验；
+\item 多尺寸对象的多池管理。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{单片机程序的内存布局}
+
+MCU 内部通常有两类存储：
+
+\begin{itemize}
+\item \textbf{Flash（只读）}：存放代码、启动向量、\texttt{const} 常量、字库表；
+\item \textbf{RAM（可读写）}：存放全局变量、静态变量、栈、堆。
+\end{itemize}
+
+RAM 进一步划分为：
+
+\begin{itemize}
+\item \textbf{.data}：已初始化全局与静态变量，启动时从 Flash 拷贝到 RAM；
+\item \textbf{.bss}：未初始化（或初始化为 0）的全局与静态变量，启动时清零；
+\item \textbf{栈（Stack）}：局部变量、函数调用现场，向下增长，大小由链接脚本或启动文件确定；
+\item \textbf{堆（Heap）}：\texttt{malloc} 与 \texttt{free} 使用的区域，大小同样由链接脚本划定。
+\end{itemize}
+
+\begin{figure}[htbp]
+\centering
+    \begin{tikzpicture}[
+        cell/.style={draw=structurecolor, thick, minimum width=4.0cm,
+                     minimum height=1.0cm, align=center, font=\small},
+        lab/.style={font=\small},
+        arrow/.style={-stealth, thick, structurecolor}
+    ]
+        \node[cell, minimum height=7.6cm] (ram) at (0,0.3) {};
+        \node[cell] (stack) at (0,3.2) {栈 Stack（高地址）};
+        \node[cell] (free1) at (0,1.4) {空闲区};
+        \node[cell] (heap) at (0,-0.6) {堆 Heap};
+        \node[cell] (data) at (0,-2.6) {.data / .bss};
+        \node[cell] (flash) at (8.5,0.3) {Flash\\代码区与常量};
+
+        \node[lab] at (0,-4.2) {RAM 低地址 $\rightarrow$ 高地址};
+        \draw[arrow] (stack.south) -- (free1.north);
+        \draw[arrow] (heap.north) -- (free1.south);
+        \draw[-stealth, thick] (ram.east) -- node[above] {共用同一片 RAM} (flash.west);
+    \end{tikzpicture}
+\caption{RAM 中的栈、堆、.data 与 .bss 与 Flash 的关系} \label{fig:ram-layout}
+\end{figure}
+
+在裸机程序中，这四部分共享同一块 RAM。编译器并不知道“栈用到哪里、堆用到哪里”，一旦栈向上溢出或堆向下增长，就可能互相覆盖。因此，RAM 越小的芯片，越需要程序员对内存做 “显式管理”，而不是依赖运行时的通用分配器。
+
+% ---------------------------------------------------------------------
+\section{为什么 malloc 在单片机上要慎用}
+
+\texttt{malloc} 与 \texttt{free} 在 PC 上很常见，但它会带来三个单片机难以承受的问题：
+
+\begin{enumerate}
+\item \textbf{碎片}：反复申请不同大小的内存后，空闲内存被切成许多不连续的小块。后续一个大块申请即使总空闲空间足够，也可能失败；
+\item \textbf{不确定性}：\texttt{malloc} 的分配时间与当前堆状态有关，最坏情况下需要遍历空闲链表，实时性无法保证；
+\item \textbf{泄漏}：裸机没有操作系统回收“已结束进程”的内存，只要有一次忘记 \texttt{free}，这部分内存就永久丢失。
+\end{enumerate}
+
+此外，许多编译器提供的 \texttt{malloc} 实现体积较大，还会要求配置堆起始地址和大小。对于菜单节点、FIFO、协议帧这类“数量有限、尺寸相同”的对象，完全可以用更简单的静态池替代。
+
+\begin{table}[htbp]
+\centering \caption{静态数组、malloc 与固定块内存池的对比} \label{tab:alloc-compare}
+    \begin{tabular}{llll}
+        \toprule
+        \textbf{对比项} & \textbf{静态数组} & \textbf{malloc 与 free} & \textbf{固定块内存池} \\
+        \midrule
+        内存碎片 & 无 & 有 & 无 \\
+        分配时间 & 编译期 & 不确定 & 确定（线性或位图扫描） \\
+        尺寸灵活 & 不灵活 & 灵活 & 按池子大小分类 \\
+        释放管理 & 无法释放 & 易泄漏 & 指针校验后归还 \\
+        代码体积 & 最小 & 较大 & 很小 \\
+        适用场景 & 编译期固定对象 & PC 或内存充足平台 & 数量有限的同尺寸对象 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------
+\section{固定块内存池的基本思想}
+
+固定块内存池的思路是：在编译期准备一块连续内存（或一个全局数组），把它切分成 $N$ 个大小完全相同的块。每次申请时返回一个空闲块，释放时把块归还池子。
+
+\begin{itemize}
+\item \textbf{无碎片}：所有块大小相同，不存在“外部碎片”；
+\item \textbf{时间确定}：申请与释放只需扫描固定数量的标记，或使用位图或空闲链表；
+\item \textbf{不会泄漏}：池子大小固定，释放逻辑简单；
+\item \textbf{代价}：只能管理同尺寸对象；如果对象尺寸跨度大，需要准备多个不同块大小的池子。
+\end{itemize}
+
+内存池结构体的核心成员如下：
+
+\begin{lstlisting}[style=c]
+typedef struct __MemPool_T
+{
+    uint8_t *pBuffer;   /* 用户提供的连续内存起始地址 */
+    uint16_t blockSize; /* 每个块的大小（字节） */
+    uint16_t blockCount;/* 块数量 */
+    uint16_t freeCount; /* 当前剩余空闲块数 */
+    uint8_t  used[MEM_POOL_MAX_BLOCK_COUNT]; /* 每块占用标记 */
+} MemPool_T;
+\end{lstlisting}
+
+\texttt{used} 数组是“哪一块被占用”的标记表，不需要在每块头部写元数据，因此实现非常简单，适合用来讲清池分配器的原理。
+
+\begin{figure}[htbp]
+\centering
+    \begin{tikzpicture}[
+        cell/.style={draw=structurecolor, thick, minimum width=1.25cm,
+                     minimum height=0.9cm, align=center, font=\small},
+        used/.style={fill=structurecolor!20},
+        lab/.style={font=\small},
+        arrow/.style={-stealth, thick}
+    ]
+        \node[cell, used] (b0) at (0,0)   {块0};
+        \node[cell, used] (b1) at (1.35,0){块1};
+        \node[cell]       (b2) at (2.70,0){块2};
+        \node[cell]       (b3) at (4.05,0){块3};
+        \node[cell]       (b4) at (5.40,0){块4};
+        \node[cell, used] (b5) at (6.75,0){块5};
+        \node[cell]       (b6) at (8.10,0){块6};
+        \node[cell]       (b7) at (9.45,0){块7};
+
+        \node[lab] at (0,-1.0)   {used[0]=1};
+        \node[lab] at (1.35,-1.0){used[1]=1};
+        \node[lab] at (2.70,-1.0){used[2]=0};
+        \node[lab] at (4.05,-1.0){used[3]=0};
+        \node[lab] at (5.40,-1.0){used[4]=0};
+        \node[lab] at (6.75,-1.0){used[5]=1};
+        \node[lab] at (8.10,-1.0){used[6]=0};
+        \node[lab] at (9.45,-1.0){used[7]=0};
+
+        \draw[arrow] (-0.8,1.2) -- node[above] {\texttt{pBuffer}} (0.6,1.2);
+        \draw[arrow] (9.45,-2.0) -- node[right] {\texttt{freeCount}} (9.45,-1.2);
+    \end{tikzpicture}
+\caption{固定块内存池：连续缓冲区被切成 8 个等大块，used[] 记录占用情况} \label{fig:mem-pool}
+\end{figure}
+
+% ---------------------------------------------------------------------
+\section{初始化：把连续内存切成块}
+
+初始化时，用户提供一整块静态缓冲区、块大小和块数量：
+
+\begin{lstlisting}[style=c]
+static union __AlignBuffer_T
+{
+    uint8_t bytes[16 * 32];  /* 16 个块，每块 32 字节 */
+    uint32_t alignWord;      /* 联合体保证首地址 4 字节对齐 */
+} s_Buffer;
+
+MemPool_T pool;
+
+Mem_PoolCreate(&pool, s_Buffer.bytes, 32u, 16u);
+\end{lstlisting}
+
+为什么用 \texttt{union}？因为 \texttt{uint32\_t} 的成员会强制编译器把整个联合体按 4 字节对齐，这正好满足多数 MCU 上 \texttt{uint32\_t}、\texttt{float} 与 \texttt{指针} 的对齐要求。
+
+初始化代码需要检查三件事：
+
+\begin{enumerate}
+\item 缓冲区与池句柄不能为空；
+\item 缓冲区首地址要满足对齐要求；
+\item 每块大小必须是 4 的倍数，且不能超过最大块数限制。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{申请与释放}
+
+\texttt{Mem\_BlockAlloc} 扫描 \texttt{used} 表，找到第一个空闲块后返回其地址：
+
+\begin{lstlisting}[style=c]
+void *Mem_BlockAlloc(MemPool_T *pPool)
+{
+    uint16_t index = 0;
+
+    if (pPool == NULL) {
+        return NULL;
+    }
+    if (pPool->freeCount == 0u) {
+        return NULL;                 /* 池子已满 */
+    }
+
+    for (index = 0; index < pPool->blockCount; index++) {
+        if (pPool->used[index] == MEM_POOL_BLOCK_FREE) {
+            pPool->used[index] = MEM_POOL_BLOCK_USED;
+            pPool->freeCount--;
+            return pPool->pBuffer + (size_t)index * pPool->blockSize;
+        }
+    }
+    return NULL;
+}
+\end{lstlisting}
+
+释放时不能无条件接受任何地址，必须先验证它确实来自本池：
+
+\begin{enumerate}
+\item 指针必须落在 \texttt{[pBuffer, pBuffer + blockCount*blockSize)} 区间内；
+\item 指针相对 \texttt{pBuffer} 的偏移必须是 \texttt{blockSize} 的整数倍；
+\item 对应块的 \texttt{used} 标记必须真的是“已占用”，避免重复释放。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{如何选择块大小与池子数量}
+
+块大小不能只看“结构体大小”，还要考虑对齐和未来扩展。例如一个菜单项结构体实际需要 18 字节，取 4 的倍数应选择 20 或 24，不能选择 18。
+
+当对象尺寸差异很大时，不要试图做一个“万能池”，而应准备多个池：
+
+\begin{lstlisting}[style=c]
+static uint8_t s_PoolSmall[32][32];  /* 32 个 32 字节小块 */
+static uint8_t s_PoolBig[8][256];    /* 8 个 256 字节大块 */
+
+MemPool_T g_SmallPool;
+MemPool_T g_BigPool;
+
+Mem_PoolCreate(&g_SmallPool, s_PoolSmall, 32u, 32u);
+Mem_PoolCreate(&g_BigPool,   s_PoolBig,   256u, 8u);
+\end{lstlisting}
+
+管理约定是：\textbf{从哪个池申请，就必须释放回哪个池}。由于池子本身能校验指针范围，误把大池指针交给小池释放时会被拒绝。
+
+% ---------------------------------------------------------------------
+\section{完整示例代码}
+
+完整可运行的代码位于 \texttt{Chapter-memory-alloc/静态内存池/} 目录：
+
+\begin{itemize}
+\item \texttt{mem\_pool.h}：内存池 API 与错误码；
+\item \texttt{mem\_pool.c}：固定块内存池实现；
+\item \texttt{main.c}：申请、释放与越界校验演示。
+\end{itemize}
+
+在 PC 上可用 \texttt{gcc mem\_pool.c main.c} 直接编译运行；移植到 MCU 时只需把示例缓冲区放到合适的 RAM 区，并确认 \texttt{MEM\_POOL\_MAX\_BLOCK\_COUNT} 与数组大小匹配。
+
+% ---------------------------------------------------------------------
+\section{为什么单片机上的内存操作要单独讨论}
+
+PC 的内存控制器和编译器会帮你处理对齐、缓存和平台差异；单片机的差别在于：
+
+\begin{enumerate}
+\item \textbf{对齐要求}：Cortex-M 的 \texttt{LDR} 与 \texttt{STR} 要求地址对齐，非对齐访问可能触发 UsageFault，最终升级为 HardFault；
+\item \textbf{内存类型多样}：SRAM、Flash、外设寄存器、位带区、DMA 缓冲区的访问规则不一样，不是所有地址都能用 \texttt{memcpy} 直接搬；
+\item \textbf{错误不可恢复}：PC 程序访问非法地址最多弹窗崩溃；单片机一旦进入 HardFault，如果没有处理代码，就会一直死循环，系统完全失控。
+\end{enumerate}
+
+因此，嵌入式工程师不只要知道“怎么写功能”，还要知道“内存是怎么放的”“坏指针会怎样死机” 以及“死机后如何定位”。
+
+% ---------------------------------------------------------------------
+\section{4 字节拷贝：按字搬运}
+
+最简单的内存拷贝是一个字节一个字节搬：
+
+\begin{lstlisting}[style=c]
+void Memory_CopyByte(uint8_t *pDst,
+                     const uint8_t *pSrc,
+                     uint32_t length)
+{
+    while (length-- > 0u) {
+        *pDst++ = *pSrc++;
+    }
+}
+\end{lstlisting}
+
+字节拷贝代码简单、无对齐要求，但循环次数多。若源地址与目标地址都满足 4 字节对齐，可以一次搬运 4 字节，减少循环次数：
+
+\begin{lstlisting}[style=c]
+/* 前提：pDst 与 pSrc 均已按 4 字节对齐 */
+void Memory_Copy4(uint32_t *pDst,
+                  const uint32_t *pSrc,
+                  uint32_t wordCount)
+{
+    while (wordCount-- > 0u) {
+        *pDst++ = *pSrc++;
+    }
+}
+\end{lstlisting}
+
+\texttt{wordCount} 表示的是“4 字节为一个单位的数量”。调用者必须保证：
+
+\begin{enumerate}
+\item 地址本身能被 4 整除；
+\item 剩余字节数正好是 4 的倍数；
+\item 不会访问越过缓冲区末尾。
+\end{enumerate}
+
+更通用的做法是：前面按字节处理直到目标地址 4 字节对齐，中间用 4 字节循环，最后剩余字节再用字节拷贝收尾：
+
+\begin{lstlisting}[style=c]
+void Memory_CopyAligned(uint8_t *pDst,
+                        const uint8_t *pSrc,
+                        uint32_t length)
+{
+    uint32_t *pWordDst = NULL;
+    const uint32_t *pWordSrc = NULL;
+
+    /* 1. 前部字节：让目标地址对齐到 4 */
+    while ((length > 0u) &&
+           (((uint32_t)pDst & 0x03u) != 0u)) {
+        *pDst++ = *pSrc++;
+        length--;
+    }
+
+    /* 2. 中间 4 字节搬运 */
+    pWordDst = (uint32_t *)pDst;
+    pWordSrc = (const uint32_t *)pSrc;
+    while (length >= 4u) {
+        *pWordDst++ = *pWordSrc++;
+        length -= 4u;
+    }
+    pDst = (uint8_t *)pWordDst;
+    pSrc = (const uint8_t *)pWordSrc;
+
+    /* 3. 尾部剩余字节 */
+    while (length-- > 0u) {
+        *pDst++ = *pSrc++;
+    }
+}
+\end{lstlisting}
+
+
+普通的正向拷贝只适合“源区和目标区完全不重叠”的情况。如果区域有重叠，例如想把数组中的后三个元素移动到前三个位置，正向拷贝会一边读一边覆盖尚未读取的源数据。
+
+\begin{anybox}{拷贝方向}
+只有目标地址位于源地址之后时，才需要“从后往前拷贝”；方向判断一旦写反，即使没有越界，也会先覆盖尚未读取的源数据。
+\end{anybox}
+
+以字节拷贝为例，安全拷贝需要根据目标与源的位置关系选择方向：
+
+\begin{lstlisting}[style=c]
+void Memory_CopySafe(uint8_t *pDst,
+                     const uint8_t *pSrc,
+                     uint32_t length)
+{
+    if ((pDst == NULL) || (pSrc == NULL)) {
+        return;
+    }
+    if (pDst == pSrc) {
+        return;                       /* 同一块内存，无需拷贝 */
+    }
+
+    if ((uint32_t)pDst < (uint32_t)pSrc) {
+        /* 目标在源前面：正向拷贝，源数据读取时尚未被覆盖 */
+        while (length-- > 0u) {
+            *pDst++ = *pSrc++;
+        }
+    } else {
+        /* 目标在源后面：必须从末尾反向拷贝 */
+        pDst += length;
+        pSrc += length;
+        while (length-- > 0u) {
+            *--pDst = *--pSrc;
+        }
+    }
+}
+\end{lstlisting}
+
+对于 4 字节拷贝，可以套用同样的方向判断：目标在前使用正向字拷贝，目标在后则从尾部按字反向搬运；若长度不是 4 的倍数，剩余字节同样要“先算好尾部地址，再反向逐字节搬运”。
+
+\begin{anybox}{判断方向时的注意点}
+
+\begin{enumerate}
+\item 两个指针是否重叠，取决于它们指向同一块内存区域。C 标准只允许对“同一数组内的指针”比较大小；工程中常见的 SRAM 缓冲区拷贝可把地址转为整数后判断；
+\item 反向拷贝也必须先处理尾部对齐，不能直接对非对齐地址做字访问；
+\item C 标准库 \texttt{memmove} 已经处理了这些细节；4 字节版本的价值是省去库函数调用开销并保持行为可控，但重叠方向判断不能省。
+\end{enumerate}
+
+\end{anybox}
+\begin{anybox}{注意事项}
+
+\begin{itemize}
+\item 只让目标地址对齐、源地址不同时对齐时，不能直接把源地址当 \texttt{uint32\_t*} 读取，否则可能触发非对齐 UsageFault；
+\item 搬运目标是指针指向的外设寄存器时，要使用 \texttt{volatile} 并考虑单次访问的副作用。
+\end{itemize}
+
+\end{anybox}
+% ---------------------------------------------------------------------
+\section{内存置零}
+
+设备启动时需要把大量参数区、显示缓冲区、协议缓冲区清零。逐字节清零的写法同样简单但循环多：
+
+\begin{lstlisting}[style=c]
+void Memory_ZeroByte(uint8_t *pBuffer, uint32_t length)
+{
+    while (length-- > 0u) {
+        *pBuffer++ = 0u;
+    }
+}
+\end{lstlisting}
+
+对齐后可以用 4 字节置零：
+
+\begin{lstlisting}[style=c]
+void Memory_Zero4(uint32_t *pBuffer, uint32_t wordCount)
+{
+    while (wordCount-- > 0u) {
+        *pBuffer++ = 0u;
+    }
+}
+\end{lstlisting}
+
+结合“先按字节对齐，中间按字清零，尾部按字节清零”，可以得到类似 C 库 \texttt{memset(p, 0, n)} 的效果。置零有三个容易忽略的细节：
+
+\begin{enumerate}
+\item \textbf{硬件外设寄存器不能整体置零}：很多状态寄存器只写某几位有效，直接 \texttt{memset} 一个外设结构体可能触发“未定义行为”或写坏控制字；
+\item \textbf{DMA 正在使用的缓冲区不能随意清零}：DMA 可能在后台写入，清零会和 DMA 写入竞争；
+\item \textbf{置零不等于擦除 Flash}：Flash 只能按扇区擦除，擦除后变为 0xFF，不是 0x00；若想“看起来像 0”，需要向扇区写入 0x00。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+
+
+\section{单片机实验：内存池移植与压力测试}
+
+本节实验把 PC 上验证过的内存池真正放到单片机上运行，重点不是“能申请”，而是长时间运行后仍能正常释放、没有越界。实验代码参考 \texttt{Chapter-memory-alloc/静态内存池/}，作者先给出移植框架，实物照片与运行截图稍后补充。
+
+\begin{anybox}{实验目的}
+
+\begin{enumerate}
+\item 掌握在 Keil、IAR 与 STM32CubeIDE 中加入内存池源码；
+\item 验证固定块池在长期申请和释放下不会产生外部碎片；
+\item 观察错误指针是否被校验函数正确拦截。
+\end{enumerate}
+
+\end{anybox}
+\begin{anybox}{建议实验步骤}
+
+\begin{enumerate}
+\item 新建两个不同块大小的池（例如 32 字节池与 256 字节池）；
+\item 用一个周期性任务反复“申请-填充-释放”池内存；
+\item 故意传入越界指针、重复释放指针，确认返回错误码且系统不崩溃；
+\item 通过串口输出 \texttt{freeCount}、块起始地址和错误码；
+\item 连续运行 30 分钟以上，观察 RAM 占用是否保持稳定。
+\end{enumerate}
+
+\end{anybox}
+\begin{anybox}{验收标准}
+\begin{itemize}
+\item 串口能正确打印池状态与每次操作结果；
+\item 长时间运行后空闲块数量不持续减少；
+\item 非法释放不会导致 HardFault 或死机。
+\end{itemize}
+
+\medskip \noindent\textbf{待补充实验记录}：
+
+\begin{itemize}
+\item 内存池接线或开发板照片；
+\item 串口打印的申请与释放日志截图；
+\item 长时间压力测试后的内存占用记录。
+\end{itemize}
+\end{anybox}
+
+\begin{figure}[htbp]
+\centering
+    % TODO: 在此插入开发板与串口接线照片
+\caption{内存池实验硬件照片（待补充）} \label{fig:ch8-mcu-hw}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+    % TODO: 在此插入串口压力测试日志截图
+\caption{内存池串口日志截图（待补充）} \label{fig:ch8-mcu-log}
+\end{figure}
+% ---------------------------------------------------------------------
+\section{扩展方向}
+
+固定块池是嵌入式内存管理的“第一课”，之后可以扩展为：
+
+\begin{itemize}
+\item \textbf{空闲链表}：把空闲块用链表串起来，申请与释放时间降到 $O(1)$；
+\item \textbf{按大小分级池}：仿照 tlsf（Two-Level Segregated Fit）把内存按 2 的幂分级；
+\item \textbf{栈式分配器}：用于“申请后按顺序释放”的临时缓冲区；
+\item \textbf{环形缓冲区复用}：通信帧不再各自 \texttt{malloc}，而是从帧池取节点。
+\end{itemize}
+
+无论采用哪种方案，核心原则都不变：在资源有限、不允许失败的环境中，宁可把内存的使用规则“写死在设计里”，也不要等到运行时才发现分配失败。
+
+% ---------------------------------------------------------------------
+\begin{problemset}
+\item 画出单片机 RAM 中“全局变量、栈、堆、.data/.bss”的典型布局，并说明栈向下增长时与堆发生碰撞的后果。
+\item \texttt{malloc/free} 在裸机系统上主要有哪些风险？为什么固定块内存池能缓解碎片问题？
+\item 内存池把连续内存切成等大块后，如何用一个位图或空闲链表快速判断“有空闲块”？
+\item 内存对齐为什么重要？请举一个非对齐 \texttt{uint32\_t} 访问在 Cortex-M 上触发异常的例子。
+\item 4 字节拷贝与逐字节拷贝的差别在哪里？当源地址与目标地址区间发生重叠时，直接 \texttt{memcpy} 会出什么问题？
+\item 如果要同时支持 8 字节、16 字节和 128 字节三种大小的对象，你会只用一个池还是设计多个池？为什么？
+\end{problemset}

@@ -1,0 +1,140 @@
+{
+  "tokens": [
+    "PLUS",
+    "MINUS",
+    "STAR",
+    "SLASH",
+    "LPAREN",
+    "RPAREN",
+    "VAR",
+    "NUMBER",
+    "IDENT"
+  ],
+  "grammar": {
+    "start": "expr",
+    "rules": {
+      "expr": [
+        {
+          "rhs": [
+            "term",
+            "expr_tail"
+          ],
+          "action": "$$ = $1 + $2;"
+        }
+      ],
+      "expr_tail": [
+        {
+          "rhs": [
+            "PLUS",
+            "term",
+            "expr_tail"
+          ],
+          "action": "$$ = $2 + $3;"
+        },
+        {
+          "rhs": [
+            "MINUS",
+            "term",
+            "expr_tail"
+          ],
+          "action": "$$ = $2 - $3;"
+        },
+        {
+          "rhs": [],
+          "action": "$$ = int32(0);"
+        }
+      ],
+      "term": [
+        {
+          "rhs": [
+            "factor",
+            "term_tail"
+          ],
+          "action": "$$ = $1 * $2;"
+        }
+      ],
+      "term_tail": [
+        {
+          "rhs": [
+            "STAR",
+            "factor",
+            "term_tail"
+          ],
+          "action": "$$ = $2 * $3;"
+        },
+        {
+          "rhs": [
+            "SLASH",
+            "factor",
+            "term_tail"
+          ],
+          "action": "$$ = $2 / $3;"
+        },
+        {
+          "rhs": [],
+          "action": "$$ = int32(1);"
+        }
+      ],
+      "factor": [
+        {
+          "rhs": [
+            "VAR"
+          ],
+          "action": "$$ = [$1];"
+        },
+        {
+          "rhs": [
+            "NUMBER"
+          ],
+          "action": "$$ = $1;"
+        },
+        {
+          "rhs": [
+            "IDENT"
+          ],
+          "action": "$$ = $1;"
+        },
+        {
+          "rhs": [
+            "MINUS",
+            "factor"
+          ],
+          "action": "$$ = -$2;"
+        },
+        {
+          "rhs": [
+            "PLUS",
+            "factor"
+          ],
+          "action": "$$ = +$2;"
+        },
+        {
+          "rhs": [
+            "LPAREN",
+            "expr",
+            "RPAREN"
+          ],
+          "action": "$$ = $2;"
+        }
+      ]
+    }
+  },
+  "variables": {
+    "X": {
+      "type": "int",
+      "value": 0
+    },
+    "Y": {
+      "type": "int",
+      "value": 0
+    },
+    "Z": {
+      "type": "float",
+      "value": 1.5
+    },
+    "ANS": {
+      "type": "double",
+      "value": 2.5
+    }
+  }
+}

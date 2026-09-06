@@ -1,0 +1,960 @@
+\chapter{任务调度与状态机编程} \label{ch:scheduler-and-state-machine}
+
+随着嵌入式系统功能的日益复杂，将所有程序逻辑都堆砌在单一的 \texttt{while(1)} 循环中，会使代码变得臃肿、难以维护，且无法有效处理并发任务。实时操作系统（RTOS）是解决复杂并发问题的强大工具，但它也带来了额外的资源开销、任务间同步的复杂性以及陡峭的学习曲线。对于许多资源受限的微控制器或功能需求中等的系统而言，RTOS 往往显得过于臃肿。因此，在 \texttt{while(1)} 循环和完整的 RTOS 之间，存在一个广阔的中间地带：构建一个轻量级的、非阻塞的任务调度器。本章将探讨构建此类调度器的核心思想与基础模型。
+
+\medskip \textbf{本章涉及到的实验内容：}
+\begin{enumerate}
+\item 任务调度器实现（基础实现，禁用状态，用户状态和单次运行，动态任务实现）；
+\item 按键状态机实现；
+\item 状态机的定义及简化；
+\item MCU 状态机编程应用。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{定时器调度模型}
+
+嵌入式程序中，延时是最常见的需求之一。传统的阻塞式延时函数（如 \texttt{Delay\_ms}）会强制 CPU 进入空转等待状态，这段时间内 CPU 无法执行任何其他操作，严重降低了系统效率和响应能力。
+
+% ---------------------------------------------------------------------
+\subsection{阻塞式延时的弊端}
+
+考虑以下 LED 闪烁程序，它是一个典型的阻塞式应用：
+
+\begin{lstlisting}[style=c]
+int main(void) {
+    初始化...
+    while(1) {
+        Delay_ms(1000);
+        GPIO_SetBits(GPIOA, GPIO_Pin_1);
+        Delay_ms(1000);
+        GPIO_ResetBits(GPIOA, GPIO_Pin_1);
+    }
+}
+\end{lstlisting}
+
+在这 1 秒的延时期间，CPU 完全被占用，无法响应按键、读取传感器或执行任何其他任务。为了解决这个问题，我们必须采用非阻塞的编程模型。
+
+% ---------------------------------------------------------------------
+\subsection{标志位法（信号驱动）}
+
+标志位法的核心思想是将计时任务与执行任务分离。定时器中断作为“计时员”，在指定时间到达后，仅设置一个标志位（发出信号）。主循环作为“执行者”，不断轮询这些标志位，一旦发现信号就执行相应任务并清除信号。
+
+\begin{lstlisting}[style=c]
+// 标志位声明
+static volatile uint8_t led1Flag = 0; // volatile防止编译器优化
+
+// 主函数
+int main(void) {
+    初始化...
+    while(1) {
+        if (led1Flag != 0) {
+            LED1_Turn();
+            led1Flag = 0;
+        }
+    }
+}
+
+// 定时器中断函数
+void TIM6_IRQHandle(void) { // 1ms中断
+    static uint16_t led1Count = 0;
+    if (led1Count++ >= 1000) {
+        led1Count = 0;
+        led1Flag = 1;
+    }
+    TIM_CLEAR_FLAG(TIM1);
+}
+\end{lstlisting}
+
+这种方法实现了非阻塞，CPU 可以在等待期间处理其他事务。但缺点是，每增加一个周期性任务，就需要在中断和主循环中增加对应的计数器和标志位，扩展性有限。
+
+% ---------------------------------------------------------------------
+\subsection{时间戳法}
+
+时间戳法是另一种非阻塞方案。其核心是维护一个全局的“系统滴答计数器”，每个任务通过记录上次执行的时间戳，并与当前时间戳比较来判断任务是否需要得到执行。
+
+\begin{lstlisting}[style=c]
+// 系统滴答计数器，通常定义为32位以防止溢出问题
+static uint32_t ledLastTick = 0, currentTick = 0;
+
+// 主函数
+int main(void) {
+    初始化...
+    while(1) {
+        if (currentTick - ledLastTick > 1000) {
+            LED1_Turn();
+            ledLastTick = HAL_GetTick();
+        }
+    }
+}
+
+// 定时器中断函数
+void TIM6_IRQHandle(void) { // 1ms中断
+    currentTick++;
+    TIM_CLEAR_FLAG(TIM1);
+}
+\end{lstlisting}
+
+此方法将计时逻辑完全下放到各个任务中，中断服务函数（ISR）变得极为纯粹，只负责维护时间。其扩展性极佳，添加新任务只需在主循环中增加一个时间戳变量和判断逻辑即可。在 STM32 的 HAL 库中，函数 \texttt{HAL\_GetTick} 实现了时间戳的获取。
+
+% ---------------------------------------------------------------------
+\subsection{三种简单的任务调度对比}
+
+表~\ref{tab:sched-compare}~从多个维度对上述三种定时任务实现方法进行了详细的对比。
+
+\begin{table}[htbp]
+\centering \caption{三种定时器调度方法对比} \label{tab:sched-compare}
+    \begin{tabular}{lccc}
+        \toprule
+        \textbf{对比维度} & \textbf{阻塞式延时} & \textbf{标志位法} & \textbf{时间戳法} \\
+        \midrule
+        CPU 利用率    & 极低（阻塞等待）   & 较高（非阻塞）     & 较高（非阻塞） \\
+        实时性         & 差               & 良好              & 良好 \\
+        代码复杂度     & 简单             & 中等（需维护标志位） & 中等（需维护时间戳） \\
+        可扩展性       & 差               & 一般              & 好 \\
+        定时精度       & 较高             & 一般（受中断影响）  & 一般（受中断影响） \\
+        资源占用       & 低               & 中等（标志位+计数器） & 中等（时间戳变量） \\
+        任务管理       & 单任务           & 多任务（有限）      & 多任务（灵活） \\
+        中断处理       & 无               & 简单（设置标志位）  & 简单（更新计数器） \\
+        适用场景       & 简单单任务系统    & 中等复杂度系统      & 复杂多任务系统 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+通过表~\ref{tab:sched-compare}~的对比，我们可以得出清晰的结论：
+
+\begin{enumerate}
+\item 阻塞式延时应仅在系统初始化或极简单的单任务场景中使用，因为它会完全剥夺系统的响应能力。
+\item 标志位法是从阻塞思维到非阻塞思维的良好过渡，它解决了多任务并发的问题，但其架构不利于扩展和维护。
+\item 时间戳法是构建轻量级任务调度器的理想基石。它将计时与执行彻底解耦，使得调度器核心（ISR）稳定而简单，任务管理逻辑清晰且高度可扩展。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{任务结构体封装}
+
+为了构建一个通用的定时器调度模型，我们需要一个核心机制：将“任务”本身作为参数进行传递和管理。在 C 语言中，“任务”通常表现为一个函数。函数指针正是实现这一目标的强大工具，它允许我们将一个函数的地址存储在变量中，并在需要时通过该变量调用函数。
+
+正如前文所述，原始的标志位法扩展性有限，因为每增加一个任务，就需要添加一组全局变量。通过结合结构体和函数指针，我们可以完美地解决这个问题，将标志位法封装成一个通用、可重用的调度器模块。
+
+% ---------------------------------------------------------------------
+\subsection{设计思想}
+
+核心思想是为每个任务创建一个“任务控制块（TCB）”，该结构体包含了任务的所有属性：周期、计数器、标志位以及要执行的函数（通过函数指针指定）。然后，我们编写通用的操作函数来管理这些任务控制块数组。首先，我们定义一个结构体来封装任务所需的所有数据。
+
+\begin{lstlisting}[style=c]
+#ifndef __TASKS_H
+#define __TASKS_H
+
+#include "stm32f10x.h" // 包含 uint16_t 等类型定义
+
+// 定义最大任务数量
+#define MAX_TASK 10
+
+// 定义任务回调函数类型，所有任务函数都应符合此类型
+typedef void (*TaskFunc_t)(void);
+
+/**
+ * @brief 任务控制块结构体
+ * @details 封装了单个定时任务的所有属性
+ */
+typedef struct {
+    volatile uint16_t Flag;       // 任务运行标志位：1表示任务待执行，0表示等待
+    volatile uint16_t MaxCounter; // 任务周期，单位：ms
+    TaskFunc_t Callback; // 任务回调函数指针，指向要执行的具体函数
+    volatile uint16_t Counter;    // 内部计数器，用于计时
+} Task_H;
+
+// 函数声明
+void Task_Loop(void);
+void Task_Tick(void);
+
+#endif
+\end{lstlisting}
+
+\begin{anybox}{volatile 与共享变量}
+\texttt{Flag}、\texttt{MaxCounter}、\texttt{Counter} 会被中断里的 \texttt{Task\_Tick} 与主循环里的 \texttt{Task\_Loop} 同时读写，因此必须用 \texttt{volatile} 声明（原理见第~\ref{sec:volatile-const}~节）。否则编译器可能把任务数组缓存在寄存器中，导致主循环看不到中断设置的标志位。
+\end{anybox}
+
+接下来，在 \texttt{tasks.c} 中实现调度器的核心逻辑。
+
+\begin{lstlisting}[style=c]
+#include "tasks.h"
+#include "LED.h" // 包含任务函数的定义
+
+/**
+ * @brief 任务数组
+ * @details 定义并初始化所有任务。每个元素代表一个独立的定时任务。
+ *          {初始标志位, 周期, 回调函数, 初始计数值}
+ */
+Task_H Tasks[MAX_TASK] = {
+    { 0, 400, LED1_Turn, 0 }, // 任务1：每400ms翻转一次LED1
+    { 0, 500, LED2_Turn, 0 }, // 任务2：每500ms翻转一次LED2
+    // 可以在此处添加更多任务...
+};
+
+/**
+ * @brief 任务调度循环函数
+ * @details 此函数应在主循环 while(1) 中被反复调用。
+ *          它会遍历所有任务，检查其运行标志位，如果标志位为1，
+ *          则执行对应的回调函数，并将标志位清零。
+ */
+void Task_Loop(void) {
+    uint16_t i = 0;
+    for (i = 0; i < MAX_TASK; i++) {
+        if (Tasks[i].Flag != 0) {
+            Tasks[i].Callback(); // 执行任务
+            Tasks[i].Flag = 0;   // 任务执行完毕，清除标志位
+        }
+    }
+}
+
+/**
+ * @brief 任务心跳更新函数
+ * @details 此函数应在定时器中断服务函数中被调用（例如每1ms调用一次）。
+ *          它会遍历所有任务，更新其内部计数器。当计数器达到设定的周期时，
+ *          将该任务的标志位置位，并重置计数器。
+ */
+void Task_Tick(void) {
+    uint16_t i = 0;
+    for (i = 0; i < MAX_TASK; i++) {
+        if (++Tasks[i].Counter >= Tasks[i].MaxCounter) {
+            Tasks[i].Flag = 1;    // 达到周期，置位运行标志
+            Tasks[i].Counter = 0; // 重置计数器，开始下一轮计时
+        }
+    }
+}
+\end{lstlisting}
+
+最后，在 \texttt{main.c} 中，完成任务调度实验代码：
+
+\begin{lstlisting}[style=c]
+#include "stm32f10x.h"
+#include "LED.h"
+#include "Timer.h"
+#include "tasks.h" // 包含任务调度器头文件
+
+int main(void) {
+    // 硬件初始化
+    LED_Init();
+    Timer_Init(); // 初始化定时器，配置为1ms中断
+
+    while (1) {
+        // 不断调用任务调度循环，检查并执行到期的任务
+        Task_Loop();
+    }
+}
+
+/**
+ * @brief TIM6定时器中断服务函数
+ * @details 此函数每1ms被硬件自动调用一次。
+ *          它是整个调度系统的心跳，负责驱动Task_Tick函数。
+ */
+void TIM6_IRQHandler(void) {
+    if (TIM_GetITStatus(TIM6, TIM_IT_Update) == SET) {
+        Task_Tick(); // 调用任务心跳函数，更新所有任务的计时
+        TIM_ClearITPendingBit(TIM6, TIM_IT_Update);
+    }
+}
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\subsection{封装带来的优势}
+
+通过这种封装，我们获得了一个强大而灵活的调度器：
+
+\begin{enumerate}
+\item \textbf{代码清晰}：主循环和中断函数变得非常简洁，意图明确。
+\item \textbf{高度可重用}：只需修改 \texttt{Tasks} 数组即可轻松增删或修改任务，无需改动调度器核心代码。
+\item \textbf{易于维护}：所有任务相关的逻辑都被封装在 \texttt{Task\_H} 结构体和其操作函数中，模块化程度高。
+\end{enumerate}
+
+这个基于结构体的标志位法调度器，是标志位思想的一次升华，它在保持简单高效的同时，极大地提升了代码的组织性和可扩展性，是构建中小型嵌入式应用的绝佳选择。
+
+% ---------------------------------------------------------------------
+\subsection{改进 1：添加阻塞状态}
+
+在我们之前设计的调度器中，任务的标志位是一个简单的布尔值（0 或 1），仅能表示“等待”和“就绪”两种状态。这种设计虽然有效，但在功能上存在局限性。例如，如果我们想在运行时暂停某个任务（比如在低功耗模式下关闭 LED 闪烁），就缺乏一个优雅的机制。为了赋予调度器更强的控制能力和更好的代码可读性，我们引入第一个改进：使用枚举类型定义多状态标志位。其中，改进的任务调度器的状态转换图如图~\ref{fig:sched-v1}~所示。
+
+\begin{figure}[htbp]
+\centering
+    \begin{tikzpicture}[
+        state/.style={draw=structurecolor, thick, circle, minimum size=1.6cm,
+                      align=center, fill=structurecolor!8, font=\small},
+        every node/.style={font=\small}
+    ]
+        \node[state] (wait)    at (0,0)    {S=0\\等待};
+        \node[state] (ready)   at (4.8,0)  {S=1\\就绪};
+        \node[state] (disable) at (2.4,-3) {S=2\\阻塞};
+
+        \draw[-stealth, thick] (wait)  -- node[above, align=center] {定时时间到\\设定就绪状态} (ready);
+        \draw[-stealth, thick] (ready) to[out=120,in=60]
+            node[above, align=center] {运行完成\\设定等待状态\\设置定时时间} (wait);
+        \draw[-stealth, thick] (wait) to[out=-90,in=-180] node[left, align=center] {程序内部设置\\设定阻塞状态} (disable);
+        \draw[-stealth, thick] (disable) to[out=90,in=-30]
+            node[right, align=center] {程序内部设置\\解除阻塞状态} (wait);
+    \end{tikzpicture}
+\caption{改进的任务调度器的状态转换图} \label{fig:sched-v1}
+\end{figure}
+
+首先，在头文件 \texttt{tasks.h} 中，我们定义一个枚举类型 \texttt{TaskFlag\_H} 来表示任务的所有可能状态。
+
+\begin{lstlisting}[style=c]
+typedef enum tagTaskListTag_T
+{
+    TASK_LED1,         // LED1闪烁任务
+    TASK_LED2,         // LED2闪烁任务
+    TASK_KEY,          // 按键检测任务
+    // 任务添加在此之前 ↑
+    MAX_TASK_COUNT     // 任务总数（用于数组边界检查）
+} TaskListTag_T;
+
+typedef enum tagTaskFlag_H {
+    TASK_FLAG_WAIT,    // 等待状态 (值为0)
+    TASK_FLAG_RUN,     // 就绪状态 (值为1)
+    TASK_FLAG_DISABLE  // 阻塞/禁用状态 (值为2)
+} TaskFlag_H;
+\end{lstlisting}
+
+接着，我们将任务结构体 \texttt{Task\_H} 中的 \texttt{Flag} 成员的类型从 \texttt{uint16\_t} 修改为我们新定义的 \texttt{TaskFlag\_H}。
+
+\begin{lstlisting}[style=c]
+typedef struct tagTask_H {
+    volatile uint32_t Counter;    // 计数器变量
+    volatile uint32_t MaxCounter; // 最大计数值（周期）
+    void (*Callback)(void);    // 回调函数
+    volatile TaskFlag_H Flag;  // 任务状态标志位（使用枚举，中断/主循环共享）
+} Task_H;
+\end{lstlisting}
+
+修改类型时同样保留 \texttt{volatile}：\texttt{Flag} 由中断写、主循环读，\texttt{Counter} 由中断累加、主循环执行后清零，编译器不能在主循环里假设它们的值长期不变。
+
+最后，我们需要更新 \texttt{Task\_Tick} 和 \texttt{Task\_Loop} 函数中的逻辑，以适应新的状态模型。在 \texttt{Task\_Tick} 中，我们增加了一个判断条件：只有当任务处于 \texttt{TASK\_FLAG\_WAIT} 状态时，才会进行计时和状态更新。这确保了被禁用的任务不会消耗任何 CPU 资源。
+
+\begin{lstlisting}[style=c]
+void Task_Tick(void) { // 定时器中断调用
+    uint16_t i = 0;
+    for (i = 0; i < MAX_TASK; i++) {
+        // 只有在“等待”状态下才进行计时
+        if (++Tasks[i].Counter >= Tasks[i].MaxCounter && Tasks[i].Flag ==
+            TASK_FLAG_WAIT) {
+            Tasks[i].Flag = TASK_FLAG_RUN; // 计时到达，切换为“就绪”状态
+            Tasks[i].Counter = 0;
+        }
+    }
+}
+\end{lstlisting}
+
+在 \texttt{Task\_Loop} 中，我们检查任务是否为 \texttt{TASK\_FLAG\_RUN} 状态，执行任务后，再将其恢复为 \texttt{TASK\_FLAG\_WAIT} 状态，以便开始下一轮计时。
+
+\begin{lstlisting}[style=c]
+void Task_Loop(void) {
+    uint16_t i = 0;
+    for (i = 0; i < MAX_TASK; i++) {
+        if (Tasks[i].Flag == TASK_FLAG_RUN) {
+            Tasks[i].Callback();              // 执行任务
+            Tasks[i].Flag = TASK_FLAG_WAIT;   // 恢复为“等待”状态
+            Tasks[i].Counter = 0;             // 重置计数器
+        }
+    }
+}
+\end{lstlisting}
+
+最后，在 \texttt{main.c} 中，完成任务堵塞运行调度实验代码：
+
+\begin{lstlisting}[style=c]
+// 任务定义
+Task_T TaskList[MAX_TASK_COUNT] = {
+    { LED1_Task, 400, TASK_DEFAULT_INIT }, // 状态机任务
+    { LED2_Task, 500, TASK_DEFAULT_INIT }, // 周期任务
+    { Key_Task, 20, TASK_DEFAULT_INIT }    // 触发任务
+};
+
+int main(void)
+{
+    LED_Init();
+    KEY_Init();
+    Timer_Init();
+
+    while (1) {
+        Task_Loop();
+
+        if (KEY1_Get() != 0) {
+            Tasks[0].Flag = TASK_FLAG_DISABLE;
+        }
+
+        if (KEY2_Get() != 0) {
+            Tasks[0].Flag = TASK_FLAG_WAIT;
+        }
+    }
+}
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\subsection{改进 2：添加用户状态以及单次执行}
+
+在基础调度器上增加两个关键特性：允许任务维护自身状态，实现复杂逻辑、支持触发式操作。其中，进一步改进的任务调度器的状态转换图如图~\ref{fig:sched-v2}~所示。
+
+\begin{figure}[htbp]
+\centering
+    \begin{tikzpicture}[
+        state/.style={draw=structurecolor, thick, circle, minimum size=1.6cm,
+                      align=center, fill=structurecolor!8, font=\small},
+        every node/.style={font=\small}
+    ]
+        \node[state] (wait)    at (0,0)     {S=0\\等待};
+        \node[state] (ready)   at (4.8,0)   {S=1\\就绪};
+        \node[state] (disable) at (0,-3.6)  {S=2\\阻塞};
+        \node[state] (once)    at (4.8,-3.6){S=4\\单次运行};
+
+        \draw[-stealth, thick] (wait)  -- node[above, align=center] {定时时间到\\设定就绪状态} (ready);
+        \draw[-stealth, thick] (ready) to[out=120,in=60]
+            node[above, align=center] {运行完成\\设定等待状态\\设置等待时间\\设置用户状态} (wait);
+        \draw[-stealth, thick] (wait) -- node[above, align=center] {程序内部设置\\设定阻塞状态} (disable);
+        \draw[-stealth, thick] (disable) to[out=-180,in=-180]
+            node[below, align=center] {程序内部设置\\解除阻塞状态} (wait);
+        \draw[-stealth, thick] (ready) -- node[right, align=center] {程序内部设置\\设定单次运行状态} (once);
+        \draw[-stealth, thick] (once) --
+            node[above, align=center] {运行完成} (disable);
+        \draw[-stealth, thick] (ready) to[out=-135,in=45,looseness=1.2]
+            node[below, align=center] {返回值或调度器\\指示需要进入阻塞状态} (disable);
+    \end{tikzpicture}
+\caption{进一步改进的任务调度器的状态转换图} \label{fig:sched-v2}
+\end{figure}
+
+首先，在头文件 \texttt{tasks.h} 中，扩展后的任务结构体包含新字段，以及通过返回值实现双向通信：
+
+\begin{lstlisting}[style=c]
+typedef struct tagTask_T {
+    uint32_t (*Callback)(uint16_t State, uint16_t TickCount); // 回调函数
+    uint16_t DefaultPeriod; // 默认周期
+
+    /* 新增字段 */
+    uint16_t UserState;    // 用户自定义状态
+    uint16_t RealPeriod;   // 动态可调周期
+    volatile uint8_t SystemState; // 任务状态
+} Task_T;
+
+/* 返回值构造宏 */
+#define TASK_RENTUN(State, Period) (((State & 0xFFFF) << 16) | (Period & 0xFFFF))
+
+/* 特殊返回值 */
+#define TASK_RET_INTERVAL 0      // 使用默认周期
+#define TASK_RET_EXIT 0xFFFF     // 执行后禁用任务
+\end{lstlisting}
+
+接着，在源文件 \texttt{tasks.c} 中，修改任务调度逻辑：
+
+\begin{lstlisting}[style=c]
+/**
+ * @brief 检查任务状态是否有效
+ * @param TaskTag 任务标签
+ * @return 1-无效状态, 0-有效状态
+ * @note 有效状态包括：WAIT/RUN/DISABLE/ONCE
+ */
+static uint8_t Task_IsNotNormalFlag(TaskListTag_T TaskTag) {
+    return s_TaskList[TaskTag].SystemState != TASK_SYSTEM_STATE_WAIT &&
+           s_TaskList[TaskTag].SystemState != TASK_SYSTEM_STATE_RUN &&
+           s_TaskList[TaskTag].SystemState != TASK_SYSTEM_STATE_DISABLE &&
+           s_TaskList[TaskTag].SystemState != TASK_SYSTEM_STATE_ONCE;
+}
+
+/**
+ * @brief 系统节拍处理函数
+ * @note 需在1ms定时器中断中调用
+ * 功能：
+ * 1. 更新所有等待/运行任务的计时器
+ * 2. 将计时达到周期的任务置为运行状态
+ * 3. 自动修复异常状态任务
+ */
+void Task_Tick(void) {
+    TaskListTag_T TaskTag;
+
+    if (s_TaskList == NULL) { return; } // 未初始化则直接返回
+
+    for (TaskTag = 0; TaskTag < MAX_TASK_COUNT; TaskTag++) {
+        // 处理等待/运行中的任务
+        if (s_TaskList[TaskTag].SystemState == TASK_SYSTEM_STATE_WAIT ||
+            s_TaskList[TaskTag].SystemState == TASK_SYSTEM_STATE_RUN) {
+            s_TaskList[TaskTag].TickCount++; // 更新计时值
+
+            // 检查是否达到触发周期
+            if (s_TaskList[TaskTag].TickCount >= s_TaskList[TaskTag].RealPeriod) {
+                s_TaskList[TaskTag].SystemState = TASK_SYSTEM_STATE_RUN; // 标记为可执行
+            }
+        }
+        // 自动修复异常状态
+        else if (Task_IsNotNormalFlag(TaskTag)) {
+            s_TaskList[TaskTag].SystemState = TASK_SYSTEM_STATE_WAIT; // 重置为等待状态
+        }
+    }
+}
+
+/**
+ * @brief 任务调度主循环
+ * @note 需在主循环中持续调用
+ * 功能：
+ * 1. 执行处于运行状态的任务
+ * 2. 处理任务回调返回值
+ * 3. 管理任务状态转换
+ */
+void Task_Loop(void) {
+    TaskListTag_T TaskTag;
+
+    if (s_TaskList == NULL) { return; } // 未初始化则直接返回
+
+    for (TaskTag = 0; TaskTag < MAX_TASK_COUNT; TaskTag++) {
+        // 处理可执行任务（运行状态/单次执行）
+        if (s_TaskList[TaskTag].SystemState == TASK_SYSTEM_STATE_RUN ||
+            s_TaskList[TaskTag].SystemState == TASK_SYSTEM_STATE_ONCE) {
+            uint32_t Temp = 0;
+
+            if (s_TaskList[TaskTag].Callback != NULL) {
+                // 执行任务回调并获取返回值
+                Temp = s_TaskList[TaskTag].Callback(s_TaskList[TaskTag].UserState,
+                                                    s_TaskList[TaskTag].TickCount);
+            }
+
+            // 解析返回值：高16位为用户状态，低16位为执行周期
+            s_TaskList[TaskTag].UserState = (Temp & 0xFFFF0000) >> 16;
+            s_TaskList[TaskTag].RealPeriod = Temp & 0x0000FFFF;
+            s_TaskList[TaskTag].TickCount = 0; // 清零计时器
+
+            // 特殊返回值处理
+            if (s_TaskList[TaskTag].RealPeriod == TASK_RET_INTERVAL) {
+                s_TaskList[TaskTag].RealPeriod = s_TaskList[TaskTag].DefaultPeriod; // 恢复默认周期
+            }
+            if (s_TaskList[TaskTag].RealPeriod == TASK_RET_EXIT) {
+                s_TaskList[TaskTag].SystemState = TASK_SYSTEM_STATE_DISABLE; // 禁用任务
+                continue; // 跳过后续处理
+            }
+
+            // 状态转换处理
+            if (s_TaskList[TaskTag].SystemState == TASK_SYSTEM_STATE_ONCE) {
+                s_TaskList[TaskTag].SystemState = TASK_SYSTEM_STATE_DISABLE; // 单次执行后禁用
+            } else {
+                s_TaskList[TaskTag].SystemState = TASK_SYSTEM_STATE_WAIT; // 重置为等待状态
+            }
+        }
+        // 自动修复异常状态
+        else if (Task_IsNotNormalFlag(TaskTag)) {
+            s_TaskList[TaskTag].SystemState = TASK_SYSTEM_STATE_WAIT; // 重置为等待状态
+        }
+    }
+}
+\end{lstlisting}
+
+接着，在源文件 \texttt{tasks.c} 中，添加单次执行接口：
+
+\begin{lstlisting}[style=c]
+void Task_RunOnce(TaskListTag_T TaskTag) {
+    s_TaskList[TaskTag].SystemState = TASK_SYSTEM_STATE_ONCE;
+}
+\end{lstlisting}
+
+最后，在 \texttt{main.c} 中，完成单次运行调度实验代码：
+
+\begin{lstlisting}[style=c]
+uint32_t LED1_Task(uint16_t State, uint16_t TickCount) {
+    switch(State) {
+        case S1:
+            LED1_ON();
+            return TASK_RENTUN(S2, 400); // 切换到S2，任务延时400ms
+        case S2:
+            LED1_OFF();
+            return TASK_RENTUN(S3, 200); // 切换到S3，任务延时200ms
+        case S3:
+            LED1_ON();
+            return TASK_RENTUN(S4, 800); // 切换到S4，任务延时800ms
+        case S4:
+            LED1_OFF();
+            return TASK_RENTUN(S1, 100); // 切换到S1，任务延时100ms
+        default:
+            return TASK_RENTUN(S1, 100);
+    }
+}
+
+uint32_t LED2_Task(uint16_t State, uint16_t TickCount)
+{
+    LED2_Turn();
+    return 0;
+}
+
+uint32_t Key_Task(uint16_t State, uint16_t TickCount) {
+    if (KEY_PRESSED()) {
+        Task_RunOnce(TASK_LED2); // 触发LED2状态改变
+    }
+    return TASK_RENTUN(KEY_GetState(), TASK_RET_INTERVAL);
+}
+
+// 任务定义
+Task_T TaskList[MAX_TASK_COUNT] = {
+    { LED1_Task, 400, TASK_DEFAULT_INIT }, // 状态机任务
+    { LED2_Task, 500, TASK_DEFAULT_INIT }, // 周期任务
+    { Key_Task, 20, TASK_DEFAULT_INIT }    // 触发任务
+};
+
+int main(void) {
+    LED_Init();
+    Key_Init();
+    Timer_Init();
+    Task_Init(TaskList);
+    Task_RunOnce(TASK_LED2); // 初始单次触发
+
+    while(1) {
+        Task_Loop(); // 调度循环
+    }
+}
+\end{lstlisting}
+
+\begin{figure}[htbp]
+\centering
+    % TODO: 在此插入第2章调度与状态机实验截图
+\caption{第2章实验记录图（待补充）} \label{fig:ch2-placeholder}
+\end{figure}
+% ---------------------------------------------------------------------
+\section{按键状态机的实现}
+
+按键处理模块的核心是一个有限状态机。其设计目标是将原始、不稳定的物理按键输入（按下与释放）转化为稳定、有意义的高级事件（如单击、双击、长按等）。这种设计将复杂的按键逻辑判断与主应用逻辑解耦，使得代码更清晰、更易于维护。其中，按键状态机的状态转换图如图~\ref{fig:key-fsm}~所示。
+
+% ---------------------------------------------------------------------
+\subsection{核心数据结构}
+
+状态机的实现依赖于在 \texttt{Key.h} 中定义的关键数据结构，它们构成了状态机的基础。
+
+% ---------------------------------------------------------------------
+\subsubsection{按键状态与事件定义}
+
+首先，通过枚举类型定义了状态机的基本元素：状态、事件和物理电平。
+
+\begin{lstlisting}[style=c]
+// 按键状态枚举
+typedef enum tagKeyState_T {
+    KEY_STATE_WAIT,        // 等待状态
+    KEY_STATE_CLICK,       // 按下状态
+    KEY_STATE_LONG_PRESS,  // 长按状态
+    KEY_STATE_DOUBLE_CLICK, // 双击状态
+} KeyState_T;
+
+// 按键事件标志
+typedef enum tagKeyEvent_T {
+    KEY_EV_NONE = 0,           // 无事件
+    KEY_EV_CLICK = 0x01,       // 单击
+    KEY_EV_DOUBLE_CLICK = 0x02, // 双击
+    KEY_EV_LONG_PRESS = 0x04,  // 长按
+    KEY_EV_REPEAT = 0x08       // 重复触发
+} KeyEvent_T;
+\end{lstlisting}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+	state/.style={draw=structurecolor, thick, circle, minimum size=1.55cm,
+		align=center, fill=structurecolor!8, font=\small},
+	every node/.style={font=\small},
+	lab/.style={align=center, font=\scriptsize}
+	]
+	\node[state] (s0) at (0,0)   {S=0\\空闲};
+	\node[state] (s1) at (4.4,0) {S=1\\已按下};
+	\node[state] (s2) at (8.8,0) {S=2\\已松开};
+	\node[state] (s4) at (4.4,-3) {S=4\\已长按};
+	\node[state] (s3) at (8.8,-3) {S=3\\已双击};
+	
+	\draw[-stealth, thick] (s0) -- node[lab, above] {按键按下\\设定长按时间} (s1);
+	\draw[-stealth, thick] (s1) -- node[lab, above] {按键松开\\设定双击时间} (s2);
+	\draw[-stealth, thick] (s2) --
+	node[lab, right] {按键按下\\DOUBLE=1} (s3);
+	\draw[-stealth, thick] (s2) to[out=120,in=60,looseness=1.2]
+	node[lab, below] {双击时间到\\SINGLE=1} (s0);
+	\draw[-stealth, thick] (s1) --
+	node[lab, right] {长按时间到\\设定重复时间\\LONG=1} (s4);
+	\draw[-stealth, thick] (s4) to[out=135,in=-90]
+	node[lab, above] {按键松开} (s0);
+	\draw[-stealth, thick] (s3) to[out=-90,in=-90]
+	node[lab, above] {按键松开} (s0);
+	\draw[-stealth, thick] (s4) .. controls +(0.8,-1.2) and +(1.6,-0.2) ..
+	node[lab, right] {重复时间到\\设定重复时间\\REPEAT=1} (s4);
+\end{tikzpicture}
+\caption{按键状态机的状态转换图} \label{fig:key-fsm}
+\end{figure}
+
+以下是上述状态定义的说明：
+
+\begin{enumerate}
+\item \texttt{KeyState\_T} 定义了状态机可能存在的几个核心状态，是状态流转的节点。
+\item \texttt{KeyEvent\_T} 定义了状态机最终产生的输出事件。这些是应用程序可以消费的 “结果”。注意，它使用位掩码（\texttt{0x01, 0x02, 0x04...}）定义，使得一个按键动作可以同时触发多个事件（例如，双击也包含一次单击）。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\subsubsection{按键控制结构体}
+
+每个物理按键都有一个对应的控制结构体 \texttt{KeyCtrl\_T}，用于存储该按键实例的所有状态信息。
+
+\begin{lstlisting}[style=c]
+// 按键控制结构体
+typedef struct tagKeyCtrl_T {
+    // 状态变量
+    KeyState_T State;      // 状态机状态
+    KeyEvent_T Event;      // 当前按键事件
+    // 物理状态
+    KeyVoltage_T CurrentVoltage;
+    KeyVoltage_T LastVoltage;
+    // 回调函数
+    KeyVoltage_T (*GetVoltage)(void);
+    // 附加功能
+    uint8_t RepeatEnable;
+    uint8_t DoubleEnable;
+    // 记录的时间
+    uint32_t DeltaTime;
+    uint32_t DounceTime;
+} KeyCtrl_T;
+\end{lstlisting}
+
+以下是按键控制结构体定义的说明：
+
+\begin{enumerate}
+\item \texttt{State} 和 \texttt{Event}：分别记录当前状态和已触发的事件。
+\item \texttt{CurrentVoltage} 与 \texttt{LastVoltage}：用于检测按键电平的跳变沿（从释放到按下，或反之）。
+\item \texttt{GetVoltage}：一个函数指针，用于读取按键的物理电平。这种设计实现了硬件抽象层，使状态机逻辑与具体 GPIO 配置解耦。
+\item \texttt{RepeatEnable} 与 \texttt{DoubleEnable}：功能开关，允许为每个按键独立启用或禁用长按重复和双击功能。
+\item \texttt{DeltaTime}：核心计时器，记录在某个状态下经过的时间（单位：ms），用于判断长按、双击超时等。
+\item \texttt{DounceTime}：用于软件消抖的计时器，防止机械抖动被误判为多次按键。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\subsection{状态机逻辑}
+
+状态机的所有逻辑都在 \texttt{Key\_Tick()} 函数中实现。该函数需要被以固定的频率（例如 1ms）调用，以驱动状态机运转。
+
+% ---------------------------------------------------------------------
+\subsubsection{主循环与消抖}
+
+函数首先遍历所有按键实例，更新时间计数器，并执行软件消抖逻辑。
+
+\begin{lstlisting}[style=c]
+void Key_Tick(void) {
+    for (uint8_t i = 0; i < KEY_NUMBER; i++) {
+        KeyArrayCtrls[i].DeltaTime++;
+        KeyArrayCtrls[i].DounceTime++;
+
+        // 消抖逻辑：只有当电平稳定超过 KEY_DOUNCE_TIME 后才认为是有效电平
+        if (KeyArrayCtrls[i].DounceTime >= KEY_DOUNCE_TIME) {
+            KeyArrayCtrls[i].LastVoltage = KeyArrayCtrls[i].CurrentVoltage;
+            KeyArrayCtrls[i].CurrentVoltage = KeyArrayCtrls[i].GetVoltage();
+            KeyArrayCtrls[i].DounceTime = 0;
+        }
+
+        // ... 后续状态机逻辑 ...
+    }
+}
+\end{lstlisting}
+
+以下是主循环与消抖说明：
+
+\begin{enumerate}
+\item \texttt{DeltaTime++}：为每个按键的计时器递增，这是所有时间相关判断的基础。
+\item 消抖逻辑通过比较 \texttt{LastVoltage} 和 \texttt{CurrentVoltage}，确保只有在电平稳定一段时间后才更新状态，有效滤除高频抖动。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\subsubsection{等待状态}
+
+状态机的核心是一个 \texttt{switch} 语句，根据当前状态执行不同的逻辑。
+
+\begin{lstlisting}[style=c]
+case KEY_STATE_WAIT:
+{
+    // 检测到从释放到按下的跳变沿
+    if (KeyArrayCtrls[i].LastVoltage == KEY_VOL_RELEASED
+        && KeyArrayCtrls[i].CurrentVoltage == KEY_VOL_PRESSED) {
+        KeyArrayCtrls[i].LastVoltage = KEY_VOL_PRESSED; // 防止重复进入
+        KeyArrayCtrls[i].State = KEY_STATE_CLICK;       // 切换到按下状态
+        KeyArrayCtrls[i].Event |= KEY_EV_CLICK;         // 置位单击事件
+        KeyArrayCtrls[i].DeltaTime = 0;                 // 重置计时器
+    }
+    break;
+}
+\end{lstlisting}
+
+等待状态是初始状态。当检测到一个有效的下降沿（按键被按下）时，状态机立即切换到 \texttt{KEY\_STATE\_CLICK}，并记录一次 \texttt{KEY\_EV\_CLICK} 事件。此时还无法确定是单击、长按还是双击，所以需要进一步观察。
+
+% ---------------------------------------------------------------------
+\subsubsection{按下和单击判断状态}
+
+\begin{lstlisting}[style=c]
+case KEY_STATE_CLICK:
+{
+    // 分支1：判断为长按
+    if (KeyArrayCtrls[i].CurrentVoltage == KEY_VOL_PRESSED
+        && KeyArrayCtrls[i].DeltaTime >= KEY_LONG_PRESS_TIME) {
+        KeyArrayCtrls[i].State = KEY_STATE_LONG_PRESS;
+        KeyArrayCtrls[i].Event |= KEY_EV_LONG_PRESS;
+        KeyArrayCtrls[i].DeltaTime = 0;
+        break;
+    }
+
+    // 分支2：释放后，准备判断双击
+    if (KeyArrayCtrls[i].CurrentVoltage == KEY_VOL_RELEASED
+        && KeyArrayCtrls[i].DoubleEnable != 0) {
+        KeyArrayCtrls[i].State = KEY_STATE_DOUBLE_CLICK;
+        KeyArrayCtrls[i].DeltaTime = 0;
+        break;
+    }
+    // 分支3：释放后，若未启用双击，则直接判定为单击完成
+    if (KeyArrayCtrls[i].CurrentVoltage == KEY_VOL_RELEASED
+        && KeyArrayCtrls[i].DoubleEnable == 0) {
+        KeyArrayCtrls[i].State = KEY_STATE_WAIT;
+        break;
+    }
+    break;
+}
+\end{lstlisting}
+
+按下状态是一个决策状态，根据按键的后续行为分为三个分支：
+
+\begin{enumerate}
+\item \textbf{长按}：如果按下时间超过 \texttt{KEY\_LONG\_PRESS\_TIME}，则进入长按状态。
+\item \textbf{准备双击}：如果按键被释放，且启用了双击功能，则进入双击等待状态，开始计时等待第二次按下。
+\item \textbf{单击完成}：如果按键被释放且未启用双击，则直接返回等待状态。此时 \texttt{KEY\_EV\_CLICK} 事件已保留，等待应用层读取。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\subsubsection{长按状态}
+
+\begin{lstlisting}[style=c]
+case KEY_STATE_LONG_PRESS:
+{
+    // 分支1：重复触发
+    if (KeyArrayCtrls[i].CurrentVoltage == KEY_VOL_PRESSED
+        && KeyArrayCtrls[i].DeltaTime >= KEY_REPEAT_TIME
+        && KeyArrayCtrls[i].RepeatEnable != 0) {
+        KeyArrayCtrls[i].Event |= KEY_EV_REPEAT;
+        KeyArrayCtrls[i].DeltaTime = 0; // 重置计时，准备下次重复
+        break;
+    }
+    // 分支2：长按结束
+    if (KeyArrayCtrls[i].CurrentVoltage == KEY_VOL_RELEASED) {
+        KeyArrayCtrls[i].State = KEY_STATE_WAIT;
+        break;
+    }
+    break;
+}
+\end{lstlisting}
+
+进入长按状态后，状态机做两件事：
+
+\begin{enumerate}
+\item \textbf{重复触发}：如果按键持续按下，并且启用了重复功能，则每隔 \texttt{KEY\_REPEAT\_TIME} 就会产生一个 \texttt{KEY\_EV\_REPEAT} 事件。
+\item \textbf{长按结束}：一旦检测到按键释放，状态机就返回初始等待状态。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\subsubsection{双击等待状态}
+
+\begin{lstlisting}[style=c]
+case KEY_STATE_DOUBLE_CLICK:
+{
+    // 分支1：双击成功
+    if (KeyArrayCtrls[i].CurrentVoltage == KEY_VOL_PRESSED
+        && KeyArrayCtrls[i].DeltaTime <= KEY_DOUBLE_TICK_TIME) {
+        KeyArrayCtrls[i].State = KEY_STATE_WAIT;
+        KeyArrayCtrls[i].Event |= KEY_EV_DOUBLE_CLICK;
+        KeyArrayCtrls[i].Event |= KEY_EV_CLICK; // 双击也包含单击
+        break;
+    }
+    // 分支2：双击超时，判定为单击
+    if (KeyArrayCtrls[i].CurrentVoltage == KEY_VOL_RELEASED
+        && KeyArrayCtrls[i].DeltaTime >= KEY_DOUBLE_TICK_TIME) {
+        KeyArrayCtrls[i].State = KEY_STATE_WAIT;
+        break;
+    }
+    break;
+}
+\end{lstlisting}
+
+双击等待状态用于判断双击：
+
+\begin{enumerate}
+\item \textbf{双击成功}：如果在 \texttt{KEY\_DOUBLE\_TICK\_TIME} 时间内检测到第二次按下，则判定为双击，并置位 \texttt{KEY\_EV\_DOUBLE\_CLICK} 和 \texttt{KEY\_EV\_CLICK} 事件。
+\item \textbf{双击超时}：如果超过了规定时间仍未检测到第二次按下，则判定为单击，状态机返回等待状态。之前在 \texttt{KEY\_STATE\_CLICK} 中置位的 \texttt{KEY\_EV\_CLICK} 事件仍然有效。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\subsection{事件消费机制}
+
+状态机产生的 \texttt{Event} 标志位，通过一系列 \texttt{Key\_IsXXX()} 函数提供给应用层。这些函数遵循一个重要的“查询并清除”模式，例如判断按键是否被按下的逻辑代码：
+
+\begin{lstlisting}[style=c]
+uint8_t Key_IsClicked(KeyEnum_T CurrentKey) {
+    uint8_t Result = 0;
+    // 检查事件标志位
+    if ((KeyArrayCtrls[CurrentKey].Event & KEY_EV_CLICK) == KEY_EV_CLICK) {
+        // 关键：清除事件标志位，防止重复处理
+        KeyArrayCtrls[CurrentKey].Event &= ~(KEY_EV_CLICK);
+        Result = 1;
+    }
+    return Result;
+}
+\end{lstlisting}
+
+\begin{enumerate}
+\item 应用层在主循环中调用 \texttt{Key\_IsClicked(KEY\_ENTER)} 等函数来查询事件。
+\item 如果事件发生，函数返回 1，并且自动清除对应的事件标志位。
+\item 这种机制确保了每个事件只会被应用层处理一次，避免了因循环查询而导致的重复触发问题。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\subsection{测试代码实现}
+
+最后，在 \texttt{main.c} 中，完成按键任务测试实验代码：
+
+\begin{lstlisting}[style=c]
+// 其他任务...
+
+// 按键任务
+uint32_t Key_Task(uint16_t State, uint16_t TickCount) {
+    if (Key_IsDoubleClicked(KEY_ENTER)) {
+        LCD_ShowString(0, 0, "DOUBLE");
+        Task_RunOnce(TASK_LED2);
+    }
+    if (Key_IsLongPressed(KEY_ENTER)) {
+        LCD_ShowString(0, 0, "LONG ");
+    }
+    if (Key_IsRepeated(KEY_ENTER)) {
+        LCD_ShowString(0, 0, "REPEAT");
+    }
+    if (Key_IsClicked(KEY_ENTER)) {
+        LCD_ShowString(0, 0, "CLICK ");
+    }
+    return 0;
+}
+
+// 任务定义
+Task_T TaskList[MAX_TASK_COUNT] = {
+    { LED1_Task, 400, TASK_DEFAULT_INIT }, // 状态机任务
+    { LED2_Task, 500, TASK_DEFAULT_INIT }, // 周期任务
+    { Key_Task, 20, TASK_DEFAULT_INIT }    // 触发任务
+};
+
+int main(void) {
+    LED_Init();
+    Key_Init();
+    LCD_Init();
+    Timer_Init();
+    Task_Init(TaskList);
+
+    Task_RunOnce(TASK_LED2);
+    LCD_ShowString(0, 0, "NONE");
+
+    while(1) {
+        Task_Loop(); // 调度循环
+    }
+}
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\begin{problemset}
+\item 本章的任务调度器中，定时器中断与主循环各负责什么？为什么“任务函数不能放在中断里执行”？
+\item 任务控制块（TCB）中至少需要保存哪些信息？如果增加“任务优先级”，你会把它放在 TCB 的什么位置？
+\item 按键消抖为什么要用状态机而不是单纯的延时？请画出“松开→按下→长按”的最小状态转移图。
+\item 如果一个任务在中断里被唤醒，而它正在主循环中运行，会不会破坏数据？请结合 \texttt{volatile} 与临界区说明。
+\item 与“轮询扫描所有任务”相比，使用就绪队列的好处是什么？在本章实现中，同一任务被重复置位时靠什么标志避免入队两次？
+\end{problemset}

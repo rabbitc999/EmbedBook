@@ -1,0 +1,818 @@
+\chapter{嵌入式 C 语言基础} \label{ch:embedded-c}
+
+嵌入式开发的核心是 C 语言，而 C 语言的精髓在于它“贴近硬件”：可以直接操作寄存器、按位处理数据、查看内存字节的排列方式。本章整理嵌入式开发最常用、也最容易出错的几块 C 语言基础：数制与码制、位运算、位域、复杂类型声明（类型辨别）、大小端模式以及浮点数的二进制表示。这些知识是后续章节（状态机、任务调度、串口通信、菜单系统）的公共基础，也是阅读单片机寄存器手册和通信协议文档的前提。
+
+\medskip \textbf{本章涉及到的实验内容：}
+\begin{enumerate}
+\item 数制转换与原码、反码和补码；
+\item 位运算与位域（寄存器置位、清零、翻转和判断）；
+\item 联合体的基本使用（共享内存与字节访问）；
+\item 指针与数据类型的内存布局（地址、数组、结构体）；
+\item volatile 与 const 的使用（中断共享变量与只读表）；
+\item 复杂类型声明辨别（指针、数组、函数指针的组合）；
+\item 大小端判断与转换；
+\item IEEE 754 浮点数位运算。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{数制与码制}
+
+% ---------------------------------------------------------------------
+\subsection{常用数制}
+
+计算机内部一切数据都是二进制（0 和 1），为了书写方便，人们常用八进制和十六进制表示。表~\ref{tab:num-system}~列出了四种常用数制的基数与数码。
+
+\begin{table}[htbp]
+\centering \caption{常用数制} \label{tab:num-system}
+    \begin{tabular}{llll}
+        \toprule
+        \textbf{数制} & \textbf{基数} & \textbf{数码} & \textbf{示例} \\
+        \midrule
+        二进制（B）    & 2  & 0、1                     & 1010B \\
+        八进制（O）    & 8  & 0 $\sim$ 7               & 12O \\
+        十进制（D）    & 10 & 0 $\sim$ 9               & 10D \\
+        十六进制（H）  & 16 & 0 $\sim$ 9、A $\sim$ F    & 0x0A \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{anybox}{进制转换要点}
+
+\begin{itemize}
+\item \textbf{二进制 $\rightarrow$ 十六进制}：从低位开始每 4 位一组，直接对应一个十六进制位。例如 \texttt{1010 1101B = 0xAD}；
+\item \textbf{十六进制 $\rightarrow$ 二进制}：每一位十六进制数展开为 4 位二进制。例如 \texttt{0x3F = 0011 1111B}；
+\item \textbf{二进制 $\rightarrow$ 十进制}：各位乘以对应位权（$2^n$）后求和。例如 \texttt{1010B = 8 + 0 + 2 + 0 = 10}；
+\item \textbf{十进制 $\rightarrow$ 二进制}：除 2 取余，倒序排列。
+\end{itemize}
+
+在嵌入式开发中，寄存器地址、协议字段几乎都习惯用十六进制书写，例如 \texttt{GPIOA->CRL = 0x44444444}，因此“二进制 $\leftrightarrow$ 十六进制”的直读能力非常关键。
+
+\end{anybox}
+% ---------------------------------------------------------------------
+\subsection{原码、反码与补码}
+
+计算机中的有符号整数有三种编码方式：原码、反码与补码。
+
+\begin{itemize}
+\item \textbf{原码}：最直观的表示，最高位为符号位（0 正 1 负），其余位表示数值本身。例如 \texttt{+5} 的原码是 \texttt{0000 0101}，\texttt{-5} 的原码是 \texttt{1000 0101}；
+\item \textbf{反码}：正数的反码与原码相同；负数的反码是原码除符号位外全部取反。例如 \texttt{-5} 的反码是 \texttt{1111 1010}；
+\item \textbf{补码}：正数的补码与原码相同；负数的补码是反码加 1。例如 \texttt{-5} 的补码是 \texttt{1111 1011}。
+\end{itemize}
+
+以 8 位有符号数为例，三种编码的对照如表~\ref{tab:code}~所示。
+
+\begin{table}[htbp]
+\centering \caption{8 位有符号数编码对照（以 $\pm 5$ 为例）} \label{tab:code}
+    \begin{tabular}{lccc}
+        \toprule
+        \textbf{十进制} & \textbf{原码} & \textbf{反码} & \textbf{补码} \\
+        \midrule
+        +5 & 0000 0101 & 0000 0101 & 0000 0101 \\
+        -5 & 1000 0101 & 1111 1010 & 1111 1011 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+\begin{anybox}{为什么要用补码}
+
+\begin{enumerate}
+\item 补码把减法统一为加法：\texttt{5 + (-5) = 0}，硬件只需要一个加法器；
+\item 补码中 \texttt{0} 的表示唯一（\texttt{0000 0000}），而原码中 \texttt{+0} 与 \texttt{-0} 并存；
+\item 补码能多表示一个负数：8 位补码范围为 \texttt{-128 $\sim$ +127}，比原码多一个 \texttt{-128}。
+\end{enumerate}
+
+\textbf{补码的快速求法}：对原码从右往左找到第一个 1，这个 1 及其右边的位保持不变，左边各位（除符号位）全部取反。例如 \texttt{-5}：原码 \texttt{1000 0101}，从右往左第一个 1 是第 0 位，保持 \texttt{...01}，左边取反得 \texttt{1111 1011}。
+
+\end{anybox}
+% ---------------------------------------------------------------------
+\section{位运算}
+
+% ---------------------------------------------------------------------
+\subsection{位运算符}
+
+C 语言提供了 6 种位运算符，如表~\ref{tab:bitop}~所示。位运算直接作用于整数的二进制位，是寄存器操作的基础。
+
+\begin{table}[htbp]
+\centering \caption{C 语言位运算符} \label{tab:bitop}
+    \begin{tabular}{cll}
+        \toprule
+        \textbf{运算符} & \textbf{含义} & \textbf{说明} \\
+        \midrule
+        \texttt{\&}  & 按位与 & 两个位都为 1 时结果位为 1 \\
+        \texttt{|}  & 按位或 & 两个位中有一个为 1 时结果位为 1 \\
+        \texttt{\^} & 按位异或 & 两个位不同时结果位为 1 \\
+        \texttt{\~} & 按位取反 & 0 变 1，1 变 0（单目运算） \\
+        \texttt{<<} & 左移 & 左移 n 位，低位补 0，相当于乘 $2^n$ \\
+        \texttt{>>} & 右移 & 右移 n 位，相当于整除 $2^n$ \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------
+\subsection{置位、清位、翻转与判断}
+
+操作寄存器中的某一位（或某几位）而不影响其他位，是嵌入式开发最高频的操作。设有一变量或寄存器 \texttt{REG}，常见操作如下：
+
+\begin{lstlisting}[style=c]
+/* 将位2置1，其他位不变：或运算 */
+REG |= 0x04;            // REG |= 0000 0100B
+
+/* 将位2清0，其他位不变：与运算 + 取反 */
+REG &= ~0x04;           // REG &= 1111 1011B
+
+/* 翻转位3：异或运算 */
+REG ^= 0x08;
+
+/* 判断位4是否为1 */
+if ((REG & 0x10) == 0x10) { ... }
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\subsection{位操作宏}
+
+为了可读性和可维护性，常用宏把位掩码的定义集中起来：
+
+\begin{lstlisting}[style=c]
+#define BIT(x) (0x01UL << (x))   // 定义位掩码：第 x 位为 1
+
+int a = ...;
+
+a &= ~BIT(3);                     // 清变量 a 的第3位
+a |= BIT(2);                      // 置变量 a 的第2位
+if ((a & BIT(4)) == BIT(4)) { ... } // 判断 a 的第4位是否为1
+
+a = (a & 0xF0) | 0x03;            // 清空 a 的低4位后，把低4位置为0x03
+a = a | 0x0F;                     // 把 a 的低4位全部置1
+\end{lstlisting}
+
+\begin{anybox}{经验}
+置位用 \texttt{|=}，清位用 \texttt{\&= \~}，翻转用 \texttt{\^=}，判断用 \texttt{\& ==}。只要记住“或置位、与清零、异或翻转”，绝大多数寄存器操作都不会写错。
+\end{anybox}
+% ---------------------------------------------------------------------
+\section{位域}
+
+位域（Bit Field）用于按位存取场景，例如在一个结构体中紧凑地存放多个状态标志。声明成员时用冒号指定该成员占用的位数：
+
+\begin{lstlisting}[style=c]
+/* 按键状态标志：一个字节存放 8 个标志 */
+typedef struct {
+    unsigned int HOLD   : 1;   /* 按住不放 */
+    unsigned int CLICK  : 1;   /* 单击 */
+    unsigned int DOUBLE : 1;   /* 双击 */
+    unsigned int LONG   : 1;   /* 长按 */
+    unsigned int REPEAT : 1;   /* 重复触发 */
+    unsigned int RESERVED : 3; /* 保留位 */
+} KeyFlag_T;
+\end{lstlisting}
+
+位域的优点是把“位”当作结构体成员来读写，代码直观：
+
+\begin{lstlisting}[style=c]
+KeyFlag_T flag = { 0 };
+flag.CLICK = 1;        /* 直接给位域赋值 */
+if (flag.DOUBLE) { ... }
+\end{lstlisting}
+
+\begin{anybox}{使用位域的注意事项}
+
+\begin{enumerate}
+\item \textbf{可移植性}：位域的位分配顺序（从低位开始还是从高位开始）由编译器或平台决定，与大小端相关，跨平台移植时需要注意；
+    \item \textbf{类型限制}：位域一般使用 \texttt{unsigned int}、\texttt{uint8\_t} 或 \texttt{uint32\_t} 等无符号类型，有符号位域的符号扩展行为由实现定义；
+\item \textbf{内存布局}：相邻位域可能被打包在一个存储单元中，也可能不打包，不能假设结构体大小；
+\item \textbf{适用场景}：位域适合“紧凑存放标志位”；如果需要精确控制每一位（如操作寄存器），位运算（\texttt{\&}、\texttt{|}、\texttt{\^}）更可控、可移植性更好。
+\end{enumerate}
+
+\end{anybox}
+% ---------------------------------------------------------------------
+\section{联合体（union）} \label{sec:union}
+
+联合体（\texttt{union}）的声明语法与结构体非常相似，但内存布局完全不同：结构体（\texttt{struct}）的每个成员占用各自的存储空间，而联合体的所有成员\textbf{共享同一块内存}。联合体的大小由最大的成员决定，同一时刻只有最后一个写入的成员是“有效成员”。
+
+\begin{lstlisting}[style=c]
+/* union：所有成员共享同一块内存 */
+typedef union {
+    uint8_t  byte[4];  /* 按字节访问 */
+    uint32_t word;     /* 按整字访问 */
+} Word_U;
+
+Word_U u;
+u.word = 0x12345678;
+
+printf("sizeof(u) = %d\n", (int)sizeof(u)); /* 结果为 4 */
+printf("0x%02X\n", u.byte[0]); /* 小端输出 0x78，大端输出 0x12 */
+\end{lstlisting}
+
+\begin{anybox}{联合体与结构体的区别}
+
+\begin{itemize}
+\item \textbf{结构体}：成员按顺序依次排列，内存大小约等于各成员大小之和（加上对齐填充），所有成员可以同时有效；
+\item \textbf{联合体}：成员从同一地址开始存放，内存大小约等于最大成员的大小，同一时刻只能按其中一个成员解释数据。
+\end{itemize}
+
+在嵌入式开发中，联合体最常见的用途是把“同一份数据”从不同角度观察：
+
+\begin{enumerate}
+\item \textbf{字节访问}：向 \texttt{uint16\_t} 或 \texttt{uint32\_t} 写入数据后，通过 \texttt{uint8\_t} 数组成员查看各个字节，常用于判断大小端、组包拆包；
+\item \textbf{位域切分}：把浮点数与“符号位、阶码和尾数”位域放在同一个联合体中，可以直接查看 IEEE 754 的 S、E、M；
+\item \textbf{多类型数据复用}：同一块缓冲区在不同时刻存放不同类型的数据（协议解析、参数存储），比反复强制转换更清晰。
+\end{enumerate}
+
+\end{anybox}
+\begin{anybox}{使用注意事项}
+
+\begin{enumerate}
+\item 联合体不能“同时保存”多个成员的值，切换有效成员前应先把旧值保存到变量中；
+\item 通过 \texttt{byte[0]} 读取哪个字节与平台大小端有关，跨平台时不能假设顺序；
+\item 联合体成员存在对齐要求，最大成员可能不是“所有成员大小之和”，计算缓冲区大小时应以 \texttt{sizeof} 为准；
+\item 用联合体做“类型双关”（以另一种类型解释同一段内存）是 C 语言中的常见技巧，但写入一个成员再读另一个成员的行为依赖编译器和平台，需要保证成员类型与内存布局一致。
+\end{enumerate}
+
+\end{anybox}
+% ---------------------------------------------------------------------
+\section{指针与数据类型的内存布局} \label{sec:pointer-memory}
+
+前面的位域、联合体都离不开“内存”，要深入理解指针，就必须先建立“变量 = 地址 + 类型” 的视角。一个变量占用的内存本质上是一段连续字节：类型决定这段字节的\textbf{宽度}（占多少字节）和\textbf{解释方式}（按整数、浮点数还是地址来读）。
+
+% ---------------------------------------------------------------------
+\subsection{数据类型与变量宽度}
+
+同一份 0x12 34 56 78 数据，按 \texttt{uint32\_t} 解释是一个整数，按 4 个 \texttt{uint8\_t} 解释是四个独立字节，按 \texttt{float} 解释则可能是另一个完全不同的数。编译器不会“记住”变量的值，它只按类型生成访问内存的指令。常见类型在 32 位单片机（STM32）上的宽度如表~\ref{tab:type-size}~所示。
+
+\begin{table}[htbp]
+\centering \caption{32 位单片机常用数据类型的内存宽度} \label{tab:type-size}
+    \begin{tabular}{llll}
+        \toprule
+        \textbf{类型} & \textbf{宽度} & \textbf{类型} & \textbf{宽度} \\
+        \midrule
+        \texttt{uint8\_t} 与 \texttt{char} & 1 字节 & \texttt{uint32\_t} 与 \texttt{int} & 4 字节 \\
+        \texttt{uint16\_t} 与 \texttt{short} & 2 字节 & \texttt{float} & 4 字节 \\
+        \texttt{uint64\_t} 与 \texttt{long long} & 8 字节 & \texttt{double} & 8 字节 \\
+        \texttt{指针（任意类型）} & 4 字节 & \texttt{bool} & 1 字节 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+需要注意：类型宽度由编译器与目标平台共同决定，不要凭经验硬编码。代码中应尽量使用 \texttt{stdint.h} 提供的定宽类型（\texttt{uint8\_t}、\texttt{uint16\_t} 与 \texttt{uint32\_t}），并用 \texttt{sizeof} 验证。
+
+% ---------------------------------------------------------------------
+\subsection{地址与指针}
+
+程序中的每个变量都占据内存中的某个起始地址。取地址运算符 \texttt{\&} 得到变量的起始地址，指针变量则专门用于保存这种地址：
+
+\begin{lstlisting}[style=c]
+uint8_t a = 0x12;        /* 普通变量：1 字节 */
+uint8_t *p = &a;         /* 指针变量：保存 a 的地址 */
+
+printf("%p\n", (void *)p); /* 输出 a 的地址，如 0x20000000 */
+printf("0x%02X\n", *p);    /* 解引用：读出该地址上的值 0x12 */
+\end{lstlisting}
+
+从内存分布看，这段代码会形成两条信息：变量 \texttt{a} 在地址 \texttt{0x20000000} 处占 1 字节，值为 \texttt{0x12}；指针 \texttt{p} 自己在另一个地址（如 \texttt{0x20000004}）占 4 字节，它的值是 \texttt{0x20000000}。如图~\ref{fig:pointer-memory}~所示。
+
+\begin{figure}[htbp]
+\centering
+    \begin{tikzpicture}[
+        box/.style={draw=structurecolor, thick, minimum width=3.4cm,
+                    minimum height=0.9cm, align=center, font=\small},
+        lab/.style={font=\small, align=left}
+    ]
+        \node[box] (a) at (0,0) {\texttt{a = 0x12}};
+        \node[lab] at (0,-1.15) {\texttt{地址 0x20000000}\\ 宽度 1 字节};
+
+        \node[box] (p) at (8,0) {\texttt{p = 0x20000000}};
+        \node[lab] at (8,-1.15) {\texttt{地址 0x20000004}\\ 宽度 4 字节};
+
+        \draw[-stealth, thick] (p.west) -- node[above] {\scriptsize 指向 a} (a.east);
+    \end{tikzpicture}
+\caption{变量 \texttt{a} 与指针 \texttt{p} 在内存中的关系} \label{fig:pointer-memory}
+\end{figure}
+
+\begin{anybox}{指针的关键点}
+
+\begin{enumerate}
+\item \textbf{指针本身也是变量}：它占用内存、有自己的地址，只是它的“值”恰好是另一个地址；
+\item \textbf{指针类型决定步长与解释宽度}：\texttt{uint8\_t*} 指向 1 字节， \texttt{uint32\_t*} 指向 4 字节。\texttt{p + 1} 不是地址加 1，而是跳过 \texttt{sizeof(*p)} 个字节；
+\item \textbf{解引用（\texttt{*}）}：按指针所指向的类型读取与写入目标地址上的数据；
+\item \textbf{空指针与野指针}：指针必须初始化，不指向有效对象时置 \texttt{NULL}，解引用前先判断 \texttt{p != NULL}。
+\end{enumerate}
+
+\end{anybox}
+% ---------------------------------------------------------------------
+\subsection{数组：连续内存的“同类型变量集合”}
+
+数组在内存中是一段\textbf{连续}的同类型元素，元素之间没有间隙（结构体则可能有对齐填充）。以 \texttt{int arr[4] = \{10, 20, 30, 40\};} 为例，在 32 位平台上每个元素占 4 字节，四个元素紧挨着存放：
+
+\begin{lstlisting}[style=c]
+printf("arr   = %p\n", (void *)arr);    /* 首元素地址，等价于 &arr[0] */
+printf("arr+1 = %p\n", (void *)(arr+1));/* 地址比 arr 大 4 字节 */
+printf("%d\n", arr[2]);                  /* 等价于 *(arr + 2) */
+\end{lstlisting}
+
+\begin{figure}[htbp]
+\centering
+    \begin{tikzpicture}[
+        cell/.style={draw=structurecolor, thick, minimum width=2.1cm,
+                     minimum height=0.8cm, font=\ttfamily},
+        lab/.style={font=\small}
+    ]
+        \node[cell] (c0) at (0,0)   {10};
+        \node[cell] (c1) at (2.3,0) {20};
+        \node[cell] (c2) at (4.6,0) {30};
+        \node[cell] (c3) at (6.9,0) {40};
+        \node[lab] at (0,-0.8)   {arr[0]};
+        \node[lab] at (2.3,-0.8) {arr[1]};
+        \node[lab] at (4.6,-0.8) {arr[2]};
+        \node[lab] at (6.9,-0.8) {arr[3]};
+        \node[lab] at (0,-1.6)   {\scriptsize +0};
+        \node[lab] at (2.3,-1.6) {\scriptsize +4};
+        \node[lab] at (4.6,-1.6) {\scriptsize +8};
+        \node[lab] at (6.9,-1.6) {\scriptsize +12};
+    \end{tikzpicture}
+\caption{\texttt{int arr[4]} 在内存中的连续分布} \label{fig:array-memory}
+\end{figure}
+
+数组名在多数表达式中会“退化”为首元素地址，因此 \texttt{arr} 与 \texttt{\&arr[0]} 的值相同，但 \texttt{arr} 的类型仍然是 \texttt{int[4]}，不要把它和“指向 4 个元素的数组指针”混淆。多维数组（如 \texttt{int m[2][3]}）按行优先存放，即先存完第一行的 3 个元素，再存第二行，访问 \texttt{m[1][2]} 等价于 \texttt{*(*(m + 1) + 2)}。
+
+% ---------------------------------------------------------------------
+\subsection{结构体：带对齐填充的内存布局}
+
+结构体成员按声明顺序存放，但编译器会在成员之间插入\textbf{对齐填充（padding）}，让每个成员的地址满足平台对齐要求。例如：
+
+\begin{lstlisting}[style=c]
+typedef struct {
+    uint8_t  c;   /* 1 字节 */
+    uint32_t v;   /* 4 字节，要求 4 字节对齐 */
+} S1;
+
+printf("%d\n", (int)sizeof(S1)); /* 通常是 8，而不是 5 */
+\end{lstlisting}
+
+\texttt{c} 占 1 字节后，编译器会在后面填充 3 个字节，让 \texttt{v} 从 4 字节对齐的地址开始，所以整个结构体占 8 字节。若想减少浪费，可以把宽成员排在前面：
+
+\begin{lstlisting}[style=c]
+typedef struct {
+    uint32_t v;
+    uint8_t  c;
+} S2;   /* 同样是 4 + 1 + 3 填充，但多数编译器下仍为 8 */
+\end{lstlisting}
+
+注意：不同编译器、不同优化选项下的填充策略可能不同，凡是涉及协议帧、Flash 存储、通信缓冲区的结构体，都不能假设“成员刚好挨着”，应使用 \texttt{\_\_packed}（或按字节手动组包）并用 \texttt{sizeof} 验证。
+
+% ---------------------------------------------------------------------
+\subsection{代码、RAM 与指针}
+
+从嵌入式开发的角度看，程序的内存主要分为几类区域：
+
+\begin{itemize}
+\item \textbf{Flash 代码区}：存放指令与 \texttt{const} 常量，函数指针的值通常指向这里；
+\item \textbf{RAM 全局区}：存放全局变量、\texttt{static} 变量，程序启动时初始化（\texttt{.data} 与 \texttt{.bss}）；
+\item \textbf{栈（Stack）}：存放局部变量、函数调用现场，地址从高向低增长，大小由启动文件配置；
+\item \textbf{堆（Heap）}：由 \texttt{malloc} 与 \texttt{free} 管理，单片机中应谨慎使用，避免碎片。
+\end{itemize}
+
+指针并不能区分“我指向 Flash 还是 RAM”，它只是保存一个地址。能否读写取决于该地址是否真的映射了可访问的存储器，这也是嵌入式里常见“硬件错误或死机”的来源：对空指针解引用、访问越界数组、把常量区当变量写，最终都会落到“对一个非法地址做读写”上。因此，学习指针时养成两个习惯：先确认“变量住在哪”，再确认“指针指向哪”。
+
+% ---------------------------------------------------------------------
+\section{volatile 与 const} \label{sec:volatile-const}
+
+% ---------------------------------------------------------------------
+\subsection{volatile：告诉编译器“值会意外变化”}
+
+编译器为了性能，经常把变量的值缓存在寄存器中，而不是每次访问都重新读内存。对普通变量这没有影响，但对以下三类数据是致命的：
+
+\begin{itemize}
+\item \textbf{中断服务函数（ISR）与主循环共享的变量}：主循环中的变量可能被中断“偷偷” 修改；
+\item \textbf{硬件寄存器}：寄存器的值由外设自动变化，例如串口状态寄存器、标志位；
+\item \textbf{DMA 搬运的缓冲区}：数据由 DMA 控制器写入，CPU 并不知情。
+\end{itemize}
+
+\texttt{volatile} 的作用就是告诉编译器：这个变量的值可能在当前代码流之外发生变化，因此不要自作主张优化，每次访问都老老实实从内存读取与写入。典型例子：
+
+\begin{lstlisting}[style=c]
+/* 中断中置 1，主循环中检测并清 0 */
+static volatile uint8_t led1Flag = 0;
+
+int main(void)
+{
+    while (1) {
+        if (led1Flag != 0) {   /* 每次都从内存读，不能缓存到寄存器 */
+            LED1_Turn();
+            led1Flag = 0;
+        }
+    }
+}
+
+/* 1ms 定时器中断 */
+void TIM6_IRQHandler(void)
+{
+    led1Flag = 1;
+}
+\end{lstlisting}
+
+如果去掉 \texttt{volatile}，编译器完全可能把 \texttt{led1Flag != 0} 优化成“只读一次”，主循环永远看不到中断置位的标志，这是嵌入式开发中最隐蔽、也最经典的 Bug 之一。
+
+\begin{anybox}{使用 volatile 的注意事项}
+
+\begin{enumerate}
+\item \texttt{volatile} 不是原子操作修饰符：它保证“每次访问都从内存读写”，但不能保证 32 位变量的读写不被中断打断，也不能替代临界区保护；
+\item \texttt{volatile} 不是内存屏障：它不阻止编译器或 CPU 对相邻访问重排，多核或需要严格顺序时应使用专门的同步机制；
+\item 不要滥用：只有“当前代码流之外会修改它”的变量才需要，普通局部变量加了反而降低性能；
+\item STM32 标准外设库中的 \texttt{\_\_IO} 就是 \texttt{volatile} 的宏定义，读外设寄存器时不可省略。
+\end{enumerate}
+
+\end{anybox}
+% ---------------------------------------------------------------------
+\subsection{const：告诉编译器“这个值不应被修改”}
+
+\texttt{const} 表示“本变量在声明它的作用域内不应被修改”。对于全局 \texttt{const} 数组或表（例如字库、协议表、查表数据），链接器通常会把它们放入 Flash 或 ROM；更重要的是，它能让编译器检查出误写，帮助阅读者明确“这是只读数据”。
+
+\begin{lstlisting}[style=c]
+const uint8_t g_ledTable[4] = { 1, 2, 4, 8 };  /* 只读查表 */
+
+/* 函数承诺不修改 buf 指向的数据 */
+uint8_t Crc_Calc(const uint8_t *buf, uint16_t len);
+\end{lstlisting}
+
+const 与指针组合时有三种常见写法，应从右往左读：
+
+\begin{itemize}
+\item \texttt{const uint8\_t *p;}：\texttt{p} 指向的数据是 const，不能通过 \texttt{*p} 修改；
+\item \texttt{uint8\_t * const p;}：\texttt{p} 本身是 const，不能再指向别处；
+\item \texttt{const uint8\_t * const p;}：指针和它指向的数据都只读。
+\end{itemize}
+
+% ---------------------------------------------------------------------
+\subsection{const volatile：硬件只读寄存器的正确写法}
+
+有些变量同时具有“软件只读”和“硬件会改”两个特点，例如串口状态寄存器、ADC 转换完成标志。软件不能写它，但它的值会由外设随时改变。只加 \texttt{const} 会让编译器认为“永远不变”，只加 \texttt{volatile} 又允许误写，因此需要二者结合：
+
+\begin{lstlisting}[style=c]
+/* 硬件只读状态寄存器：软件不可写，但外设会自动改变 */
+const volatile uint32_t *pStatusReg = (volatile uint32_t *)0x40000000;
+
+/* CMSIS 风格：__I 定义为 const volatile */
+/* __IO 定义为 volatile，表示软件可读写的寄存器 */
+\end{lstlisting}
+
+在标准外设库中，外设结构体成员常用 \texttt{\_\_IO}（\texttt{volatile}）与 \texttt{\_\_I}（\texttt{const volatile}）声明，就是为了表达“这个地址由硬件维护，软件访问时不能优化、也不允许误写”。
+
+% ---------------------------------------------------------------------
+\section{函数指针} \label{sec:func-pointer}
+
+函数指针是 C 语言中一种强大而灵活的特性。它允许程序将函数的地址存储在指针变量中，从而能够通过指针来调用函数。这使得函数可以作为参数传递给其他函数，是实现回调、多态和模块化设计的关键技术。
+
+% ---------------------------------------------------------------------
+\subsection{声明与基本使用}
+
+函数指针的声明需要明确其指向函数的返回类型和参数列表。其通用语法如下：
+
+\begin{lstlisting}[style=c]
+	返回类型 (*指针名称)(参数列表);
+\end{lstlisting}
+
+例如，声明一个指向“接受两个 int 参数并返回一个 int 值”的函数的指针：
+
+\begin{lstlisting}[style=c]
+	int (*function_pointer)(int, int);
+\end{lstlisting}
+
+这里的括号 \texttt{()} 至关重要。它将 \texttt{*} 和 \texttt{function\_pointer} 结合，表明 \texttt{function\_pointer} 是一个指针。如果省略括号，写成 \texttt{int *function\_pointer(int, int);}，则声明的是一个返回 \texttt{int*}（整型指针）的函数，而非函数指针。
+
+% ---------------------------------------------------------------------
+\subsection{赋值与调用}
+
+将一个函数的地址赋给函数指针时，可以直接使用函数名，也可以使用取地址运算符 \texttt{\&}，两者效果相同。通过指针调用函数时，其语法与普通函数调用完全一样。下面是一个完整的示例：
+
+\begin{lstlisting}[style=c]
+	#include <stdio.h>
+	
+	// 一个用于比较两个整数大小的函数
+	int max(int x, int y) {
+		return x > y ? x : y;
+	}
+	
+	int main(void) {
+		// 声明并初始化函数指针 p，使其指向 max 函数
+		// p = max; 和 p = &max; 是等价的
+		int (*p)(int, int) = max;
+		int a = 5, b = 10;
+		
+		// 通过函数指针 p 调用 max 函数
+		int result = p(a, b);
+		printf("最大值是：%d\n", result); // 输出: 最大值是：10
+		
+		return 0;
+	}
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\subsection{使用 typedef 简化声明}
+
+由于函数指针的声明语法较为复杂，通常使用 \texttt{typedef} 为其创建一个类型别名，以提高代码的可读性和可维护性。例如，我们可以为上述函数指针类型定义一个别名 \texttt{Operation}：
+
+\begin{lstlisting}[style=c]
+	typedef int (*Operation)(int, int);
+\end{lstlisting}
+
+之后，就可以使用 \texttt{Operation} 这个类型名来声明变量了，代码会变得非常清晰：
+
+\begin{lstlisting}[style=c]
+	Operation op1, op2; // 声明了两个函数指针变量
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\subsection{应用场景：作为函数参数}
+
+函数指针最常见的用途是作为其他函数的参数，这使得被调用的函数可以动态地执行不同的操作，极大地增强了代码的灵活性。
+
+下面的例子定义了一个 \texttt{calculate} 函数，它接受两个整数和一个操作函数（通过函数指针传递），然后执行该操作。
+
+\begin{lstlisting}[style=c]
+	#include <stdio.h>
+	
+	// 定义操作函数类型别名
+	typedef int (*Operation)(int, int);
+	
+	// 几个具体的操作函数
+	int add(int a, int b) { return a + b; }
+	int sub(int a, int b) { return a - b; }
+	int max(int a, int b) { return a > b ? a : b; }
+	
+	// 一个通用的计算函数，它接受一个操作函数作为参数
+	int calculate(int a, int b, Operation op) {
+		printf("执行计算...\n");
+		return op(a, b);
+	}
+	
+	int main(void) {
+		int x = 20, y = 10;
+		
+		// 使用不同的操作函数调用 calculate
+		printf("%d + %d = %d\n\n", x, y, calculate(x, y, add));
+		printf("%d - %d = %d\n\n", x, y, calculate(x, y, sub));
+		printf("max(%d, %d) = %d\n\n", x, y, calculate(x, y, max));
+		
+		return 0;
+	}
+\end{lstlisting}
+
+在这个例子中，\texttt{calculate} 函数的核心逻辑是固定的（调用传入的操作），但具体执行什么计算（加法、减法或求最大值）则完全由调用者通过传入不同的函数指针来决定。这正是函数指针威力的体现。
+% ---------------------------------------------------------------------
+\section{复杂类型声明与类型辨别}
+
+上一节从内存角度说明了指针、数组与结构体。C 语言的类型声明还可以组合指针、数组、函数指针等，非常灵活但也容易混淆。辨别复杂声明的通用方法是\textbf{逆时针法则（Clockwise，也称 Spiral Rule）}：从变量名开始，逆时针螺旋阅读声明，先看离变量名最近的部分，再看外层。
+
+\begin{lstlisting}[style=c]
+int *a[8];                      /* a 是数组，8个元素，每个元素是 int* 指针 */
+int (*a)[8];                    /* a 是指针，指向 int[8] 数组 */
+int *(*a[8])[4];                /* a 是数组，8个元素，每个元素是指向 int*[4] 的指针 */
+
+int (*function_pointer[6])(int, int);       /* 函数指针数组：6个函数指针 */
+int *(*function_pointer[6])(int, int);      /* 函数指针数组：返回 int* 的函数指针 */
+float *(*(*(a[8])))(int, char);             /* a 是数组，元素是返回 float* 的函数指针 */
+float *(a[8])[2];                           /* a 是数组，8个元素，每个是 float*[2] 数组 */
+\end{lstlisting}
+
+\begin{anybox}{阅读要点}
+\begin{enumerate}
+\item \textbf{先变量名，再向内}：\texttt{*a[8]} 中变量名是 \texttt{a}，先遇到 \texttt{[8]}（数组），再遇到 \texttt{*}（指针），所以 \texttt{a} 是“含 8 个指针的数组”，而不是“指向数组的指针”；
+\item \textbf{括号改变结合顺序}：\texttt{(*a)[8]} 中 \texttt{a} 先与 \texttt{*} 结合（指针），再与 \texttt{[8]} 结合，所以 \texttt{a} 是“指向含 8 个元素数组的指针”；
+\item \textbf{函数指针}：\texttt{int (*fp)(int, int)} 中 \texttt{fp} 是指针，指向“接受两个 int 返回 int 的函数”；没有括号的 \texttt{int *fp(int, int)} 则是“返回 \texttt{int*} 的函数”。函数指针的详细使用见第~\ref{sec:func-pointer}~节。
+\end{enumerate}
+\end{anybox}
+
+\begin{table}[htbp]
+\centering \caption{常见复杂声明对照} \label{tab:decl}
+    \begin{tabular}{ll}
+        \toprule
+        \textbf{声明} & \textbf{含义} \\
+        \midrule
+        \texttt{int *a[8]} & 指针数组：8 个 \texttt{int*} 元素 \\
+        \texttt{int (*a)[8]} & 数组指针：指向 \texttt{int[8]} 数组 \\
+        \texttt{int *f(int)} & 函数：参数 \texttt{int}，返回 \texttt{int*} \\
+        \texttt{int (*f)(int)} & 函数指针：指向“参数 \texttt{int}、返回 \texttt{int}”的函数 \\
+        \texttt{int (*f[6])(int, int)} & 函数指针数组：6 个函数指针 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+% ---------------------------------------------------------------------
+\section{大小端模式}
+
+% ---------------------------------------------------------------------
+\subsection{大端与小端的定义}
+
+多字节数据（如 \texttt{uint16\_t}、\texttt{uint32\_t}）在内存中按字节存放时，字节的排列顺序有两种：
+
+\begin{itemize}
+\item \textbf{大端模式（Big-Endian）}：数据的高位字节存放在内存的低地址端，低位字节存放在高地址端。读取多字节数据时最先读到的是最高位字节，符号位位置固定，判断正负简单；
+\item \textbf{小端模式（Little-Endian）}：数据的低位字节存放在内存的低地址端，高位字节存放在高地址端。读取时最先读到最低位字节，进行类型强制转换时不需要调整字节内容，编程更简便。
+\end{itemize}
+
+以 \texttt{0x1234} 存放到地址 \texttt{0x00} 为例，两种模式的布局如图~\ref{fig:endian}~所示。
+
+\begin{figure}[htbp]
+\centering
+    \begin{tikzpicture}[
+        cell/.style={draw=structurecolor, thick, minimum size=1.0cm, align=center, font=\ttfamily},
+        lab/.style={font=\small}
+    ]
+        \node[cell] (a0) at (0,1.2) {0x12};
+        \node[cell] (a1) at (1.4,1.2) {0x34};
+        \node[cell] (b0) at (0,-1.2) {0x34};
+        \node[cell] (b1) at (1.4,-1.2) {0x12};
+        \node[lab] at (-1.3,1.2) {低地址};
+        \node[lab] at (2.7,1.2) {高地址};
+        \node[lab] at (0.7,2.1) {大端模式};
+        \node[lab] at (0.7,-2.1) {小端模式};
+        \node[lab] at (1.4,1.8) {\scriptsize 高位在前};
+        \node[lab] at (1.4,-1.8) {\scriptsize 低位在前};
+    \end{tikzpicture}
+\caption{\texttt{0x1234} 在大端与小端模式下的内存布局} \label{fig:endian}
+\end{figure}
+
+常见的平台中：x86、ARM 默认小端；51 单片机、网络字节序（TCP/IP）为大端。
+
+% ---------------------------------------------------------------------
+\subsection{判断大小端}
+
+判断当前平台的大小端有两种常用方法：联合体法和指针法。联合体的共享内存特性已在第~\ref{sec:union}~节介绍，这里直接使用：
+
+\begin{lstlisting}[style=c]
+/* 方法1：联合体法（union 成员共享内存） */
+#include <stdint.h>
+#include <stdio.h>
+
+int main(void)
+{
+    union {
+        uint16_t hw16;   /* 半字：16位 */
+        uint8_t  b8[2];  /* 按字节访问 */
+    } un;
+
+    un.hw16 = 0x0102;
+
+    if (un.b8[0] == 1 && un.b8[1] == 2) {
+        printf("大端模式\n");
+    } else if (un.b8[0] == 2 && un.b8[1] == 1) {
+        printf("小端模式\n");
+    } else {
+        printf("未知\n");
+    }
+    return 0;
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=c]
+/* 方法2：指针法（把 uint16_t* 强转为 uint8_t* 访问首字节） */
+int main(void)
+{
+    uint16_t Number = 0x0102;
+    uint8_t N_L = ((uint8_t *)&Number)[0];
+    uint8_t N_H = ((uint8_t *)&Number)[1];
+
+    if (N_L == 1 && N_H == 2) {
+        printf("大端模式\n");
+    } else if (N_L == 2 && N_H == 1) {
+        printf("小端模式\n");
+    } else {
+        printf("未知\n");
+    }
+    return 0;
+}
+\end{lstlisting}
+
+运行结果：Windows 与 ARM 平台为小端模式；51 单片机为大端模式。
+
+% ---------------------------------------------------------------------
+\subsection{大小端转换}
+
+当单片机与大端设备（如网络）通信时，需要把数据转换为统一的字节序。16 位和 32 位数据的字节交换代码如下：
+
+\begin{lstlisting}[style=c]
+/* 16位大小端转换：高低字节互换 */
+uint16_t Swap16(uint16_t m)
+{
+    return (uint16_t)((m >> 8) | (m << 8));
+}
+
+/* 32位大小端转换：4个字节逆序 */
+uint32_t Swap32(uint32_t m)
+{
+    return ((m & 0xFF000000) >> 24)
+         | ((m & 0x00FF0000) >> 8)
+         | ((m & 0x0000FF00) << 8)
+         | ((m & 0x000000FF) << 24);
+}
+\end{lstlisting}
+
+\begin{anybox}{字节序}
+发送数据前应明确“上位机与单片机采用什么字节序”，并固定一种格式（协议中通常约定为大端，即网络字节序），否则双方解析出的数据会不一致。
+\end{anybox}
+
+% ---------------------------------------------------------------------
+\section{浮点数的表示与位运算}
+
+% ---------------------------------------------------------------------
+\subsection{IEEE 754 浮点格式}
+
+IEEE 754 标准规定了浮点数在机器中的二进制表示。\texttt{float} 单精度浮点数共 32 位：1 位符号（S）+ 8 位指数（E）+ 23 位尾数（M）；\texttt{double} 双精度共 64 位：1 位符号（S）+ 11 位指数（E）+ 52 位尾数（M），如表~\ref{tab:ieee}~所示。
+
+\begin{table}[htbp]
+\centering \caption{IEEE 754 浮点格式} \label{tab:ieee}
+    \begin{tabular}{lccc}
+        \toprule
+        \textbf{类型} & \textbf{符号 S} & \textbf{阶码 E} & \textbf{尾数 M} \\
+        \midrule
+        \texttt{float}  & 1 位 & 8 位  & 23 位 \\
+        \texttt{double} & 1 位 & 11 位 & 52 位 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+数值的规格化表示形式为：
+
+\begin{center}
+$\text{数值} = (-1)^{S} \times 1.M \times 2^{E - 偏移量}$
+\end{center}
+
+其中尾数 \texttt{M} 是小数部分（整数部分的 1 隐含不存），阶码 \texttt{E} 采用\textbf{移码}（增码）存储：\texttt{float} 的偏移量为 127，\texttt{double} 的偏移量为 1023。移码是对真值补码的符号位取反，引入的目的是便于浮点数运算时的对阶操作——阶码越大，数值的指数越大，比较阶码即可比较数值大小。
+
+% ---------------------------------------------------------------------
+\subsection{用联合体查看 S、E、M}
+
+借助第~\ref{sec:union}~节介绍的联合体技巧，可以逐位查看浮点数的 S、E、M：
+
+\begin{lstlisting}[style=c]
+/* 显示 IEEE754 详细信息 */
+void ShowFloatIEEE754(float x)
+{
+    union {
+        float Number;
+        struct {
+            uint32_t M : 23;   /* 尾数 */
+            uint32_t E : 8;    /* 阶码 */
+            uint32_t S : 1;    /* 符号 */
+        } Pack;
+    } Current = { .Number = x };
+
+    printf("S="); ShowBin(Current.Pack.S, 1);
+    printf(", E="); ShowBin(Current.Pack.E, 8);
+    printf(", M=1."); ShowBin(Current.Pack.M, 23);
+    putchar('\n');
+}
+
+/* 显示 double 的 IEEE754 详细信息 */
+void ShowDoubleIEEE754(double x)
+{
+    union {
+        double Number;
+        struct {
+            uint64_t M : 52;
+            uint64_t E : 11;
+            uint64_t S : 1;
+        } Pack;
+    } Current = { .Number = x };
+
+    printf("S="); ShowBin(Current.Pack.S, 1);
+    printf(", E="); ShowBin(Current.Pack.E, 11);
+    printf(", M=1."); ShowBin(Current.Pack.M, 52);
+    putchar('\n');
+}
+\end{lstlisting}
+
+其中 \texttt{ShowBin} 把数值按位打印为 0 与 1 字符串（可用第 0.2 节的位运算实现）。注意结构体位域的顺序（M、E、S 从低位到高位）与大小端相关，跨平台查看时要注意。
+
+% ---------------------------------------------------------------------
+\subsection{为什么 0.1 + 0.2 不等于 0.3}
+
+十进制小数 \texttt{0.1} 写成二进制是无限循环小数（\texttt{0.0001100110011...}），而 \texttt{float} 尾数只有 23 位，无法精确表示，只能近似存储。\texttt{0.2} 同样如此。两个近似值相加后再与近似值 \texttt{0.3} 比较，自然不相等：
+
+\begin{lstlisting}[style=c]
+printf("%.20f\n", 0.1 + 0.2);   /* 输出 0.30000000000000004441 */
+printf("%d\n", (0.1 + 0.2) == 0.3);  /* 输出 0（不相等） */
+\end{lstlisting}
+
+\begin{anybox}{工程经验}
+
+\begin{enumerate}
+\item 浮点数比较不要直接使用 \texttt{==}，应比较差值是否小于一个很小的阈值（\texttt{fabs(a - b) < 1e-6}）；
+\item 需要精确计算的场合（如金额、计费）应使用定点数（整数 + 比例因子）；
+\item 在单片机上尽量少用 \texttt{double}（无硬件浮点单元时开销很大），需要高精度时用定点数替代。
+\end{enumerate}
+
+\end{anybox}
+% ---------------------------------------------------------------------
+\section{小结}
+
+本章整理了嵌入式 C 语言最基础也最常用的知识：数制与原码、反码和补码是理解数据存储的前提；位运算与位域是操作寄存器、状态标志的基本功；复杂类型声明与类型辨别是读懂源码的关键；大小端模式与浮点数位运算是通信协议、数据解析中踩坑最多的地方。掌握这些基础后，就可以顺利进入第~\ref{ch:scheduler-and-state-machine}~章，学习任务调度与状态机编程。
+
+
+% ---------------------------------------------------------------------
+\begin{problemset}
+\item 将十进制数 173 分别转换为二进制、八进制和十六进制，并用补码写出 \texttt{-5} 在 8 位整数中的表示。
+\item 寄存器 \texttt{REG} 的第 3 位是使能位，请写出“只置位第 3 位、不影响其他位”和“只清零第 3 位”的 C 语句。
+\item 位域与 \texttt{union} 都能把多个“小字段”压缩在同一个变量中，二者的适用场景有什么不同？什么时候应该优先使用位域？
+\item 已知 \texttt{uint32\_t a = 0x12345678;}，请画出大端与小端两种内存布局，并说明判断当前平台大小端的方法。
+\item 函数指针与普通指针有什么本质区别？请写出一个“用结构体封装两个函数指针，再通过函数指针分派不同行为”的最小示例。
+\item \texttt{volatile} 能阻止编译器优化访问，但它不能解决什么问题？请举一个需要“内存屏障或临界区”的并发访问例子。
+\end{problemset}

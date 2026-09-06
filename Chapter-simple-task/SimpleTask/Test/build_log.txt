@@ -1,0 +1,22 @@
+﻿cl.exe : 用于 x64 的 Microsoft (R) C/C++ 优化编译器 19.44.35228 版
+所在位置 C:\Users\rabbitc\AppData\Local\Temp\rebuild.ps1:4 字符: 1
++ & "C:/Program Files/Microsoft Visual Studio/2022/Enterprise/VC/Tools/ ...
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (用于 x64 的 Micros...器 19.44.35228 版 
+   :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+版权所有(C) Microsoft Corporation。保留所有权利。
+
+simple_task.c
+simple_task.c(512): warning C4244: “初始化”: 从“__int64”转换到“uint16_t”，可能丢失数据
+simple_task.c(822): warning C4244: “初始化”: 从“TaskTick_T”转换到“uint32_t”，可能丢失数据
+simple_task.c(859): warning C4244: “初始化”: 从“TaskTick_T”转换到“uint32_t”，可能丢失数据
+test_simple_task.c
+正在生成代码...
+Microsoft (R) Incremental Linker Version 14.44.35228.0
+Copyright (C) Microsoft Corporation.  All rights reserved.
+
+/out:Test\test_simple_task.exe 
+Test\simple_task.obj 
+Test\test_simple_task.obj 

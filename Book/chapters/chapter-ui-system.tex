@@ -1,0 +1,776 @@
+\chapter{单片机用户界面} \label{ch:menu-system}
+
+人机交互是嵌入式系统的重要环节。对于带显示屏和按键的单片机设备，菜单是最直观、最常用的交互形式。然而在单片机环境下实现菜单系统面临三个典型困难：其一，使用 \texttt{malloc} 与 \texttt{free} 动态分配内存会产生碎片，长期运行后可能耗尽内存；其二，C++ 的面向对象特性在部分编译环境下不够稳定，且很多单片机工程师只使用 C；其三，LVGL 等大型 GUI 库功能强大但代码量大、学习曲线陡峭，不适合资源有限的新手项目。第~\ref{ch:oop-in-c}~章介绍了用 C 语言实现面向对象特性的方法，本章的菜单系统正是这些方法的一个完整应用。
+
+本章介绍的菜单系统采用“纯 C + 静态创建 + 缓冲区分配”的方案解决上述痛点，并通过函数指针在 C 语言中模拟“类与继承”，实现了跳转、退出、函数、数值修改、单选、多选等 6 类菜单项。项目同时在 PC 上使用 Win32 API（GDI）做了仿真，可以在电脑上先调试菜单逻辑，再移植到单片机。
+
+\medskip \textbf{本章涉及到的实验内容：}
+\begin{enumerate}
+\item 菜单系统基础实验（菜单与菜单项的静态创建）；
+\item 六类菜单项实验（跳转、退出、函数、数值、单选和多选）；
+\item 数值修改模式实验（整数和浮点数、多级步进）；
+\item 菜单系统 PC 仿真实验（Win32 API 窗口模拟 LCD）；
+\item 单片机代码移植实验。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{设计思想}
+
+% ---------------------------------------------------------------------
+\subsection{文件架构}
+
+菜单系统按职责分为三个文件（加上硬件移植层），如图~\ref{fig:menu-arch}~所示。
+
+\begin{figure}[htbp]
+\centering
+    \begin{tikzpicture}[
+        box/.style={draw=structurecolor, thick, rounded corners=2pt, align=center,
+                    fill=structurecolor!8, minimum width=9.5cm, minimum height=0.85cm,
+                    font=\small},
+        arrow/.style={-stealth, thick}
+    ]
+        \node[box] (user) at (0,3.1) {menu\_user.c / menu\_user.h（用户创建菜单、主界面函数）};
+        \node[box] (core) at (0,1.5) {menu.c / menu.h（菜单核心：创建、按键、显示、回调）};
+        \node[box] (port) at (0,0)   {menu\_port.c / menu\_port.h（硬件接口：LCD、按键）};
+        \node[box, minimum width=5.5cm] (hw)   at (-5,-1.5){硬件：LCD 液晶 / 矩阵键盘};
+
+        \node[box, fill=second!8, draw=second] (sim) at (5,-1.5)
+            {PC 仿真：win32\_sim.cpp（Win32 窗口模拟 LCD）、win\_main.c（主循环）};
+
+        \draw[arrow] (user) -- (core);
+        \draw[arrow] (core) -- (port);
+        \draw[arrow] (port) -- (hw);
+        \draw[arrow] (port) -- (sim);
+    \end{tikzpicture}
+\caption{菜单系统文件架构} \label{fig:menu-arch}
+\end{figure}
+
+各文件职责：
+
+\begin{itemize}
+\item \textbf{menu\_port}：定义菜单系统与硬件的接口（清屏、显示字符串、按键扫描等），移植时只需要修改这个文件；
+\item \textbf{menu}：菜单系统的核心，负责菜单项的创建、菜单栈管理、按键分发与界面刷新；
+\item \textbf{menu\_user}：用户代码，通过菜单 API 构建自己的菜单树，并编写主界面与功能界面；
+\item \textbf{win32\_sim.cpp 与 win\_main.c}：PC 仿真层，用 Win32 API 窗口模拟 LCD，用键盘模拟按键，让菜单逻辑先在电脑上跑通。
+\end{itemize}
+
+% ---------------------------------------------------------------------
+\subsection{用 C 模拟“类”}
+
+菜单项千变万化（跳转项、数值项、单选、多选……），但它们的“行为”是统一的：绘制、进入、退出、修改。因此菜单系统借鉴面向对象思想，把每个菜单项看作一个“对象”，用函数指针表（相当于虚函数表）描述它的行为，用联合体（\texttt{union}）存放不同菜单项特有的数据。
+
+\begin{lstlisting}[style=c]
+// 菜单函数事件
+typedef void (*UI_FuncEvent)(UI_MenuItem* sender, int16\_t inputKey);
+typedef void (*UI_Event)(UI_MenuItem* sender);
+
+struct _UI_MenuItem                  // 所有菜单项目的类
+{
+    const char* ItemTitle;           // 选项标题字符串
+    UI_Menu* BaseMenu;               // 基于的父菜单
+
+    UI_FuncEvent DrawDetail;         // 绘制该项的详情
+    UI_FuncEvent Change;             // 修改事件
+    UI_Event Enter;                  // 进入事件
+    UI_Event Exit;                   // 退出事件
+
+    union _ChildUnion
+    {
+        UI_Menu* Jump;               // 需要跳转的菜单
+        UI_FuncEvent Func;           // 需要进入的函数
+        uint32_t* BindPtr;           // 菜单变量绑定
+
+        struct _ValueItem
+        {
+            uint32_t* BindPtr;       // 菜单变量绑定
+            uint32_t Min;            // 修改下限
+            uint32_t Max;            // 修改上限
+            UI_MenuChangeValueType Type; // 变量修改类型
+        } Value;
+        struct _ChooseItem
+        {
+            uint32_t* BindPtr;       // 菜单变量绑定
+            int32_t Establish;       // 选择成立值
+        } Choose;
+    } Union;
+};
+\end{lstlisting}
+
+其中 \texttt{DrawDetail}、\texttt{Change}、\texttt{Enter} 与 \texttt{Exit} 四个函数指针就是“虚函数”：创建不同类型的菜单项时，只需要把对应的回调函数赋给这四个指针，调度器在运行时就只关心这四个接口，不需要关心菜单项的具体类型。
+
+% ---------------------------------------------------------------------
+\section{核心数据结构}
+
+% ---------------------------------------------------------------------
+\subsection{菜单与菜单项链表}
+
+菜单（\texttt{UI\_Menu}）持有它的项目列表，项目列表用双向链表组织，便于上下移动；所有菜单又通过单向链表 \texttt{UI\_MenuListNode} 串成一个菜单列表。
+
+\begin{lstlisting}[style=c]
+struct _UI_MenuItemListNode           // 项目链表节点（双向）
+{
+    UI_MenuItem* Item;                // 当前项目
+    UI_MenuItemListNode* pNext;       // 下一个项目
+    UI_MenuItemListNode* pPrev;       // 上一个项目
+    uint16_t Index;                   // 菜单所在的索引
+};
+
+struct _UI_Menu                       // 菜单
+{
+    const char* MenuTitle;            // 菜单标题
+    UI_MenuItemListNode* MenuItemList;// 菜单项目列表
+    UI_Driver* BaseUI;                // 基于的父界面
+
+    UI_MenuItemListNode* StartItemNode;  // 列表开始显示的项目节点
+    UI_MenuItemListNode* SelectItemNode; // 当前选中的项目节点
+
+    uint16_t ItemCount;               // 项目个数
+    uint16_t CurrentIndex;            // 当前项目索引
+};
+
+struct _UI_MenuListNode               // 菜单链表节点（单向）
+{
+    UI_Menu* Item;                    // 当前菜单
+    UI_MenuListNode* pNext;           // 下一个菜单
+};
+\end{lstlisting}
+
+\texttt{StartItemNode} 与 \texttt{SelectItemNode} 分别指向“当前屏幕第一行显示的项目”和“当前选中项目”，当项目总数超过屏幕显示行数时，选中光标移动会带动起始项目一起滚动，实现菜单翻页效果。
+
+% ---------------------------------------------------------------------
+\subsection{UI 驱动器}
+
+\texttt{UI\_Driver} 是整个菜单系统的“总控制台”，包含菜单缓冲区、菜单栈和运行标志。
+
+\begin{lstlisting}[style=c]
+struct _UI_Driver                    // UI驱动器
+{
+    uint16_t MenuBufferTop;          // 菜单缓冲区已使用大小
+    uint8_t MenuCount;               // 菜单数目
+    uint8_t StackTop;                // 菜单栈顶
+    uint8_t UpdateAllFlag;           // 全部刷新标志
+    uint8_t UpdateValueFlag;         // 数值刷新标志
+    uint8_t ValueFlag;               // 数值修改模式标志
+    uint8_t FunctionRunFlag;         // 执行函数标志
+    uint8_t LastFunctionRunFlag;     // 上次执行函数标志
+    uint8_t ChangeUnit;              // 修改单位
+
+    UI_FuncEvent MainUI;             // 主界面的函数
+    UI_FuncEvent RunningFun;         // 正在运行的函数
+
+    UI_MenuListNode* MenuList;       // 菜单列表（第0个为初始调用菜单）
+    UI_Menu* MenuStack[UI_MENU_STACK_SIZE]; // 菜单栈
+    uint8_t MenuBuffer[UI_MENU_BUFFER_SIZE]; // 菜单缓冲区
+};
+\end{lstlisting}
+
+其中 \texttt{MenuStack} 是实现多级菜单的关键：进入子菜单时压栈，返回上一级时出栈； \texttt{MenuBuffer} 是 4KB 的静态缓冲区，所有菜单和菜单项都从这里分配，全程不依赖 \texttt{malloc}。
+
+% ---------------------------------------------------------------------
+\subsection{按键定义}
+
+菜单系统定义了 6 个按键，如表~\ref{tab:menu-key}~所示（PC 仿真时直接映射到键盘）。
+
+\begin{table}[htbp]
+\centering \caption{菜单按键定义} \label{tab:menu-key}
+    \begin{tabular}{cll}
+        \toprule
+        \textbf{宏} & \textbf{键值} & \textbf{功能} \\
+        \midrule
+        \texttt{UI\_KEY\_ENTER}    & Q & 进入或确认 \\
+        \texttt{UI\_KEY\_EXIT}     & A & 退出或返回 \\
+        \texttt{UI\_KEY\_ITEM\_UP} & W & 菜单项上移（或在修改模式切换单位） \\
+        \texttt{UI\_KEY\_ITEM\_DOWN}& S & 菜单项下移（或在修改模式切换单位） \\
+        \texttt{UI\_KEY\_VAL\_UP}   & E & 数值修改 +1 \\
+        \texttt{UI\_KEY\_VAL\_DOWN} & D & 数值修改 -1 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+% ---------------------------------------------------------------------
+\section{菜单的静态创建机制}
+
+% ---------------------------------------------------------------------
+\subsection{缓冲区分配器：UI\_BufferMalloc}
+
+不使用 \texttt{malloc} 的原因在章首已经说明。菜单系统在 \texttt{UI\_Driver} 内预置了一块 4KB 静态缓冲区，所有菜单、菜单项、链表节点都从这块缓冲区顺序分配：
+
+\begin{lstlisting}[style=c]
+static void* UI_BufferMalloc(UI_Driver* pDirver, uint32_t size)
+{
+    // 判断分配空间是否溢出
+    if (pDirver->MenuBufferTop + size > UI_MENU_BUFFER_SIZE) { return NULL; }
+    // 分配新的空间并字节自增
+    void* alloc = (void*)(pDirver->MenuBuffer + pDirver->MenuBufferTop);
+    pDirver->MenuBufferTop += size;
+    // 返回分配空间的首地址
+    return alloc;
+}
+\end{lstlisting}
+
+这种“顺序分配、永不释放”的分配器简单可靠：菜单结构在初始化阶段一次性创建完毕，之后不会再动态分配，因此不存在碎片问题；缓冲区大小由 \texttt{UI\_MENU\_BUFFER\_SIZE} 配置，初始化后可通过 \texttt{printf("缓存已使用\%d字节", MainUI.MenuBufferTop)} 观察实际使用量，从而确定缓冲区是否够用。
+
+% ---------------------------------------------------------------------
+\subsection{菜单与菜单项的添加}
+
+\texttt{UI\_AddMenu} 负责创建菜单并挂到菜单列表尾部，\texttt{UI\_AddMenuItem} 负责把菜单项挂到指定菜单的项目链表尾部。以添加“跳转项”为例：
+
+\begin{lstlisting}[style=c]
+void UI_MenuAddJumpItem(UI_Menu* pMenu, const char* itemTitle, UI_Menu* jumpMenu)
+{
+    // 1. 分配空间
+    UI_Driver* pDirver = pMenu->BaseUI;
+    UI_MenuItem* newItem = (UI_MenuItem*)UI_BufferMalloc(pDirver, sizeof(UI_MenuItem));
+    assert(newItem != NULL);
+    // 2. 赋值相关信息
+    newItem->ItemTitle = itemTitle;
+    newItem->BaseMenu = pMenu;                   // 基于的菜单
+    newItem->DrawDetail = UI_JumpItemDrawDetail; // 绘制函数
+    newItem->Enter = UI_JumpItemEnter;           // 进入函数
+    newItem->Exit = UI_BaseItemExit;             // 退出函数
+    newItem->Change = UI_BaseItemChange;         // 修改函数
+    newItem->Union.Jump = jumpMenu;              // 跳转目标菜单
+    // 3. 添加到菜单
+    UI_AddMenuItem(pMenu, (UI_MenuItem*)newItem);
+}
+\end{lstlisting}
+
+可以看到，创建不同类型菜单项的代码结构完全一致：分配空间、绑定四个行为函数、填写联合体中的特有数据、挂入链表。这就是“工厂方法”的朴素实现。
+
+% ---------------------------------------------------------------------
+\subsection{六类菜单项}
+
+系统共支持 6 类菜单项，如表~\ref{tab:menu-item}~所示。
+
+\begin{table}[htbp]
+\centering \caption{菜单项类型一览} \label{tab:menu-item}
+    \begin{tabular}{lll}
+        \toprule
+        \textbf{类型} & \textbf{创建函数} & \textbf{行为} \\
+        \midrule
+        跳转项 & \texttt{UI\_MenuAddJumpItem}  & 进入后跳转到指定子菜单 \\
+        退出项 & \texttt{UI\_MenuAddExitItem}  & 返回上一级菜单（或主界面） \\
+        函数项 & \texttt{UI\_MenuAddFuncItem}  & 进入后运行指定函数界面 \\
+        数值项 & \texttt{UI\_MenuAddValueItem\_Int} 与 \texttt{UI\_MenuAddValueItem\_Float} & 修改绑定的 int 与 float 变量 \\
+        单选项目 & \texttt{UI\_MenuAddChooseItem} & 选中时把绑定变量置为指定值 \\
+        多选项目 & \texttt{UI\_MenuAddSelectItem} & 在 ENABLE 与 DISABLE 之间切换 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+数值项是最常用的菜单项。进入数值项后系统进入“修改模式”，此时 \texttt{UI\_ValueItemChange} 按当前步进单位修改绑定变量，并限幅在 \texttt{Min~$\sim$~Max} 之间：
+
+\begin{lstlisting}[style=c]
+void UI_ValueItemChange(UI_MenuItem* pthis, int16_t delta)
+{
+    UI_Menu* pMenu = pthis->BaseMenu;
+    UI_Driver* pDirver = pMenu->BaseUI;
+
+    if (pDirver->ValueFlag == DISABLE) {
+        // 若没有开启修改模式，先开启修改模式
+        pDirver->ValueFlag = ENABLE;
+        UI_ShowMode(pDirver);
+        return;
+    }
+
+    // 根据不同的值类型进行修改
+    switch (pthis->Union.Value.Type) {
+    case UI_TYPE_INT: {
+        int32_t* bindValPtr = UI_TypeTranPtr(pthis->Union.Value.BindPtr, int32_t);
+        int32_t changeMin = UI_TypeTran(pthis->Union.Value.Min, int32_t);
+        int32_t changeMax = UI_TypeTran(pthis->Union.Value.Max, int32_t);
+        *bindValPtr = UI_LimitB(*bindValPtr + (int32_t)round(UI_GetUnit(pDirver) * delta),
+                                changeMin, changeMax);
+        break;
+    }
+    case UI_TYPE_FLOAT: {
+        float* bindValPtr = UI_TypeTranPtr(pthis->Union.Value.BindPtr, float);
+        float changeMin = UI_TypeTran(pthis->Union.Value.Min, float);
+        float changeMax = UI_TypeTran(pthis->Union.Value.Max, float);
+        *bindValPtr = UI_LimitA(*bindValPtr + UI_GetUnit(pDirver) * delta,
+                                changeMin, changeMax);
+        break;
+    }
+    }
+
+    UI_ValueItemDrawDetail(pthis, pMenu->CurrentIndex + 1);
+}
+\end{lstlisting}
+
+浮点数支持 4 档步进单位（见表~\ref{tab:menu-unit}），整数支持 2 档，在修改模式下再次按 “进入”键即可切换单位，便于快速调节到目标值。
+
+\begin{table}[htbp]
+\centering \caption{数值修改单位与步进值} \label{tab:menu-unit}
+    \begin{tabular}{llll}
+        \toprule
+        \textbf{单位} & \textbf{显示} & \textbf{步进值} & \textbf{适用类型} \\
+        \midrule
+        \texttt{UI\_UNIT\_MA} & \texttt{<01.00F} & 1.00  & int 与 float \\
+        \texttt{UI\_UNIT\_MB} & \texttt{<10.00F} & 10.00 & int 与 float \\
+        \texttt{UI\_UNIT\_MC} & \texttt{<00.10F} & 0.10  & float \\
+        \texttt{UI\_UNIT\_MD} & \texttt{<00.01F} & 0.01  & float \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+% ---------------------------------------------------------------------
+\section{菜单运行机制}
+
+% ---------------------------------------------------------------------
+\subsection{初始化与主循环}
+
+使用菜单系统时，用户只需要在初始化阶段调用 \texttt{UI\_Init}，在主循环中不断调用 \texttt{UI\_While}：
+
+\begin{lstlisting}[style=c]
+int main(void)
+{
+    UI_Init();          // 硬件初始化 + 菜单创建
+
+    while (1)
+    {
+        UI_FlushFlag = ENABLE;  // 置刷新标志位
+        UI_While();             // 菜单运行
+        Sleep(10);              // 控制帧率（单片机可改为短延时）
+    }
+}
+\end{lstlisting}
+
+\texttt{UI\_Init} 内部完成四步：硬件初始化、读取保存的变量、初始化驱动器（\texttt{UI\_StartInit}）、创建菜单树（\texttt{UI\_AddMenu} 等）、结束初始化（\texttt{UI\_EndInit}）。
+
+\begin{lstlisting}[style=c]
+void UI_Init(void)
+{
+    UI_HardwareInit();      // 1. LCD 等硬件初始化
+    UI_Read();              // 2. 从EEPROM等存储读取变量
+    UI_StartInit(&MainUI, UI_Main); // 3. 初始化驱动器
+
+    // 4. 创建菜单树（见 3.6 节示例）
+    UI_Menu* Menu_Root = UI_AddMenu(&MainUI, "主菜单");
+    UI_Menu* Menu_Setting = UI_AddMenu(&MainUI, "数据设置");
+    // ... 添加各类菜单项 ...
+
+    UI_EndInit(&MainUI);    // 5. 结束初始化，进入主界面
+
+    printf("缓存已使用%d字节！\n", MainUI.MenuBufferTop);
+}
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\subsection{菜单栈与界面切换}
+
+菜单系统使用“菜单栈”管理界面层级。进入子菜单（跳转项）时把新菜单压栈，返回上一级（退出项）时出栈，栈空时回到主界面函数。
+
+\begin{lstlisting}[style=c]
+// 跳转项：进入子菜单
+void UI_JumpItemEnter(UI_MenuItem* pthis)
+{
+    UI_Driver* pDirver = pthis->BaseMenu->BaseUI;
+    UI_Menu* newMenu = pthis->Union.Jump;
+    // 设置初始选项
+    newMenu->StartItemNode = newMenu->MenuItemList;
+    newMenu->SelectItemNode = newMenu->MenuItemList;
+    // 赋值到菜单栈
+    pDirver->MenuStack[pDirver->StackTop++] = newMenu;
+    pDirver->UpdateAllFlag = ENABLE; // 要求整屏刷新
+}
+
+// 退出项：返回上一级
+void UI_BaseItemExit(UI_MenuItem* pthis)
+{
+    UI_Driver* pDirver = pthis->BaseMenu->BaseUI;
+    if (pDirver->StackTop == 0) return;   // 栈空则忽略
+
+    pDirver->StackTop--;                  // 出栈
+    pDirver->UpdateAllFlag = ENABLE;
+
+    if (pDirver->StackTop == 0)
+    {
+        UI_Clear();
+        pDirver->RunningFun = pDirver->MainUI; // 回到主界面
+        pDirver->FunctionRunFlag = ENABLE;
+    }
+}
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\subsection{按键处理：UI\_KeyPress}
+
+\texttt{UI\_KeyPress} 是菜单运行的“大脑”。它先通过 \texttt{UI\_KeyScan} 检查是否有按键，然后按“进入、退出、数值修改、项目移动”的优先级分发按键事件：
+
+\begin{lstlisting}[style=c]
+static void UI_KeyPress(UI_Driver* pDirver)
+{
+    UI_Menu* currentMenu = pDirver->MenuStack[pDirver->StackTop - 1];
+    UI_MenuItem* selectItem = currentMenu->SelectItemNode->Item;
+
+    if (UI_KeyScan())   // 有按键
+    {
+        int8_t item = UI_GetKeyEvent(UI_MENU_EVENT_ITEM);
+        int8_t value = UI_GetKeyEvent(UI_MENU_EVENT_VALUE);
+
+        // 1. 进入
+        if (UI_GetKeyEvent(UI_MENU_EVENT_ENTER) == ENABLE) {
+            selectItem->Enter(selectItem);
+        }
+        // 2. 退出
+        else if (UI_GetKeyEvent(UI_MENU_EVENT_EXIT) == ENABLE) {
+            selectItem->Exit(selectItem);
+        }
+        // 3. 数值修改
+        else if (value != 0) {
+            if (UI_IsChangeMode(pDirver))
+                selectItem->Change(selectItem, value);
+        }
+        // 4. 项目移动
+        else {
+            // ... 在项目链表上前后移动 SelectItemNode，
+            //     超过屏幕范围时带动 StartItemNode 一起滚动 ...
+            UI_ShowChooseList(currentMenu);   // 刷新选中光标
+        }
+    }
+}
+\end{lstlisting}
+
+按键事件本身由移植层通过 \texttt{UI\_GetKeyEvent} 归一化为四类：进入、退出、项目偏移、数值偏移，菜单核心不需要关心具体按键的硬件细节。
+
+% ---------------------------------------------------------------------
+\subsection{显示刷新：UI\_ShowItems}
+
+\texttt{UI\_ShowItems} 负责把当前菜单绘制到屏幕上：第一行显示菜单标题（含模式与单位），其余行从 \texttt{StartItemNode} 开始逐个调用菜单项的 \texttt{DrawDetail} 绘制。
+
+\begin{lstlisting}[style=c]
+static void UI_ShowItems(UI_Driver* pDirver)
+{
+    if (pDirver->StackTop == 0) { return; }
+    UI_Menu* currentMenu = pDirver->MenuStack[pDirver->StackTop - 1];
+    UI_MenuItem* selectItem = currentMenu->SelectItemNode->Item;
+
+    if (pDirver->UpdateAllFlag == ENABLE || pDirver->UpdateValueFlag == ENABLE)
+    {
+        UI_MenuItemListNode* currentItemNode = currentMenu->StartItemNode;
+
+        if (pDirver->UpdateAllFlag == ENABLE)
+        {
+            UI_Clear();
+            UI_ShowChooseList(currentMenu);   // 绘制选中光标
+            UI_ShowTitle(pDirver, currentMenu); // 绘制标题行
+        }
+
+        for (uint16_t line = 1; line < UI_MAX_CHAR_LINE && currentItemNode != NULL; line++)
+        {
+            currentItemNode->Item->DrawDetail(currentItemNode->Item, line);
+            if (pDirver->UpdateAllFlag == ENABLE) { UI_DrawTitle(currentItemNode->Item, line); }
+            currentItemNode = currentItemNode->pNext;
+        }
+        pDirver->UpdateAllFlag = DISABLE;
+        pDirver->UpdateValueFlag = DISABLE;
+    }
+}
+\end{lstlisting}
+
+只有当 \texttt{UpdateAllFlag}（整屏刷新）或 \texttt{UpdateValueFlag}（数值刷新）置位时才真正重绘，平时直接跳过，从而避免频繁操作 LCD 导致闪烁。
+
+% ---------------------------------------------------------------------
+\section{移植接口}
+
+把菜单系统移植到单片机上，只需要实现 \texttt{menu\_port.c} 中的接口，见表~\ref{tab:menu-port}~。
+
+\begin{table}[htbp]
+\centering \caption{菜单系统移植接口} \label{tab:menu-port}
+    \begin{tabular}{lll}
+        \toprule
+        \textbf{接口} & \textbf{功能} & \textbf{说明} \\
+        \midrule
+        \texttt{UI\_HardwareInit()} & 硬件初始化 & 初始化 LCD、按键等 \\
+        \texttt{UI\_Clear()}        & 清屏 & 调用 LCD 清屏函数 \\
+        \texttt{UI\_ShowString(x,y,str)} & 显示字符串 & 调 LCD 字符串显示 \\
+        \texttt{UI\_KeyScan()}      & 按键扫描 & 有键按下返回 ENABLE \\
+        \texttt{UI\_GetKeyValue()}  & 获取键值 & 返回当前按键码 \\
+        \texttt{UI\_GetKeyEvent(ev)}& 归一化事件 & 映射为进入、退出、移动和修改 \\
+        \texttt{UI\_Read()} 与 \texttt{UI\_Save(val)} & 变量读写 & EEPROM 保存菜单参数 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+以按键接口为例，移植层只需把物理按键归一化为菜单系统的事件：
+
+\begin{lstlisting}[style=c]
+int8_t UI_GetKeyEvent(MenuEvent menuEvent)
+{
+    switch (menuEvent) {
+    case UI_MENU_EVENT_ENTER:   // 进入事件
+        if (Key_GetNum() == UI_KEY_ENTER) { Key_Clear(); return ENABLE; }
+        return DISABLE;
+    case UI_MENU_EVENT_EXIT:    // 退出事件
+        if (Key_GetNum() == UI_KEY_EXIT) { Key_Clear(); return ENABLE; }
+        return DISABLE;
+    case UI_MENU_EVENT_ITEM:    // 项目移动
+        if (Key_GetNum() == UI_KEY_ITEM_DOWN) { Key_Clear(); return 1; }
+        if (Key_GetNum() == UI_KEY_ITEM_UP)   { Key_Clear(); return -1; }
+        return 0;
+    case UI_MENU_EVENT_VALUE:   // 数值修改
+        if (Key_GetNum() == UI_KEY_VAL_UP)   { Key_Clear(); return 1; }
+        if (Key_GetNum() == UI_KEY_VAL_DOWN) { Key_Clear(); return -1; }
+        return 0;
+    }
+    return DISABLE;
+}
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\section{用户菜单创建示例}
+
+以项目自带的 \texttt{menu\_user.c} 为例，一个包含“数据设置、单选、多选、函数项目”的完整菜单树如图~\ref{fig:menu-tree}~所示。
+
+\begin{figure}[htbp]
+\centering
+    \begin{tikzpicture}[
+        box/.style={draw=structurecolor, thick, rounded corners=2pt, align=center,
+                    fill=structurecolor!8, font=\small, inner sep=3pt},
+        arrow/.style={-stealth, thick}
+    ]
+        \node[box] (root) at (0,0) {主菜单};
+        \node[box] (set)  at (-5.2,-1.8) {数据设置};
+        \node[box] (radio) at (-1.8,-1.8) {单选按钮};
+        \node[box] (check) at (1.8,-1.8) {多选按钮};
+        \node[box] (func) at (5.2,-1.8) {函数项目};
+
+        \node[box, fill=second!8, draw=second] (set2) at (-5.2,-3.8) {整数变量 A\\浮点数 B};
+        \node[box, fill=second!8, draw=second] (radio2) at (-1.8,-3.8) {选项0~9};
+        \node[box, fill=second!8, draw=second] (check2) at (1.8,-3.8) {选项0~9};
+        \node[box, fill=second!8, draw=second] (func2) at (5.2,-3.8) {智能车图像\\陀螺仪解算};
+
+        \draw[arrow] (root) -- (set);
+        \draw[arrow] (root) -- (radio);
+        \draw[arrow] (root) -- (check);
+        \draw[arrow] (root) -- (func);
+        \draw[arrow] (set) -- (set2);
+        \draw[arrow] (radio) -- (radio2);
+        \draw[arrow] (check) -- (check2);
+        \draw[arrow] (func) -- (func2);
+    \end{tikzpicture}
+\caption{示例菜单结构} \label{fig:menu-tree}
+\end{figure}
+
+创建这段菜单树的代码非常直观，每类菜单项一行即可：
+
+\begin{lstlisting}[style=c]
+int32_t A = 0;      // 绑定的整数变量
+float  B = 0;       // 绑定的浮点变量
+int32_t Radio = 0;  // 单选绑定变量
+int32_t Check[10] = { 0 }; // 多选绑定数组
+
+void UI_Init(void)
+{
+    UI_HardwareInit();
+    UI_Read();
+    UI_StartInit(&MainUI, UI_Main);
+
+    /* 创建菜单 */
+    UI_Menu* Menu_Root     = UI_AddMenu(&MainUI, "主菜单");
+    UI_Menu* Menu_Setting  = UI_AddMenu(&MainUI, "数据设置");
+    UI_Menu* Menu_RadioBox = UI_AddMenu(&MainUI, "单选按钮");
+    UI_Menu* Menu_CheckBox = UI_AddMenu(&MainUI, "多选按钮");
+    UI_Menu* Menu_Function = UI_AddMenu(&MainUI, "函数项目");
+
+    /* 主菜单：退出 + 4个跳转项 */
+    UI_MenuAddExitItem(Menu_Root, "返回上一级");
+    UI_MenuAddJumpItem(Menu_Root, "数据设置", Menu_Setting);
+    UI_MenuAddJumpItem(Menu_Root, "单选按钮", Menu_RadioBox);
+    UI_MenuAddJumpItem(Menu_Root, "多选按钮", Menu_CheckBox);
+    UI_MenuAddJumpItem(Menu_Root, "函数项目", Menu_Function);
+
+    /* 数据设置：整数变量 + 浮点数变量 */
+    UI_MenuAddExitItem(Menu_Setting, "返回上一级");
+    UI_MenuAddValueItem_Int(Menu_Setting, "整数变量", &A, 0, 100);
+    UI_MenuAddValueItem_Float(Menu_Setting, "浮点数变量", &B, 0, 100);
+
+    /* 单选按钮：10个选项 */
+    UI_MenuAddExitItem(Menu_RadioBox, "返回上一级");
+    for (int i = 0; i < 10; i++) {
+        UI_MenuAddChooseItem(Menu_RadioBox, "选项%d", &Radio, i);
+    }
+
+    /* 多选按钮：10个开关 */
+    UI_MenuAddExitItem(Menu_CheckBox, "返回上一级");
+    for (int i = 0; i < 10; i++) {
+        UI_MenuAddSelectItem(Menu_CheckBox, "选项%d", &Check[i]);
+    }
+
+    /* 函数项目 */
+    UI_MenuAddExitItem(Menu_Function, "返回上一级");
+    UI_MenuAddFuncItem(Menu_Function, "智能车图像", UI_Image);
+    UI_MenuAddFuncItem(Menu_Function, "陀螺仪解算", UI_MPU);
+
+    UI_EndInit(&MainUI);
+}
+\end{lstlisting}
+
+主界面函数 \texttt{UI\_Main} 与功能界面函数（\texttt{UI\_Image}、\texttt{UI\_MPU}）使用相同的签名：\texttt{void func(UI\_MenuItem* sender, int16\_t inputKey)}。系统进入功能界面后会把按键逐个传给该函数，函数内部按 \texttt{inputKey} 决定行为；按下退出键时调用 \texttt{UI\_StopRunFunc} 结束功能界面，返回菜单模式。
+
+% ---------------------------------------------------------------------
+\section{页面跳转框架}
+
+菜单系统里的“菜单栈”能管理父子界面，但栈会带来“返回路径不可变”的限制：一个页面只能沿进入顺序原路返回。对于主页、菜单页、曲线页这类平级页面，更简单的做法是\textbf{不用栈，用显式跳转}：谁想进入下一个页面，就由谁直接调用跳转函数。
+
+\subsection{页面导航数据结构}
+
+\begin{lstlisting}[style=c]
+typedef void (*UI_PageEntry_T)(void *param);
+
+typedef struct {
+    UI_PageEntry_T currentPage;  /* 当前页面入口函数 */
+    void *currentParam;          /* 当前页面参数 */
+} UI_Navigator_T;
+
+static UI_Navigator_T s_Navigator = { 0 };
+\end{lstlisting}
+
+\texttt{currentPage} 保存当前页面函数指针，\texttt{currentParam} 保存进入页面时传入的参数。页面切换本质上只是“把这两个成员替换成新页面，并调用新页面入口”。
+
+\subsection{页面跳转 API}
+
+\begin{lstlisting}[style=c]
+void GUI_JumpPage(UI_PageEntry_T page, void *param)
+{
+    s_Navigator.currentPage = page;
+    s_Navigator.currentParam = param;
+
+    page(param);   /* 立即进入新页面 */
+}
+
+void GUI_ReturnPage(void *param)
+{
+    /* 返回由调用方显式指定，例如回到主页面 */
+    GUI_JumpPage(GUI_HomePage, param);
+}
+\end{lstlisting}
+
+如果需要在跳转前执行旧页面的退出动作，可在 \texttt{GUI\_JumpPage} 中先调用 \texttt{currentPage->Exit} 或保存退出回调；最小框架中省略退出步骤。
+
+\subsection{使用示例：主页 → 菜单页 → 曲线页}
+
+下面三个页面均为普通函数，页面之间的跳转关系由代码显式写出：
+
+\begin{lstlisting}[style=c]
+void GUI_HomePage(void *param)
+{
+    /* 绘制主页 */
+    if (Key_IsAction(KEY_ENTER)) {
+        GUI_JumpPage(GUI_MenuPage, NULL);   /* 主页进入菜单页 */
+    }
+}
+
+void GUI_MenuPage(void *param)
+{
+    /* 绘制菜单页 */
+    if (Key_IsAction(KEY_DOWN)) {
+        GUI_JumpPage(GUI_CurvePage, NULL);  /* 菜单页进入曲线页 */
+    }
+    if (Key_IsAction(KEY_MODE)) {
+        GUI_JumpPage(GUI_HomePage, NULL);   /* 显式返回主页 */
+    }
+}
+
+void GUI_CurvePage(void *param)
+{
+    /* 绘制曲线页 */
+    if (Key_IsAction(KEY_MODE)) {
+        GUI_JumpPage(GUI_MenuPage, NULL);   /* 显式返回菜单页 */
+    }
+}
+\end{lstlisting}
+
+每个页面都不依赖“上一个页面是谁”，因此可以自由组成主页→菜单页→曲线页、曲线页→主页等任意跳转路径。
+
+\subsection{栈式导航与显式跳转对比}
+
+\begin{table}[htbp]
+\centering \caption{菜单栈式导航与显式页面跳转的对比} \label{tab:nav-stack-vs-explicit}
+    \begin{tabular}{lll}
+        \toprule
+        \textbf{对比项} & \textbf{菜单栈导航} & \textbf{显式页面跳转} \\
+        \midrule
+        返回方式 & 只能按入栈顺序返回 & 可在任意页面指定目标 \\
+        页面关系 & 父子层级固定 & 平级页面自由跳转 \\
+        数据结构 & 需要页面栈与深度限制 & 只需要当前页面指针 \\
+        适合场景 & 层级菜单、设置向导 & 主页与功能页切换 \\
+        缺点 & 无法“跨级跳转” & 返回路径需要每页自己写 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+一句话总结：\textbf{页面是状态，跳转是有向边。}把页面看成节点，显式跳转就是在状态图上沿着“有向边”移动；相比维护一个“只能往回走”的栈，显式跳转更适合菜单与自定义页面、曲线页面之间的自由切换。
+
+% ---------------------------------------------------------------------
+\section{PC 仿真实现}
+
+为了让菜单逻辑不依赖真实硬件即可调试，项目用 Win32 API（GDI）在 PC 上做了仿真：
+
+\begin{itemize}
+\item \textbf{win32\_sim.cpp}：用 \texttt{CreateWindow} 创建一个 240$\times$300 的窗口模拟 LCD，把 \texttt{LCD\_Init}、\texttt{LCD\_Clear} 与 \texttt{LCD\_ShowString} 映射为 Win32 GDI 绘图函数；
+\item \textbf{按键映射}：用 \texttt{GetKeyState} 检测键盘上的 Q、A、W、S、E 和 D，映射为 6 个菜单按键；
+\item \textbf{主循环}：创建窗口并进入消息循环，以 10ms 为周期调用 \texttt{UI\_While()}。
+\end{itemize}
+
+页面跳转框架的\textbf{独立 PC 仿真}位于 \texttt{Chapter-ui-system/页面跳转PC仿真/}，它在独立窗口中演示主页、菜单页和曲线页跳转，并额外提供 \texttt{LCD\_DrawPoint} 与 \texttt{LCD\_ShowRGB565Image} 绘制接口。
+
+\begin{lstlisting}[style=c]
+// win32_sim.cpp：LCD 接口的 Win32 API 实现（对接 hardware.h）
+static HWND s_hWnd = NULL;
+static HDC  s_hdc = NULL;
+
+extern "C" void LCD_Init(void)
+{
+    /* 由本文件的 WinMain 创建窗口，这里只保存窗口 DC 与字体 */
+    s_hdc = GetDC(s_hWnd);
+    SetBkMode(s_hdc, TRANSPARENT);
+    SetTextColor(s_hdc, RGB(0, 0, 0));
+    SelectObject(s_hdc, CreateFontA(UI_CHAR_SIZE_HEIGHT, 0,
+                 0, 0, FW_NORMAL, 0, 0, 0,
+                 DEFAULT_CHARSET, 0, 0, CLEARTYPE_QUALITY, 0, "宋体"));
+}
+
+extern "C" void LCD_Clear(void)
+{
+    RECT rect = { 0, 0, UI_SIZE_WIDTH, UI_SIZE_HEIGHT };
+    FillRect(s_hdc, &rect, (HBRUSH)GetStockObject(WHITE_BRUSH));
+}
+
+extern "C" void LCD_ShowString(uint16_t x, uint16_t y, const char *str)
+{
+    int length = (int)strlen(str);
+    RECT rect = {
+        x, y,
+        x + length * UI_CHAR_SIZE_WIDTH,
+        y + UI_CHAR_SIZE_HEIGHT
+    };
+
+    /* 先填充字符区域，避免旧字符残留造成文字重叠 */
+    FillRect(s_hdc, &rect, (HBRUSH)GetStockObject(WHITE_BRUSH));
+    TextOutA(s_hdc, x, y, str, length);
+}
+\end{lstlisting}
+
+仿真时菜单核心（\texttt{menu.c} 与 \texttt{menu.h}）与真实硬件上的代码完全一致，只有移植层（\texttt{menu\_port}）被替换为 Win32 API 实现，相当于在 PC 上用 WinAPI“对接”了 HAL 层。因此 PC 上验证通过的菜单逻辑可以直接搬到单片机
+
+\begin{anybox}{PC 仿真一致性}
+PC 仿真里的 \texttt{LCD\_ShowString} 也应先填充字符区域再绘制文字，否则滚动或局部刷新时会出现与真实 LCD 相同的字符残影。
+\end{anybox}，真正做到“一次编写，两端复用”。
+
+% ---------------------------------------------------------------------
+\section{单片机代码移植实现}
+
+\begin{figure}[htbp]
+\centering
+    % TODO: 在此插入第6章菜单系统移植实测截图
+\caption{第6章实验记录图（待补充）} \label{fig:ch6-placeholder}
+\end{figure}
+
+% ---------------------------------------------------------------------
+\begin{problemset}
+\item 菜单项用联合体复用“跳转/函数/数值/单选/多选”数据时，靠哪个字段判断当前应读取哪一成员？
+\item 在静态内存池上创建菜单树有什么好处？如果不小心超出 \texttt{UI\_MENU\_BUFFER\_SIZE}，应该如何处理？
+\item “页面栈导航”与“显式页面跳转”分别适合什么场景？画出主页→菜单页→曲线页两种导航方式的区别。
+\item 绘制文字前为什么要先“填充一块背景区域”？直接逐字符叠加显示会发生什么问题？
+\item PC 仿真器把 \texttt{LCD\_DrawPoint}、\texttt{LCD\_ShowRGB565Image} 映射为 Win32 API，这种“移植层隔离”的价值是什么？
+\end{problemset}

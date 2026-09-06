@@ -1,0 +1,132 @@
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+
+# Executables
+*.out
+*.app
+
+# LaTeX build files
+*.aux
+*.log
+*.toc
+*.out
+*.synctex.gz
+*.bcf
+*.run.xml
+*.fls
+*.fdb_latexmk
+*.acn
+*.acr
+*.alg
+*.bbl
+*.blg
+*.glg
+*.glo
+*.gls
+*.ist
+*.lof
+*.lot
+*.maf
+*.mtc
+*.mtc1
+*.nlg
+*.nlo
+*.slg
+*.slo
+*.stg
+*.stt
+*.xdy
+*.pdf
+*.tdo
+
+# Generated files
+*.dvi
+*.ps
+
+# Editor and IDE files
+*.swp
+*~
+.#*
+*.bak
+*.backup
+*.sav
+*.tmproj
+*.tmproj.*
+*.sublime-workspace
+*.sublime-project
+
+# Keil
+*.uvguix.*
+JLinkLog.txt
+*.lst
+*.map
+DebugConfig/
+
+# User File
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build Result
+[Dd]ebug/
+[Rr]elease/
+[Rr]elease/
+Listings/
+Objects/
+x64/
+x86/
+[Bb]in/
+[Oo]bj/
+
+# Visual Studio Cache & Setting
+.vs/
+.vscode/
+FolderProfile.pubxml
+
+# Test Result
+[Tt]est[Rr]esult*/
+[Bb]uild[Ll]og.*
+
+# NuGet
+*.nupkg
+**/packages/*
+!**/packages/build/
+
+# Time File
+*.tmp
+*.log
+*.mdf
+*.ldf
+*.bak
+~$*.doc
+~$*.docx
+~$*.xls
+~$*.xlsx
+
+# Windows File
+Thumbs.db

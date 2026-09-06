@@ -1,0 +1,69 @@
+% !Mode:: "TeX:UTF-8"
+\documentclass[cn,ctexfont,fancy,newtx]{colorful}
+
+\usepackage{tabularx}
+
+\newif\ifrelease
+% 正式发布时取消下面一行的注释，并将另一行注释掉：
+\releasetrue
+% 非正式版本（草稿/预览）使用下面一行：
+% \releasefalse
+
+% ------------------------- 文档信息 -------------------------
+\title{单片机高级编程理论及实现}
+\author{最爱小兔糖糖}
+
+\ifrelease
+\date{2025 年 11 月 28 日}
+\institute{安徽新华学院}
+\subtitle{安徽新华学院培训教程，使用\LaTeX{}编写}
+\extrainfo{本文所有代码位于Gitee仓库，你可以从Release发布版本中下载完整的原文和示例代码}
+\else
+\date{\zhtoday}
+\institute{真正的高手不会受到环境的影响}
+\subtitle{单片机武林高手秘籍，使用\LaTeX{}编写}
+\extrainfo{初次见面，我已经关注你很久了。别看我像个孩子，其实我比任何一位大人都了解这个世界。所以我可以用我的知识，换取你路上的见闻吗？——《原神》纳西妲}
+\fi
+
+\cover{figure/cover.pdf}
+
+\begin{document}
+
+\maketitle
+
+\input{chapters/preface.tex}
+
+% ------------------------- 目录 -------------------------
+\tableofcontents
+\clearpage
+
+% ------------------------- 正文（页码切回阿拉伯数字） -------------------------
+\pagenumbering{arabic}
+\setcounter{page}{1}
+\input{chapters/chapter-embed-basic}
+\input{chapters/chapter-task-state-machine}
+\input{chapters/chapter-simple-task}
+\input{chapters/chapter-serial-fifo}
+\input{chapters/chapter-c-oop}
+\input{chapters/chapter-memory-alloc}
+\input{chapters/chapter-param-store}
+\input{chapters/chapter-ui-system}
+\input{chapters/chapter-command-parser}
+\input{chapters/chapter-script-engine}
+\input{chapters/chapter-coroutine-scheduler}
+\input{chapters/chapter-memory-hardfault}
+\input{chapters/chapter-linux}
+
+\ifrelease
+% 正式版：跳过14、15章的所有介绍
+\else
+\input{chapters/chapter-deadline-ai}
+\input{chapters/chapter-about-author}
+\fi
+
+\appendix
+\input{chapters/appendix-board-bsp}
+\input{chapters/appendix-code-source}
+\input{chapters/appendix-answers}
+
+\end{document}
