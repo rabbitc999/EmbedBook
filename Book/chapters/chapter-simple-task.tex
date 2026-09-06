@@ -917,4 +917,6 @@ void TIM6_IRQHandler(void)
 \item 任务回调中访问全局变量时，为什么经常要加 \texttt{volatile}？\texttt{volatile} 能替代临界区吗？
 \item 调度器的任务池为什么要“静态分配”？如果用 \texttt{malloc/free} 动态创建任务，会带来哪些风险？
 \item 假设系统里有 3 个任务在同一时刻到期，请说明就绪 FIFO 会按什么顺序执行它们，并解释为什么不会发生饿死。
+\item 画出循环队列在“缓冲区未满、刚好写满、写入时跨过末尾”三种情况下的 \texttt{StartIndex} 与 \texttt{EndIndex} 位置。
+\item 为什么计算 FIFO 数据长度时要写成 \texttt{(EndIndex + Size - StartIndex) \% Size}？直接相减会出现什么问题？
 \end{problemset}

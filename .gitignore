@@ -60,8 +60,8 @@
 *.stg
 *.stt
 *.xdy
-*.pdf
 *.tdo
+book.pdf
 
 # Generated files
 *.dvi

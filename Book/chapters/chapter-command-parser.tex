@@ -316,11 +316,10 @@ const char *s = STR_PARAM(argv, 4);  /* 以字符串读取 argv[4] */
 
 \begin{anybox}{宏的参数名可以任意取}
 写成 \texttt{INT\_PARAM(argv, 1)} 或 \texttt{INT\_PARAM(paramList, 1)} 效果相同，只要第一个参数是 \texttt{Param\_T} 数组即可。
+\end{anybox}
 
 \begin{anybox}{动态类型解释}
 \texttt{Param\_T} 只是把一段文本同时解析成整数、浮点与字符串三种候选值；最终按哪种类型读取，由命令处理函数选择对应的 \texttt{INT\_PARAM}、\texttt{FLOAT\_PARAM} 或 \texttt{STR\_PARAM} 决定。
-\end{anybox}
-
 \end{anybox}
 % ---------------------------------------------------------------------
 \section{第三部分：适配不同的函数列表}
@@ -396,7 +395,81 @@ Cmd_ParserRegister(&parser, "add",    Cmd_HandleAdd);      /* 2 个 int 参数 *
     \end{tabular}
 \end{table}
 
-需要说明的是：适配器不能完全省掉。若想做到“一张参数描述表自动调用任意函数”，必须在编译期生成代码（例如用宏按参数类型展开），或使用 C++ 模板或反射；在纯 C 的裸机环境中， “每个函数写一个小适配器”是最直观、最容易调试的方式。
+需要说明的是：\textbf{在理论上和部分工程实践中，确实存在两种“无适配器”的框架方案}，它们试图让命令解析器直接调用任意签名的业务函数，而无需手写适配器。
+
+\subsection*{方案一：参数描述表 + 通用调度器（重型框架）}
+
+在命令表中额外记录业务函数的参数类型序列（如字符串 \texttt{"iff"} 表示 \texttt{int, float, float}），调度器解析完参数后，按类型序列从 \texttt{Param\_T} 数组中逐一提取数值，再通过函数指针调用业务函数——本质上是一个简化版的动态函数绑定。一些用于 PC 或高性能嵌入式的脚本引擎（如 Lua、MicroPython 的 C 绑定层）即采用此类思路。
+
+示意代码如下：
+
+\begin{lstlisting}[style=c]
+/* 参数描述表节点 */
+typedef struct {
+	const char *cmdName;
+	const char *typeDesc;      /* 如 "iff" 表示 int, float, float */
+	void (*func)(void);        /* 业务函数指针（泛型） */
+} CmdDesc_T;
+
+/* 通用调度器（示意） */
+static int8_t Cmd_DispatchGeneric(CmdDesc_T *desc, Param_T *args, uint8_t argc)
+{
+	/* 按 typeDesc 逐个提取参数，此处仅为示意，实际需处理类型匹配与错误 */
+	for (int i = 0; i < strlen(desc->typeDesc); i++) {
+		char t = desc->typeDesc[i];
+		switch (t) {
+			case 'i': /* 提取 INT_PARAM(args, i) */ break;
+			case 'f': /* 提取 FLOAT_PARAM(args, i) */ break;
+			case 's': /* 提取 STR_PARAM(args, i) */ break;
+		}
+	}
+	/* 调用 desc->func(...) —— 但 C 语言无法在运行时构造任意签名的调用，
+	实际需借助宏展开或汇编胶水，此处省略具体实现细节。 */
+	return CMD_ERR_OK;
+}
+\end{lstlisting}
+
+但该方案在\textbf{裸机嵌入式环境}中有三个显著代价：
+
+\begin{enumerate}
+	\item \textbf{ROM 开销显著增加}：每个命令除了名字和处理函数指针外，还要存储参数个数、类型序列、可能的默认值等描述信息，命令越多，表的体积越大；
+	\item \textbf{运行时开销不可忽视}：通用调度器必须根据类型序列动态决定如何从 \texttt{Param\_T} 提取数据，并构造函数调用栈（或搬运参数到寄存器），每次调用的指令周期远多于手写适配器的几条赋值语句；
+	\item \textbf{调试复杂度飙升}：通用调度器内部充斥着类型分发、循环与强制转换，一旦参数数量或类型匹配错误，问题往往在运行时才暴露，排查难度远大于单步调试一个显式适配器函数。
+\end{enumerate}
+
+\subsection*{方案二：函数指针强制转换（利用 ABI 特性）}
+
+另一种更“激进”的做法是放弃参数描述表，直接把业务函数指针强制转换为形参全为 \texttt{int32\_t} 的通用类型（如 \texttt{void (*)(int32\_t, int32\_t, int32\_t)}），调用时把 \texttt{float} 或 \texttt{int} 都当作 \texttt{int32\_t} 的位模式传入。
+
+\begin{lstlisting}[style=c]
+/* 假设业务函数 Car_Run(float x, float y, float speed) */
+void (*p)(int32_t, int32_t, int32_t) = (void*)Car_Run;
+
+/* 提取 float 的位模式当作 int32_t 传递 */
+int32_t a0 = *(int32_t*)&FLOAT_VAL(args[0]);
+int32_t a1 = *(int32_t*)&FLOAT_VAL(args[1]);
+int32_t a2 = *(int32_t*)&FLOAT_VAL(args[2]);
+
+p(a0, a1, a2);   /* 在 soft-float ABI 下能“蒙混过关” */
+\end{lstlisting}
+
+该方法在 \textbf{soft-float ABI 的 ARM 平台} 上能正常执行，因为浮点数和整数通过相同的通用寄存器传递，函数体内的机器码会正确解释这些位模式。
+
+但是，这种做法存在严重缺陷：
+
+\begin{enumerate}
+	\item \textbf{平台依赖性极强}：一旦启用硬浮点 ABI（\texttt{-mfloat-abi=hard}），浮点数通过专用 FPU 寄存器传递，而整数通过通用寄存器，此时强制调用会传入垃圾值，程序立即崩溃；在 x86/x64 等平台更是完全不可行；
+	\item \textbf{C 语言未定义行为}：调用一个与函数指针类型不兼容的函数属于标准未定义行为，编译器优化（如严格别名、内联）可能产生完全意料之外的代码；
+	\item \textbf{可维护性极差}：阅读代码的人无法从函数指针类型得知实际调用签名，调试器无法正确显示参数值，且难以进行静态检查。
+\end{enumerate}
+
+因此，这种技巧仅在高度确定（软浮点、已知编译器）且对代码体积有极致要求的特殊场合偶有使用，\textbf{绝不能作为通用方案推荐}。
+
+\subsection*{本书的选择}
+
+鉴于此，本章面向资源受限且平台多样的裸机环境，\textbf{不引入任何“无适配器”框架}，而是坚持“每个命令一个显式适配器”的轻量级方案。对于 10~30 条命令的典型规模，适配器的额外代码量完全可控（每条约 5~10 行），且每个适配器就是一个普通函数，断点单步、参数边界检查都一目了然。新增业务函数时，照着既有模板复制粘贴并修改参数读取宏即可，无需引入复杂的元编程工具或依赖底层 ABI 细节。
+
+用适配器作为“显式胶水”来换取代码可读性、可移植性与调试便利性，是嵌入式工程实践中务实的取舍。
 
 % ---------------------------------------------------------------------
 \section{完整示例代码}
@@ -492,5 +565,11 @@ argv[5] = led      type = STRING
 \item 用哈希表管理命令相比顺序 \texttt{if/strcmp} 有什么好处？哈希冲突时，本章采用了什么解决方案？
 \item 命令注册表把“命令名、处理函数、帮助文本”放在一起，对新增命令和命令数量增加分别有什么影响？
 \item \texttt{Param\_T} 用一个联合体保存多种参数类型，靠什么字段知道“应该按 int 还是按 float 读取”？
-\item 为什么纯 C 中很难做到“参数描述表自动调用任意函数”？请说明宏或 C++ 模板能简化这一过程的原因。
+\item 本章第 6 节介绍了两种“无适配器”框架的实现思路：一是“参数描述表 + 通用调度器”，二是“函数指针强制转换（利用 ABI 特性）”。请回答：
+\begin{enumerate}
+	\item 这两种方案分别试图解决什么问题？各自的实现思路是什么？
+	\item 第一种方案（参数描述表 + 通用调度器）在裸机环境中有哪些现实代价？
+	\item 第二种方案（函数指针强制转换）依赖什么底层条件？在硬浮点 ABI 或 x86 平台下为什么会失效？
+	\item 综合比较，本章最终选择“手写适配器”方案的根本原因是什么？
+\end{enumerate}
 \end{problemset}

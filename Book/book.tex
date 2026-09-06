@@ -2,6 +2,7 @@
 \documentclass[cn,ctexfont,fancy,newtx]{colorful}
 
 \usepackage{tabularx}
+\usetikzlibrary{decorations.pathreplacing}
 
 \newif\ifrelease
 % 正式发布时取消下面一行的注释，并将另一行注释掉：
@@ -44,19 +45,19 @@
 \input{chapters/chapter-task-state-machine}
 \input{chapters/chapter-simple-task}
 \input{chapters/chapter-serial-fifo}
-\input{chapters/chapter-c-oop}
 \input{chapters/chapter-memory-alloc}
 \input{chapters/chapter-param-store}
+\input{chapters/chapter-c-oop}
 \input{chapters/chapter-ui-system}
 \input{chapters/chapter-command-parser}
 \input{chapters/chapter-script-engine}
 \input{chapters/chapter-coroutine-scheduler}
 \input{chapters/chapter-memory-hardfault}
-\input{chapters/chapter-linux}
 
 \ifrelease
-% 正式版：跳过14、15章的所有介绍
+% 正式版：跳过13、14、15章的所有介绍
 \else
+\input{chapters/chapter-linux}
 \input{chapters/chapter-deadline-ai}
 \input{chapters/chapter-about-author}
 \fi

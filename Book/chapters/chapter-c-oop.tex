@@ -31,25 +31,6 @@
 	\end{tabular}
 \end{table}
 
-\begin{figure}[htbp]
-\centering
-	\begin{tikzpicture}[
-		box/.style={draw=structurecolor, thick, rounded corners=2pt, align=center,
-			fill=structurecolor!8, minimum width=3.4cm, minimum height=1.1cm,
-			font=\small},
-		arrow/.style={-stealth, thick}
-		]
-		\node[box] (enc)  at (0,0)   {封装\\结构体+模块函数};
-		\node[box] (inh)  at (4.6,0) {继承\\结构体嵌套};
-		\node[box] (poly) at (9.2,0) {多态\\函数指针};
-		\node[box, fill=second!8, draw=second] (app) at (4.6,-2.2) {面向对象的嵌入式模块设计};
-		\draw[arrow] (enc) -- (app);
-		\draw[arrow] (inh) -- (app);
-		\draw[arrow] (poly) -- (app);
-	\end{tikzpicture}
-\caption{C 语言实现面向对象特性的途径} \label{fig:oop-ways}
-\end{figure}
-
 % ---------------------------------------------------------------------
 \section{封装：结构体与模块化}
 

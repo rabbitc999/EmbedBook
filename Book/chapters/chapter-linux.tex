@@ -915,17 +915,39 @@ cmake --build build
 % ---------------------------------------------------------------------
 \section{后续转行——Linux 驱动与应用开发}
 
-学会命令和编译只是第一步。如果想转向 Linux 驱动与应用开发，建议按以下路线学习：
+对从单片机转过来的开发者，最自然的第一步不是看内核源码，而是先把 RK3588 与 K230 开发板跑起来，写一个“用户空间点亮 LED”的程序，再逐步下沉到驱动层。本章的目标是“快速上手”，但 Linux 体系庞大，单靠一章命令速查远远不够。以下书目按学习路径分层整理，供读者根据自身阶段选读。
 
-\begin{enumerate}
-\item \textbf{C 语言与数据结构}：Linux 内核和驱动全部是 C；
-\item \textbf{进程、线程、文件和网络}：理解 \texttt{pthread}、文件描述符、socket；
-\item \textbf{字符设备驱动}：先学最简单的 \texttt{miscdevice} 或 \texttt{platform driver}，从点灯开始；
-\item \textbf{设备树与内核编译}：理解 \texttt{.dts} 与 \texttt{.dtb}，交叉编译内核模块；
-\item \textbf{应用层开发}：Qt、GTK、网络服务、AI 推理框架（RKNN、ncnn）。
-\end{enumerate}
+\subsection*{第一阶段：命令行与系统基础}
+\begin{itemize}
+	\item \textbf{《鸟哥的 Linux 私房菜》（基础学习篇）} —— 鸟哥著，人民邮电出版社。Linux 入门经典，从系统安装、文件系统到 Shell 脚本，讲解细致，适合零基础读者建立系统管理直觉。
+	\item \textbf{《Linux 命令行与 Shell 脚本编程大全》（第 3 版）} —— Richard Blum 等著，人民邮电出版社。命令参考与脚本编程并重，适合作为案头工具书随时查阅。
+	\item \textbf{《Linux 就该这么学》} —— 刘遄著，人民邮电出版社。以 RHEL/CentOS 为蓝本，结合大量实例讲解常见服务配置，适合动手型读者。
+\end{itemize}
 
-对从单片机转过来的开发者，最自然的第一步不是看内核源码，而是先把 RK3588 与 K230 开发板跑起来，写一个“用户空间点亮 LED”的程序，再逐步下沉到驱动层。
+\subsection*{第二阶段：Linux 应用层与网络编程}
+\begin{itemize}
+	\item \textbf{《UNIX 环境高级编程》（第 3 版，APUE）} —— W. Richard Stevens 著，人民邮电出版社。系统编程的“圣经”，涵盖文件 I/O、进程控制、信号、线程、进程间通信等，C 语言开发者必读。
+	\item \textbf{《Linux C 与 C++ 一线开发实践》} —— 朱文伟等著，清华大学出版社。贴近企业一线开发实践，涵盖 Linux 文件编程、多进程、进程间通信及 Web 编程，适合从单片机转向 Linux 应用开发的读者。
+	\item \textbf{《Linux 网络编程》} —— 宋敬彬编著，清华大学出版社（“Linux 典藏大系”）。全面覆盖套接字编程、高级 I/O 函数、服务器模型等，配有教学视频与习题。
+\end{itemize}
+
+\subsection*{第三阶段：嵌入式 Linux 系统与驱动开发}
+\begin{itemize}
+	\item \textbf{《嵌入式 Linux 应用开发完全手册》} —— 韦东山著，人民邮电出版社。以项目驱动，从 U-Boot 移植、内核裁剪到驱动编写，偏重工程实操，是嵌入式 Linux 入门的首选。
+	\item \textbf{《Linux 设备驱动程序》（第 3 版，LDD3）} —— Jonathan Corbet 等著，O'Reilly。驱动开发的经典教材，以实践为导向讲解字符设备、块设备、网络接口驱动，覆盖中断、DMA、内存分配等核心主题[reference:5]。虽然内核版本较老，但设计思想至今仍有效。
+	\item \textbf{《Linux 设备驱动开发详解》（第 2 版）} —— 宋宝华著，人民邮电出版社。结合 Linux 内核源码，系统讲解驱动框架与实现原理，豆瓣评分 8.2，适合深入阅读。
+	\item \textbf{《Linux 设备驱动开发》（第 2 版）} —— John Madieu 著，陈莉君译，人民邮电出版社。基于最新内核版本，涵盖 IIO、RTC、DMA 等子系统，理论结合大量源码示例。
+\end{itemize}
+
+\subsection*{第四阶段：Linux 内核原理（进阶）}
+\begin{itemize}
+	\item \textbf{《深入理解 Linux 内核》（第 3 版）} —— Daniel P. Bovet 等著，中国电力出版社。全面剖析内核核心子系统——进程调度、内存管理、文件系统、网络栈等，适合有一定基础后深入研读。
+	\item \textbf{《Linux 内核设计与实现》（原书第 3 版，典藏版）} —— Robert Love 著，机械工业出版社。篇幅精炼，行文清晰，适合快速建立内核整体框架认知。
+	\item \textbf{《图解 Linux 内核：基于 6.x》} —— 姜亚华著，机械工业出版社。2024 年出版，基于 Linux 6.x 内核，图文并茂，适合希望结合最新内核代码学习的读者。
+\end{itemize}
+
+\subsection*{选读建议}
+从单片机转向嵌入式 Linux，不必一上来就啃内核。务实的路径是：\textbf{先跑通开发板、写用户空间程序（第二阶段）\(\rightarrow\) 再学 U-Boot 与内核移植（第三阶段）\(\rightarrow\) 最后按需深入驱动或内核（第四阶段）}。第一阶段的命令和 Shell 脚本贯穿始终，建议边用边查，不必一次性背完。
 
 % ---------------------------------------------------------------------
 \section{小结}

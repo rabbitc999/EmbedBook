@@ -26,7 +26,7 @@ UART 采用异步串行通信，一帧数据通常由起始位、数据位（LSB
         lab/.style={font=\small}
     ]
         \foreach \i/\txt in {0/空闲,1/起始位,2/D0,3/D1,4/D2,5/D3,6/D4,7/D5,8/D6,9/D7,10/停止位,11/空闲} {
-            \node[cell, minimum width=1.05cm] at (\i*1.05,0) {\txt};
+            \node[cell, minimum width=1.2cm] at (\i*1.2,0) {\txt};
         }
         \node[lab] at (5.8,-1.3) {1 帧共 10 位（1 起始位 + 8 数据位 + 1 停止位，LSB 在前）};
     \end{tikzpicture}
@@ -220,28 +220,115 @@ void Serial_SendArray(SerialPort_T COMx, uint8_t *Array, uint16_t Size);
 % ---------------------------------------------------------------------
 \subsection{改进的 HEX 数据包格式}
 
-更通用的帧格式在包头之后加入命令 ID、长度、数据、校验码等字段：
+更通用的帧格式在包头之后加入命令 ID、长度、数据、校验码等字段，如图~\ref{fig:hex-frame}~所示。
 
-\begin{lstlisting}[style=c]
-包头1  包头2  命令ID  长度   数据              校验码  包尾1  包尾2
-0x55   0xAA   0x02   0x03   0x01 0x02 0x03   0x0E   0xFF   0xFE
-\end{lstlisting}
+\begin{figure}[htbp]
+	\centering
+	\begin{tikzpicture}[
+		cell/.style={draw=structurecolor, thick, minimum height=0.85cm, align=center, font=\small},
+		]
+		\def\step{1.3}   % 每个标准单元格的步长（含间隙）
+		
+		% ---- 第一行：字段名称 ----
+		% 前四个字段（各占1格）
+		\foreach \i/\txt in {0/包头1, 1/包头2, 2/命令ID, 3/长度} {
+			\node[cell, minimum width=1.3cm] at (\i*\step, 0) {\txt};
+		}
+		% 数据字段（占3格，中心位于索引5的位置）
+		\node[cell, minimum width=3.9cm] at (5*\step, 0) {数据};
+		% 后三个字段（各占1格）
+		\foreach \i/\txt in {7/校验码, 8/包尾1, 9/包尾2} {
+			\node[cell, minimum width=1.3cm] at (\i*\step, 0) {\txt};
+		}
+		
+		% ---- 第二行：字段值 ----
+		% 前四个字段的值
+		\foreach \i/\val in {0/0x55, 1/0xAA, 2/0x02, 3/0x03} {
+			\node[cell, minimum width=1.3cm, yshift=-0.9cm] at (\i*\step, 0) {\val};
+		}
+		% 数据字段的值（占3格）
+		\node[cell, minimum width=3.9cm, yshift=-0.9cm] at (5*\step, 0) {0x01~0x02~0x03};
+		% 后三个字段的值
+		\foreach \i/\val in {7/0x0E, 8/0xFF, 9/0xFE} {
+			\node[cell, minimum width=1.3cm, yshift=-0.9cm] at (\i*\step, 0) {\val};
+		}
+		
+		% ---- 标注 ----
+		% 长度字段的标注
+		\draw[<->, thick, structurecolor] 
+		(3*\step-0.6, -1.5) -- (3*\step+0.6, -1.5)
+		node[below, font=\small, xshift=-16pt, yshift=-3pt] {长度=3};
+		% 数据字段的标注（括号覆盖3格宽度）
+		\draw[decorate, decoration={brace, mirror, amplitude=5pt}, thick, structurecolor]
+		(5*\step-1.8, -1.5) -- (5*\step+1.8, -1.5)
+		node[below, font=\small, xshift=-32pt, yshift=-5pt] {数据长度由长度字段决定};
+	\end{tikzpicture}
+	\caption{HEX 数据包帧格式示例（数据字段宽为3个字节）}
+	\label{fig:hex-frame}
+\end{figure}
 
 各字段含义：
-
 \begin{enumerate}
-\item \textbf{包头（0x55 0xAA）}：两字节帧头。\texttt{0x55 = 0101 0101B}、\texttt{0xAA = 1010 1010B}，是标准方波，用示波器调试时可以快速定位帧头位置；同时规律的跳变也便于实现自动波特率识别（测量连续跳变的时间间隔即可反推波特率）；
-\item \textbf{命令 ID}：表示这一帧要做什么。例如命令 ID 为 0x01 点亮 LED1，0x02 点亮 LED2，不同的命令 ID 对应不同的处理动作；
-\item \textbf{长度}：数据字段的字节数。例如配置 5 个参数时长度为 5；
-\item \textbf{数据}：具体载荷，长度由“长度”字段决定；
-\item \textbf{校验码}：对“命令 ID + 长度 + 数据”求和（和校验），接收端重新计算并比对，一致则认为这一帧数据完整且正确；
-\item \textbf{包尾（0xFF 0xFE）}：帧结束标志。
+	\item \textbf{包头（0x55 0xAA）}：两字节帧头。\texttt{0x55 = 0101 0101B}、\texttt{0xAA = 1010 1010B}，是标准方波，用示波器调试时可以快速定位帧头位置；同时规律的跳变也便于实现自动波特率识别（测量连续跳变的时间间隔即可反推波特率）；
+	\item \textbf{命令 ID}：表示这一帧要做什么。例如命令 ID 为 0x01 点亮 LED1，0x02 点亮 LED2，不同的命令 ID 对应不同的处理动作；
+	\item \textbf{长度}：数据字段的字节数。例如配置 5 个参数时长度为 5；
+	\item \textbf{数据}：具体载荷，长度由“长度”字段决定；
+	\item \textbf{校验码}：对“命令 ID + 长度 + 数据”求和（和校验），接收端重新计算并比对，一致则认为这一帧数据完整且正确；
+	\item \textbf{包尾（0xFF 0xFE）}：帧结束标志。
 \end{enumerate}
 
-\begin{anybox}{功能 ID}
-某些协议还会在命令 ID 之后增加“功能 ID”，用于区分同一命令下的不同操作，例如读操作（获取设备状态）与写操作（写入设备期望状态）。功能 ID 对应同一命令不同的处理逻辑。
-
+\begin{anybox}{功能ID与CRC校验码}
+	某些协议还会在命令 ID 之后增加“功能 ID”，用于区分同一命令下的不同操作，例如读操作（获取设备状态）与写操作（写入设备期望状态）。功能 ID 对应同一命令不同的处理逻辑，如图~\ref{fig:hex-frame-op}~所示。
+	
+	校验码用于检测数据在传输过程中是否发生错误。为提升可靠性，可采用 **CRC16（循环冗余校验）** 替代简单的和校验，其检错能力更强，能检测出多位突发错误。图~\ref{fig:hex-frame-op} 中校验码字段即使用 CRC16（占 2 字节）。接收端重新计算 CRC 并与该值比对，一致则认为帧无误；否则丢弃整帧并请求重传。
 \end{anybox}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+	cell/.style={draw=structurecolor, thick, minimum height=0.85cm, align=center, font=\small},
+	]
+	\def\step{1.3}   % 每个标准单元格的步长（含间隙）
+	
+	% ---- 第一行：字段名称 ----
+	% 前四个字段（各占1格）
+	\foreach \i/\txt in {0/包头1, 1/包头2, 2/命令ID, 3/功能ID, 4/长度} {
+		\node[cell, minimum width=1.3cm] at (\i*\step, 0) {\txt};
+	}
+	% 数据字段（占3格，中心位于索引5的位置）
+	\node[cell, minimum width=5.2cm] at (6.5*\step, 0) {数据};
+	% 后三个字段（各占1格）
+	\foreach \i/\txt in {9/校验码, 10/包尾1, 11/包尾2} {
+		\node[cell, minimum width=1.3cm] at (\i*\step, 0) {\txt};
+	}
+	
+	% ---- 第二行：字段值 ----
+	% 前四个字段的值
+	\foreach \i/\val in {0/0x55, 1/0xAA, 2/0x02, 3/0x01, 4/0x06} {
+		\node[cell, minimum width=1.3cm, yshift=-0.9cm] at (\i*\step, 0) {\val};
+	}
+	% 数据字段的值（占3格）
+	\node[cell, minimum width=5.2cm, yshift=-0.9cm] at (6.5*\step, 0) {0x01~0x02~0x03~0x65~0x05~0x86};
+	% 后三个字段的值
+	\foreach \i/\val in {9/CRC16, 10/0xFF, 11/0xFE} {
+		\node[cell, minimum width=1.3cm, yshift=-0.9cm] at (\i*\step, 0) {\val};
+	}
+	
+	% ---- 标注 ----
+	% 长度字段的标注
+	\draw[<->, thick, structurecolor] 
+	(4*\step-0.6, -1.5) -- (4*\step+0.6, -1.5)
+	node[below, font=\small, xshift=-16pt, yshift=-3pt] {长度=6};
+	% 数据字段的标注（括号覆盖3格宽度）
+	\draw[decorate, decoration={brace, mirror, amplitude=5pt}, thick, structurecolor]
+	(6.5*\step-2.6, -1.5) -- (6.5*\step+2.6, -1.5)
+	node[below, font=\small, xshift=-72pt, yshift=-5pt] {数据长度由长度字段决定};
+\end{tikzpicture}
+\caption{HEX 数据包帧格式示例（数据字段宽为3个字节）}
+\label{fig:hex-frame-op}
+\end{figure}
+
+
 % ---------------------------------------------------------------------
 \subsection{HEX 接收状态机}
 
@@ -279,8 +366,7 @@ typedef enum tagSerialState_T
 
 \begin{lstlisting}[style=c]
 /* HEX 命令回调函数类型 */
-typedef void (*CmdHexCallback_T)(uint16_t COMx, uint8_t CommandID,
-                                 uint8_t *Data, uint16_t DataLength);
+typedef void (*CmdHexCallback_T)(uint16_t COMx, uint8_t CommandID, uint8_t *Data, uint16_t DataLength);
 
 /* HEX 命令表节点 */
 typedef struct tagCmdHexNode_T
@@ -370,9 +456,62 @@ void Cmd_SendHexData(uint16_t COMx, uint8_t CommandID, uint8_t *Data, uint16_t D
 % ---------------------------------------------------------------------
 \begin{problemset}
 \item 串口接收“不定长数据”时，为什么不能只靠固定大小的 \texttt{uint8\_t buf[N]}？请给出一个缓冲区被写满后数据丢失的例子。
-\item 画出循环队列在“缓冲区未满、刚好写满、写入时跨过末尾”三种情况下的 \texttt{StartIndex} 与 \texttt{EndIndex} 位置。
-\item 为什么计算 FIFO 数据长度时要写成 \texttt{(EndIndex + Size - StartIndex) \% Size}？直接相减会出现什么问题？
 \item 在生产者（接收中断）和消费者（主循环）并发访问 FIFO 时，需要做哪些保护？请说明为什么 \texttt{volatile} 不够。
 \item HEX 帧格式中，校验码的作用是什么？如果校验失败，接收端应该丢弃整帧还是继续解析下一帧？
 \item 请比较中断逐字节接收、空闲中断接收和 DMA 接收三种方案的实时性、CPU 占用与代码复杂度。
+\item 假设我们需要发一个较大的数据包，其中协议规定数据包的数据长度为255字节，那么我需要发送M>255字节的数据，我应该如何在不改变原有的串口协议下，保证数据完整的发到MCU内部？如果从MCU发送到上位机应该如何实现？
+\item 图~\ref{fig:hex-frame-test} 给出了一种包含时间戳和CRC16校验的HEX数据包格式，该格式可用于STM32等MCU与ROS2机器人系统之间的串口通信。请结合ROS2机器人开发实践，完成以下任务：
+
+\begin{enumerate}
+	\item \textbf{协议选型分析}：在ROS2生态中，MCU与上位机通信主要有两条技术路径——\textbf{micro-ROS}和\textbf{自定义串口协议 + ROS2串口节点}。请查阅资料，对比两种方案的优缺点（考虑MCU资源占用、开发复杂度、实时性、协议灵活性等），并说明什么场景下适合使用自定义协议方案。
+	
+	\item \textbf{帧格式设计}：图~\ref{fig:hex-frame-test} 中的帧格式包含“包头、时间戳、命令ID、功能ID、长度、数据、校验码、包尾”。若将该协议用于ROS2机器人，请回答：
+	\begin{enumerate}
+		\item 时间戳字段（6字节）在ROS2中有什么作用，时间戳为什么选择48位的？MCU如何生成可供ROS2使用的时间戳？
+		\item 若长度字段为2字节（大端表示），数据字段长度为N字节，则整个帧的总字节数是多少？
+		\item CRC16校验码的覆盖范围是从哪个字节开始到哪个字节结束，接收端如何验证数据完整性？
+	\end{enumerate}
+	
+	\item \textbf{命令下发与应答机制}：ROS2上位机需要向MCU下发控制指令（如电机速度、舵机角度等），MCU执行后返回应答。请设计：
+	\begin{enumerate}
+		\item 如何利用图~\ref{fig:hex-frame-test} 中的“命令ID”和“功能ID”字段区分不同的控制指令？
+		\item 应答帧应包含哪些字段？如何判断命令执行成功或失败？
+		\item 若上位机下发指令后未收到应答，应如何处理？
+	\end{enumerate}
+\end{enumerate}
 \end{problemset}
+
+\begin{figure}[htbp]
+	\centering
+	\begin{tikzpicture}[
+		cell/.style={draw=structurecolor, thick, minimum height=0.85cm, align=center, font=\small},
+		]
+		\def\step{1.3}   % 每个标准单元格的步长（含间隙）
+		
+		% ---- 第一行：字段名称 ----
+		% 前四个字段（各占1格）
+		\foreach \i/\txt in {0/包头, 1/命令ID, 2/功能ID, 3/时间戳, 4/长度} {
+			\node[cell, minimum width=1.3cm] at (\i*\step, 0) {\txt};
+		}
+		% 数据字段（占3格，中心位于索引5的位置）
+		\node[cell, minimum width=5.2cm] at (6.5*\step, 0) {数据};
+		% 后三个字段（各占1格）
+		\foreach \i/\txt in {9/校验码, 10/包尾} {
+			\node[cell, minimum width=1.3cm] at (\i*\step, 0) {\txt};
+		}
+		
+		% ---- 第二行：字段值 ----
+		% 前四个字段的值
+		\foreach \i/\val in {0/1字节, 1/1字节, 2/1字节, 3/6字节, 4/2字节} {
+			\node[cell, minimum width=1.3cm, yshift=-0.9cm] at (\i*\step, 0) {\val};
+		}
+		% 数据字段的值（占3格）
+		\node[cell, minimum width=5.2cm, yshift=-0.9cm] at (6.5*\step, 0) {N字节};
+		% 后三个字段的值
+		\foreach \i/\val in {9/CRC16, 10/2字节} {
+			\node[cell, minimum width=1.3cm, yshift=-0.9cm] at (\i*\step, 0) {\val};
+		}
+	\end{tikzpicture}
+	\caption{自定义ROS2的HEX数据包帧格式}
+	\label{fig:hex-frame-test}
+\end{figure}

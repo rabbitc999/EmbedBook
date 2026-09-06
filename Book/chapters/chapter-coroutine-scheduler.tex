@@ -225,11 +225,43 @@ typedef struct __TaskControlBlock_T {
     \end{tabular}
 \end{table}
 
-状态转移可以概括为：
+状态转移可以概括为如图\ref{fig:coro-state}所示的那样。
 
-\begin{center}
-\texttt{INIT} $\rightarrow$ \texttt{RUNNING} $\rightarrow$ \texttt{SUSPEND} $\rightarrow$ \texttt{READY} $\rightarrow$ \texttt{RUNNING} $\rightarrow$ \dots $\rightarrow$ \texttt{DELETED}
-\end{center}
+\begin{figure}[htbp]
+	\centering
+	\begin{tikzpicture}[
+		scale=0.7,                % 整体缩放比例
+		transform shape,          % 节点文字、箭头等一并缩放
+		state/.style={
+			rectangle, draw=structurecolor, thick, rounded corners=3pt,
+			minimum width=2.4cm, minimum height=0.9cm, align=center,
+			fill=structurecolor!8, font=\small
+		},
+		arrow/.style={-stealth, thick, structurecolor},
+		label/.style={font=\footnotesize\itshape, align=center}
+		]
+		
+		% 状态节点
+		\node[state] (init)     {INIT};
+		\node[state, right=2.8cm of init] (running) {RUNNING};
+		\node[state, right=2.8cm of running] (suspend) {SUSPEND};
+		\node[state, right=2.8cm of suspend] (ready) {READY};
+		\node[state, below=1.0cm of running] (deleted) {DELETED};
+		
+		% 转换箭头
+		\draw[arrow] (init) -- node[label, above] {调度器首次启动} (running);
+		\draw[arrow] (running) -- node[label, above] {调用\\\texttt{Task\_Wait} 或\\条件不满足} (suspend);
+		\draw[arrow] (suspend) -- node[label, above] {超时到期\\或条件置位} (ready);
+		\draw[arrow] (ready) to[out=45, in=135]
+		node[label, above, sloped] {调度器选择} (running);
+		\draw[arrow] (running) -- node[label, left] {任务函数返回} (deleted);
+		
+		% 可选：从 INIT 直接到 DELETED（通常不需要，省略）
+		
+	\end{tikzpicture}
+	\caption{协程调度器任务状态转换图}
+	\label{fig:coro-state}
+\end{figure}
 
 其中：
 
@@ -429,68 +461,7 @@ static void Task_RunEntry(uint32_t magic)
 \texttt{magic} 是任务启动时从调用方一路传进来的参数，正常返回时它的值必须仍然是 \texttt{0xDEADBEEF}。如果任务执行期间栈溢出把参数覆盖了，代码会停在 \texttt{while} 循环里，让开发者立刻意识到栈太小。这只是防御性检测，正确做法仍然是在开发阶段给每个任务留足余量，并通过“压栈填充 + 水位检查”工具测量实际最大栈用量。
 
 % ---------------------------------------------------------------------
-\section{与 simple\_task 状态机的对比}
-
-把本章调度器与第~\ref{ch:simple-task}~章的 \texttt{simple\_task} 放在一起，可以更清楚地看到两种设计的分界线，如表~\ref{tab:coro-vs-simple}~所示。
-
-\begin{table}[htbp]
-	\centering
-	\small
-	\caption{增强版协程调度器与 simple\_task 的对比}
-	\label{tab:coro-vs-simple}
-	\begin{tabularx}{\textwidth}{l X X}   % 后两列自动换行
-		\toprule
-		\textbf{对比项} & \textbf{simple\_task} & \textbf{本章协程调度器} \\
-		\midrule
-		状态集合 & WAIT、READY、RUN、DISABLE 与 ONCE & INIT、READY、RUNNING、SUSPEND 与 DELETED \\
-		\midrule
-		任务能否中途挂起 & 不能，回调每次运行后返回 & 能，可在任意函数内暂停后恢复 \\
-		\midrule
-		暂停方式 & 返回延时值，下次从回调入口重跑 & setjmp 保存现场，longjmp 恢复现场 \\
-		\midrule
-		栈管理 & 任务共用主循环栈 & 独立栈，或共享栈+备份拷贝 \\
-		\midrule
-		状态迁移位置 & Task\_Tick 与 Task\_RunTask 显式迁移 & Task\_JumpNext + longjmp 集中迁移 \\
-		\midrule
-		定时来源 & 1ms 定时器中断计数 & 外部毫秒时间回调 \\
-		\midrule
-		就绪队列 & FIFO 队列（可关闭） & 环形任务链表轮询扫描 \\
-		\midrule
-		优点 & 纯 C、RAM 小、可移植性高 & 代码写法接近顺序执行，适合复杂流程 \\
-		\midrule
-		代价 & 复杂流程必须拆成状态机 & 需要栈空间和汇编支持，移植成本高 \\
-		\bottomrule
-	\end{tabularx}
-\end{table}
-
-从状态机角度看，两者都要回答同一个问题：\textbf{一个任务什么时候能跑、跑完把状态切成什么}。区别在于：
-
-\begin{enumerate}
-\item \textbf{simple\_task 是“数据驱动的显式状态机”}：任务状态存在 \texttt{Task\_T.systemState} 中，定时器中断里的点滴函数 \texttt{Task\_Tick} 负责 WAIT→READY，主循环里的 \texttt{Task\_RunTask} 负责 READY→RUN→WAIT/DISABLE。用户看到的状态机是“可见”的；
-\item \textbf{本章协程是“现场驱动的隐式状态机”}：任务暂停点就是状态机的一个分支，状态保存在 \texttt{jmp\_buf} 和任务栈中。用户看到的是顺序代码，切换细节被封装进 \texttt{Task\_Wait} 与 \texttt{Task\_ConditionWait}。
-\end{enumerate}
-
-在 \texttt{simple\_task} 中，一个按键长按+双击+重复的复杂流程，通常要拆成回调里的一堆用户状态；在本章协程中，可以直接写成：
-
-\begin{lstlisting}[style=c]
-void KeyFlowTask(int arg)
-{
-    while (1) {
-        Task_Wait(Key_GetPressMs());     /* 等待按键事件 */
-        if (Key_IsDouble()) {
-            HandleDoubleClick();
-            Task_Wait(Key_ReleaseDone());
-        } else if (Key_IsLong()) {
-            HandleLongPress();
-        }
-    }
-}
-\end{lstlisting}
-
-这不是说协程一定优于 \texttt{simple\_task}。对于大量短小的周期任务（每 1ms 或 10ms 翻转一个 LED、轮询一个按键），\texttt{simple\_task} 更轻、更省内存、更好调试；对于包含“等待外部事件→处理→继续等待”的复杂协议流程，有栈协程能让代码结构更接近人的思维。
-
-% ---------------------------------------------------------------------
-\section{示例：两个任务的配合}
+\section{两个任务的配示例合}
 
 \texttt{main.c} 演示了“生产-通知-等待”模式：\texttt{TaskFunc1} 每 1 秒通知一次条件变量， \texttt{TaskFunc2} 等待条件变量后打印消息：
 
@@ -530,6 +501,116 @@ int main(void)
 \end{lstlisting}
 
 当 \texttt{TaskFunc2} 调用 \texttt{Task\_ConditionWait} 时，它会被挂起并让出 CPU；1 秒后 \texttt{TaskFunc1} 调用任务通知函数 \texttt{Task\_ConditionNotify} 把条件置 1，下一次 \texttt{Task\_JumpNext} 扫描时就把 \texttt{TaskFunc2} 置为 READY 并恢复它。
+
+% ---------------------------------------------------------------------
+\section{与其他框架的架构差异}
+
+理解一个调度器的设计，最好的方式不是孤立地看它的代码，而是把它放在“备选方案”的坐标系中比较。本章的协程调度器位于裸机状态机与完整 RTOS 之间的“中间地带”——它比第~\ref{ch:simple-task}~章的 \texttt{simple\_task} 多了一整套栈管理机制，能支持任务在任意深度暂停后恢复；但它又远不如 FreeRTOS 那样复杂，没有抢占、没有优先级、没有信号量和队列，只是一个“能让函数挂起和恢复”的轻量框架。
+
+\subsection{与 simple\_task 状态机的对比}
+
+把本章调度器与第~\ref{ch:simple-task}~章的 \texttt{simple\_task} 放在一起，可以更清楚地看到两种设计的分界线，如表~\ref{tab:coro-vs-simple}~所示。
+
+\begin{table}[htbp]
+	\centering
+	\small
+	\caption{增强版协程调度器与 simple\_task 的对比}
+	\label{tab:coro-vs-simple}
+	\begin{tabularx}{\textwidth}{l X X}   % 后两列自动换行
+		\toprule
+		\textbf{对比项} & \textbf{simple\_task} & \textbf{本章协程调度器} \\
+		\midrule
+		状态集合 & WAIT、READY、RUN、DISABLE、ONCE & INIT、READY、RUNNING、SUSPEND、DELETED \\
+		任务能否中途挂起 & 不能，回调每次运行后返回 & 能，可在任意函数内暂停后恢复 \\
+		暂停方式 & 返回延时值，下次从回调入口重跑 & setjmp 保存现场，longjmp 恢复现场 \\
+		栈管理 & 任务共用主循环栈 & 独立栈，或共享栈+备份拷贝 \\
+		状态迁移位置 & Task\_Tick 与 Task\_RunTask 显式迁移 & Task\_JumpNext + longjmp 集中迁移 \\
+		定时来源 & 1ms 定时器中断计数 & 外部毫秒时间回调 \\
+		就绪队列 & FIFO 队列（可关闭） & 环形任务链表轮询扫描 \\
+		优点 & 纯 C、RAM 小、可移植性高 & 代码写法接近顺序执行，适合复杂流程 \\
+		代价 & 复杂流程必须拆成状态机 & 需要栈空间和汇编支持，移植成本高 \\
+		\bottomrule
+	\end{tabularx}
+\end{table}
+
+从状态机角度看，两者都要回答同一个问题：\textbf{一个任务什么时候能跑、跑完把状态切成什么}。区别在于：
+
+\begin{enumerate}
+	\item \textbf{simple\_task 是“数据驱动的显式状态机”}：任务状态存在 \texttt{Task\_T.systemState} 中，定时器中断里的点滴函数 \texttt{Task\_Tick} 负责 WAIT→READY，主循环里的 \texttt{Task\_RunTask} 负责 READY→RUN→WAIT/DISABLE。用户看到的状态机是“可见”的；
+	\item \textbf{本章协程是“现场驱动的隐式状态机”}：任务暂停点就是状态机的一个分支，状态保存在 \texttt{jmp\_buf} 和任务栈中。用户看到的是顺序代码，切换细节被封装进 \texttt{Task\_Wait} 与 \texttt{Task\_ConditionWait}。
+\end{enumerate}
+
+在 \texttt{simple\_task} 中，一个按键长按+双击+重复的复杂流程，通常要拆成回调里的一堆用户状态；在本章协程中，可以直接写成：
+
+\begin{lstlisting}[style=c]
+	void KeyFlowTask(int arg)
+	{
+		while (1) {
+			Task_Wait(Key_GetPressMs());     /* 等待按键事件 */
+			if (Key_IsDouble()) {
+				HandleDoubleClick();
+				Task_Wait(Key_ReleaseDone());
+			} else if (Key_IsLong()) {
+				HandleLongPress();
+			}
+		}
+	}
+\end{lstlisting}
+
+这不是说协程一定优于 \texttt{simple\_task}。对于大量短小的周期任务（每 1ms 或 10ms 翻转一个 LED、轮询一个按键），\texttt{simple\_task} 更轻、更省内存、更好调试；对于包含“等待外部事件→处理→继续等待”的复杂协议流程，有栈协程能让代码结构更接近人的思维。
+
+\subsection{与RTOS框架的对比}
+
+如果把本章的协程调度器与一款完整的嵌入式 RTOS（如 FreeRTOS、RT-Thread Nano 或 Zephyr）放在一起比较，可以更清楚地看到“有栈协程”在资源受限场景下的定位，如表~\ref{tab:coro-vs-rtos}~所示。
+
+\begin{table}[htbp]
+	\centering
+	\small
+	\caption{增强版协程调度器与 RTOS 的对比}
+	\label{tab:coro-vs-rtos}
+	\begin{tabularx}{\textwidth}{l X X}
+		\toprule
+		\textbf{对比项} & \textbf{本章协程调度器} & \textbf{完整 RTOS（如 FreeRTOS）} \\
+		\midrule
+		调度方式 & 协作式（任务主动让出 CPU） & 抢占式（支持时间片轮转与优先级抢占） \\
+		任务切换 & setjmp/longjmp，仅保存必要寄存器 &  PendSV 中断 + 硬件上下文切换，保存全部寄存器 \\
+		栈管理 & 独立栈或共享栈+备份，用户手动分配 & 每个任务独立栈，通常由创建函数动态分配 \\
+		中断响应 & 任务切换时关中断，中断延迟受临界区影响 & 中断嵌套，PendSV 将上下文切换延迟到最低优先级 \\
+		任务间通信 & Task\_ConditionWait/Notify（条件变量） & 队列、信号量、互斥量、事件组等丰富机制 \\
+		内存占用 & 数 KB（TCB + 任务栈） & 数十 KB（内核对象 + 多任务栈） \\
+		移植成本 & 需实现 TASK\_SET\_STACK 与时间源 & 需实现时钟节拍中断与上下文切换汇编 \\
+		调试难度 & 中（setjmp 跳转使调用栈不连续） & 中高（抢占导致执行顺序不确定，需借助 Trace 工具） \\
+		典型应用 & 复杂协议流程、事件驱动型任务 & 多优先级实时系统、复杂外设驱动管理 \\
+		\bottomrule
+	\end{tabularx}
+\end{table}
+
+从表中可以看到，RTOS 的核心优势在于：
+
+\begin{enumerate}
+	\item \textbf{抢占式调度}：高优先级任务不会被低优先级任务阻塞（除非使用互斥量导致的优先级反转）。对于需要严格实时响应的场景（如电机控制回路、通信协议栈的超时处理），抢占调度是不可或缺的；
+	\item \textbf{丰富的同步原语}：信号量、队列、互斥量等机制为标准组件，多任务协作时不必自己实现条件变量或消息缓冲；
+	\item \textbf{成熟的生态}：FreeRTOS 等有大量现成移植、驱动适配和调试工具（如 Tracealyzer、SystemView），能够降低大型项目的长期维护成本。
+\end{enumerate}
+
+而本章协程调度器相对于 RTOS 的“轻量”并非简单的功能裁剪，而是换了一种思路：
+
+\begin{enumerate}
+	\item \textbf{协作式调度的确定性}：任务只在显式调用 \texttt{Task\_Wait} 或返回时才切换，因此共享数据的临界区天然短小。而 RTOS 的抢占切换可能发生在任意指令边界，必须用信号量或关中断保护共享资源；
+	\item \textbf{无需修改硬件寄存器}：在 Cortex-M 等平台上，RTOS 必须实现 PendSV 中断和 \texttt{svc} 指令调用，涉及对 \texttt{CONTROL} 寄存器、PSP 指针的操作；而本章调度器只需提供 \texttt{TASK\_SET\_STACK} 宏，不涉及中断向量表或硬件特权级切换，移植量明显更小；
+	\item \textbf{内存占用可精确控制}：RTOS 的每个任务栈通常由 \texttt{pvPortMalloc} 从堆中分配，且栈大小需按最坏情况预分配；本章的独立栈使用静态数组，栈溢出检测也更容易和编译器配合；
+	\item \textbf{无内核对象管理开销}：RTOS 的信号量、队列等内核对象需要额外的 RAM 和初始化代码，任务数量增多时创建和删除的开销逐渐不可忽略；本章调度器的任务链表和条件变量均为静态结构，没有动态内存分配。
+\end{enumerate}
+
+因此，是否使用 RTOS 取决于项目的具体需求：
+
+\begin{itemize}
+	\item \textbf{适合使用 RTOS 的场景}：系统包含多个优先级明确的任务（如 1kHz 控制循环、UI 刷新、通信协议栈共存），或需要标准化的任务间通信机制（队列、信号量），且 MCU 的 RAM/Flash 足够（通常要求 32KB+ RAM、128KB+ Flash）；
+	\item \textbf{适合使用本章协程调度器的场景}：系统主要为“等待事件→处理→继续等待”的流程型任务（如命令解析、传感器采集序列、人机交互流程），任务间仅有简单的通知关系，且 MCU 资源较紧张（RAM < 16KB）；
+	\item \textbf{兼顾两者的混合方案}：也可以在 RTOS 的一个任务里运行本章协程调度器——把协程作为 RTOS 线程内部的“子任务”，既利用 RTOS 的抢占和通信能力，又在单个线程内部用协程简化多个顺序子流程的编写。
+\end{itemize}
+
+对于单片机开发而言，\textbf{选择调度器不是技术崇拜，而是资源与需求的精确匹配}。本章的目的不是造一个“迷你 RTOS”，而是在“裸机状态机”和“完整 RTOS”之间提供一个中间选项——它比状态机更适合表达复杂流程，又比 RTOS 更轻量、更可控。读者应结合自己项目的 RAM 预算、任务结构和实时性要求，在三种方案之间做出理性的选择。
 
 % ---------------------------------------------------------------------
 \section{移植要点与限制}
@@ -605,15 +686,26 @@ PC 示例只是第一步。真正检验本章调度器的是把它移植到自�
     % TODO: 在此插入串口任务日志截图
 \caption{协程任务串口日志（待补充）} \label{fig:ch11-mcu-log}
 \end{figure}
+
 % ---------------------------------------------------------------------
 \section{小结}
+
+本章涉及的栈切换、现场保存、中断与任务上下文，都依赖于对 CPU 内核的理解。如果希望深入掌握 Cortex-M 体系结构与嵌入式 C 的底层细节，以下书目值得一读：
+
+\begin{itemize}
+	\item \textbf{《ARM Cortex-M3 与 Cortex-M4 权威指南》（第 3 版）} —— Joseph Yiu 著，清华大学出版社。Cortex-M 内核的“圣经”，从处理器模型、异常处理、内存映射到浮点单元，覆盖了协程调度器移植所需的所有硬件知识（MSP/PSP、PendSV、堆栈对齐等）。
+	\item \textbf{《C 嵌入式编程设计模式》（英文名 \textit{Design Patterns for Embedded Systems in C}）} —— Bruce Powel Douglass 著，机械工业出版社。以状态机、任务调度、并发模式等实用视角讲解嵌入式 C 的设计取舍，可与本章的调度器实现互相印证。
+	\item \textbf{《嵌入式系统设计：CPS 与物联网物理世界》} —— 陈海波、夏虞斌等编著，高等教育出版社。从系统软件层面讲解中断、异常、实时调度和虚拟化，适合希望从“裸机”迈向“系统软件”视角的读者。
+\end{itemize}
+
+这些书不需要通读，建议在遇到本章移植疑惑（如“为什么TASK\_SET\_STACK要改PSP”、“setjmp在ARM上需要保存哪些寄存器”）时，按需查阅对应章节。
 
 本章用 \texttt{setjmp} 与 \texttt{longjmp} 实现了一个有栈协程调度器，核心收获有三点：
 
 \begin{enumerate}
-\item \textbf{setjmp 与 longjmp 是“现场保存和恢复”原语}：它把一个普通 C 函数变成可以挂起、恢复的协程；
-\item \textbf{栈是任务暂停时的“记忆”}：自动变量和调用链都存放在栈上，所以任务需要独立栈，或用备份区把共享栈内容保存下来；
-\item \textbf{状态机可以被“藏”进上下文切换}：\texttt{simple\_task} 用枚举+循环显式表达状态，本章调度器用 \texttt{jmp\_buf} 隐式记住执行位置。两者不是替代关系，而是 “轻量周期任务”与“复杂阻塞流程”两种场景下的不同工具。
+	\item \textbf{setjmp 与 longjmp 是“现场保存和恢复”原语}：它把一个普通 C 函数变成可以挂起、恢复的协程；
+	\item \textbf{栈是任务暂停时的“记忆”}：自动变量和调用链都存放在栈上，所以任务需要独立栈，或用备份区把共享栈内容保存下来；
+	\item \textbf{状态机可以被“藏”进上下文切换}：\texttt{simple\_task} 用枚举+循环显式表达状态，本章调度器用 \texttt{jmp\_buf} 隐式记住执行位置。两者不是替代关系，而是 “轻量周期任务”与“复杂阻塞流程”两种场景下的不同工具。
 \end{enumerate}
 
 如果读者需要在资源更受限的 51 或 STM8 上实现类似效果，可以只保留“独立栈+状态机”的子集，把汇编级栈切换换成纯状态机；如果追求代码最接近顺序思维，则可以在此基础上继续引入 Protothreads、协程宏或完整 RTOS 的线程模型。
@@ -626,4 +718,12 @@ PC 示例只是第一步。真正检验本章调度器的是把它移植到自�
 \item 与 \texttt{simple\_task} 的显式状态机相比，协程把状态“藏”在哪里？这带来什么优点和调试难点？
 \item 协程任务栈发生溢出时会破坏什么？你能设计一个“栈水印”来检测最大栈用量吗？
 \item Cortex-M 的 MSP 与 PSP 有什么区别？切换任务栈时需要修改哪一个寄存器？
+\item 查阅资料，使用 C语言和 ARM 汇编实现 \texttt{setjmp} 和 \texttt{longjmp} 函数。
+\begin{enumerate}
+	\item 在 ARM 架构中，\texttt{jmp\_buf} 通常需要保存哪些寄存器？为什么？
+	\item 查阅 \texttt{newlib}、\texttt{klibc} 或 \texttt{Barebox} 等开源项目中 \texttt{arch/arm/setjmp.S} 的实现[reference:0]，说明 \texttt{setjmp} 的核心汇编指令（如 \texttt{stmia}）是如何保存上下文的。
+	\item \texttt{longjmp} 如何恢复上下文并跳转到 \texttt{setjmp} 的返回位置？为什么 \texttt{longjmp} 需要确保返回值不为 0？
+	\item ARM 与 Thumb 指令集下 \texttt{setjmp} 的实现有何不同？请说明 Thumb 模式下如何处理高寄存器（\texttt{r8}-\texttt{r15}）的保存与恢复。
+	\item 若在 Cortex-M 上实现协程调度器，除了 \texttt{setjmp}/\texttt{longjmp} 外，还需要额外处理什么（如 MSP 与 PSP 的切换）？
+\end{enumerate}
 \end{problemset}

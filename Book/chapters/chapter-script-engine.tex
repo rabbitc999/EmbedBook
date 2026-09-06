@@ -693,6 +693,18 @@ python Chapter-script-engine/parser_gen.py --advanced -o parser_adv.c
 
 完整示例见 \texttt{Chapter-script-engine/grammar\_calc.gram}。
 
+\begin{anybox}{为什么不把运行时与生成器展开讲解}
+	细心的读者可能已经注意到，本章的示例代码仓库里还包含了 \texttt{variable\_runtime.c}、\texttt{parser\_gen.py}和 \texttt{grammar\_loader.py}，但正文中只是浅尝辄止地介绍了它们的存在。这并不是遗漏，而是刻意的边界划定。
+	
+	\texttt{variable\_runtime.c} 实现了一套完整的动态类型系统——支持多种类型、深拷贝、切片拼接、类型自动提升等。这套代码本身已经构成了一个“微型语言运行时”，其设计涉及内存所有权、容器扩容、类型转换等话题，如果要讲透，至少需要再写半本书。本章的核心目标是让读者理解“如何用递归下降解析表达式”，而不是“如何设计一个动态语言虚拟机”，因此运行时的细节被封装到仓库里，作为“愿意深究的读者可以翻阅”的材料。
+	
+	\texttt{parser\_gen.py} 和 \texttt{grammar\_loader.py} 则更是“工具链的工具链”——它们负责把人类可读的文法描述翻译成可编译的 C 递归下降代码。这套生成器涉及 First/Follow 集合计算、LL(1) 冲突检测、左递归自动展开、动作表达式翻译等编译原理话题，每一部分都足以单独成章。如果把这些内容全部铺进正文，这章就会从“单片机脚本引擎”变成“编译原理实践教程”，彻底脱离本书“嵌入式 C 生存实战”的定位。
+	
+	因此，作者的选择是：在正文中保留生成器的“使用方式”和“设计思路”，让读者知道存在这样一套工具，但把实现细节留在源码里。工具的价值在于被使用，而不是被背诵。对于有兴趣深挖的读者，仓库里的源码和注释是比任何书本都更直接的老师。
+	
+	这种“正文讲思想，仓库供细节”的做法，也是全书一以贯之的风格：只把必须由作者推导给你看的核心逻辑（如状态机、内存池、协程切换）写进纸面，把“查手册就能得到”的实现细节留给代码本身。
+\end{anybox}
+
 % ---------------------------------------------------------------------
 \section{单片机实验：串口表达式计算移植与实测}
 
@@ -760,22 +772,13 @@ python Chapter-script-engine/parser_gen.py --advanced -o parser_adv.c
 	\small
 	\caption{单片机解析方案选择}
 	\label{tab:parser-decision}
-	\begin{tabularx}{\textwidth}{X X X}   % X列自动换行
+	\begin{tabularx}{\textwidth}{l X l}   % X列自动换行
 		\toprule
 		\textbf{你的需求} & \textbf{推荐方案} & \textbf{理由} \\
 		\midrule
-		只需要算四则运算 + 简单变量（如 \texttt{10 + 2 * (3 + x)}） &
-		直接用本章手写递归下降模板，或用本章所讲述的Python的LL(1)文法生成古生成 &
-		代码量小、无依赖、实时性可控 \\
-		\midrule
-		需要完整脚本（if、while 和函数调用） &
-		直接使用 Lua 或 MicroPython &
-		自己写的虚拟机很难超过成熟 Lua；GC 与栈管理成本高 \\
-		\midrule
-		需要解析行业标准 DSL（G 代码、PLC 梯形图、自定义协议），
-		且硬实时要求极高 &
-		用 Python 生成器 + 自己的文法描述生成 C 解析器 &
-		编译期展开、零动态内存、零 GC、执行路径可预测 \\
+		只需要算四则运算 + 简单变量 & 用本章所讲述的Python的文法生成器生成 & 代码量小、无依赖、实时性可控 \\
+		需要完整脚本 & 直接使用 Lua 或 MicroPython & 自己写的虚拟机很难超过成熟 Lua \\
+		解析行业标准 DSL，硬实时要求高 & Python生成器 + 文法描述生成 C 解析器 & 编译期展开、零动态内存 \\
 		\bottomrule
 	\end{tabularx}
 \end{table}
