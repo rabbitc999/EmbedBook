@@ -1,0 +1,399 @@
+\chapter{FFT 频谱分析} \label{ch:fft}
+
+时域波形告诉我们信号“随时间怎样变化”，却不容易直接看出信号由哪些频率组成。快速傅里叶变换（Fast Fourier Transform，FFT）把离散采样序列转换到频域，使电机振动、音频、交流电压和传感器周期干扰中的频率成分一目了然。本章先从正弦函数和离散傅里叶变换讲起，再实现基二时间抽取 FFT，最后讨论窗函数、频谱泄漏和幅值换算。完整示例代码位于 \texttt{Chapter-fft/FFT变换/} 目录。
+
+\medskip \textbf{本章涉及到的实验内容：}
+\begin{enumerate}
+\item 单一正弦信号与多频率叠加信号；
+\item 离散傅里叶变换与基二 FFT；
+\item 位逆序与蝶形运算；
+\item 矩形窗、汉宁窗、海明窗和布莱克曼窗；
+\item 单边幅值谱与实际频率换算。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{从时域观察正弦函数}
+
+频率为 $f$、幅值为 $A$、初相位为 $\varphi$ 的正弦函数可以写成：
+
+\begin{equation}
+x(t)=A\sin(2\pi ft+\varphi)
+\label{eq:sine-function}
+\end{equation}
+
+图~\ref{fig:fft-sine-functions}~依次画出了单一正弦函数、多频率叠加函数和含噪函数。单一正弦波容易从周期估计频率；多个频率叠加以后，时域波形已经很难直接读懂；加入噪声以后，周期性特征会进一步被掩盖。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1.25cm,y=0.72cm]
+    \draw[->,thin] (0,5.4) -- (7,5.4) node[right] {$t$};
+    \draw[->,thin] (0,4.1) -- (0,6.7) node[above] {$x_1(t)$};
+    \draw[structurecolor,thick] plot[domain=0:6.3,samples=120] (\x,{5.4+0.8*sin(deg(2*\x))});
+    \node at (3.4,6.6) {单一正弦函数};
+
+    \draw[->,thin] (0,2.4) -- (7,2.4) node[right] {$t$};
+    \draw[->,thin] (0,1.1) -- (0,3.7) node[above] {$x_2(t)$};
+    \draw[red,thick] plot[domain=0:6.3,samples=160] (\x,{2.4+0.65*sin(deg(2*\x))+0.3*sin(deg(6*\x))});
+    \node at (3.4,3.6) {多频率叠加函数};
+
+    \draw[->,thin] (0,-0.6) -- (7,-0.6) node[right] {$t$};
+    \draw[->,thin] (0,-1.9) -- (0,0.7) node[above] {$x_3(t)$};
+    \draw[green!50!black,thick] plot[domain=0:6.3,samples=160] (\x,{-0.6+0.65*sin(deg(2*\x))+0.3*sin(deg(6*\x))+0.14*sin(deg(31*\x))+0.1*cos(deg(43*\x))});
+    \node at (3.4,0.6) {含噪函数};
+\end{tikzpicture}
+\caption{三类常见时域函数图} \label{fig:fft-sine-functions}
+\end{figure}
+
+% ---------------------------------------------------------------------
+\section{从 DFT 到 FFT}
+
+对长度为 $N$ 的离散序列 $x[n]$，离散傅里叶变换（Discrete Fourier Transform，DFT）定义为：
+
+\begin{equation}
+X[k]=\sum_{n=0}^{N-1}x[n]\exp\left(-\mathrm{j}\frac{2\pi kn}{N}\right),\quad 0\leq k<N
+\label{eq:dft}
+\end{equation}
+
+直接按照定义计算，每个频点都要遍历全部采样点，总计算量为 $O(N^2)$。FFT 不是另一种变换，而是利用旋转因子的周期性和对称性，加速 DFT 的计算方法。基二 FFT 把偶数下标和奇数下标数据不断拆分，使计算量降为 $O(N\log_2N)$。
+
+\begin{anybox}{采样点数要求}
+本章实现的是基二时间抽取 FFT，因此采样点数必须是二的整数次幂，例如 64、128、256 和 1024。不是二的整数次幂时，接口会返回参数错误。
+\end{anybox}
+
+% ---------------------------------------------------------------------
+\section{位逆序与蝶形运算}
+
+\subsection{位逆序重排}
+
+以八点 FFT 为例，下标 $3$ 的二进制是 $011$，反转三位以后得到 $110$，即十进制 $6$。位逆序把原始顺序重排为 $0$、$4$、$2$、$6$、$1$、$5$、$3$ 和 $7$，随后每一级蝶形都能在数组中原地完成。
+
+\subsection{蝶形运算}
+
+一个基二蝶形接收复数 $a$ 与 $b$，乘以旋转因子 $W_N^k$ 后生成两个输出：
+
+\begin{align}
+X_0 &= a+W_N^kb \\
+X_1 &= a-W_N^kb \\
+W_N^k &= \exp\left(-\mathrm{j}\frac{2\pi k}{N}\right)
+\label{eq:fft-butterfly}
+\end{align}
+
+图~\ref{fig:fft-butterfly}~中的交叉结构像蝴蝶翅膀，因此得名蝶形运算。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    point/.style={circle,fill=structurecolor,inner sep=2pt},
+    arrow/.style={-stealth,thick}
+]
+    \node (a) at (-4,1.2) {$a$};
+    \node (b) at (-4,-1.2) {$b$};
+    \node[point] (p1) at (-1.0,1.2) {};
+    \node[point] (p2) at (-1.0,-1.2) {};
+    \node (x0) at (3.5,1.2) {$a+W_N^kb$};
+    \node (x1) at (3.5,-1.2) {$a-W_N^kb$};
+
+    \draw[arrow] (a) -- (p1) -- (x0);
+    \draw[arrow] (b) -- node[below] {$W_N^k$} (p2) -- (x1);
+    \draw[arrow] (p1) -- node[pos=0.55,above] {$+$} (x1);
+    \draw[arrow] (p2) -- node[pos=0.55,below] {$+$} (x0);
+    \node at (1.0,-0.15) {$-$};
+\end{tikzpicture}
+\caption{基二 FFT 蝶形运算图} \label{fig:fft-butterfly}
+\end{figure}
+
+八点 FFT 需要三层蝶形。一般地，$N$ 点基二 FFT 需要 $\log_2N$ 层，每一层处理 $N$ 个数据。图~\ref{fig:fft-flow}~概括了程序中的数据流。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    block/.style={draw=structurecolor, thick, rounded corners=2pt, minimum width=2.5cm, minimum height=1.0cm, align=center, fill=structurecolor!8},
+    arrow/.style={-stealth,thick}
+]
+    \node[block] (sample) at (-5.0,0) {定时采样};
+    \node[block] (window) at (-2.0,0) {乘窗函数};
+    \node[block] (reverse) at (1.0,0) {位逆序重排};
+    \node[block] (butterfly) at (4.0,0) {逐层蝶形};
+    \node[block] (magnitude) at (4.0,-2.0) {单边幅值谱};
+
+    \draw[arrow] (sample) -- (window);
+    \draw[arrow] (window) -- (reverse);
+    \draw[arrow] (reverse) -- (butterfly);
+    \draw[arrow] (butterfly) -- (magnitude);
+\end{tikzpicture}
+\caption{FFT 频谱分析流程图} \label{fig:fft-flow}
+\end{figure}
+
+% ---------------------------------------------------------------------
+\section{频点、分辨率与单边频谱}
+
+采样频率为 $f_s$，采样点数为 $N$ 时，频率分辨率为：
+
+\begin{equation}
+\Delta f=\frac{f_s}{N}
+\label{eq:fft-resolution}
+\end{equation}
+
+第 $k$ 个频点对应的实际频率为：
+
+\begin{equation}
+f_k=k\Delta f=k\frac{f_s}{N}
+\label{eq:fft-bin}
+\end{equation}
+
+例如采样频率为 $128\,\mathrm{Hz}$，数据长度为 $128$，频率分辨率就是 $1\,\mathrm{Hz}$。第八个频点对应 $8\,\mathrm{Hz}$，第二十个频点对应 $20\,\mathrm{Hz}$。
+
+实数时域信号的频谱关于零频率共轭对称，工程中通常只显示直流到奈奎斯特频率之间的单边频谱。除直流分量以外，正频率幅值需要乘二：
+
+\begin{equation}
+A[k]=\begin{cases}
+\dfrac{|X[0]|}{N}, & k=0 \\[6pt]
+\dfrac{2|X[k]|}{N}, & 1\leq k<\dfrac{N}{2}
+\end{cases}
+\end{equation}
+
+% ---------------------------------------------------------------------
+\section{窗函数与频谱泄漏}
+
+FFT 把有限长度数据当作一个周期不断重复。如果截取的数据刚好包含整数个信号周期，首尾可以平滑连接；如果不是整数周期，首尾会出现跳变，能量就会扩散到相邻频点，这种现象称为频谱泄漏。乘窗函数可以压低数据两端，减小这个跳变。
+
+\subsection{四种常用窗函数}
+
+矩形窗不改变原始数据：
+
+\begin{equation}
+w_{R}[n]=1
+\end{equation}
+
+汉宁窗、海明窗和布莱克曼窗分别为：
+
+\begin{align}
+w_{Hn}[n] &= 0.5-0.5\cos\left(\frac{2\pi n}{N-1}\right) \\
+w_{Hm}[n] &= 0.54-0.46\cos\left(\frac{2\pi n}{N-1}\right) \\
+w_{B}[n] &= 0.42-0.5\cos\left(\frac{2\pi n}{N-1}\right)
+            +0.08\cos\left(\frac{4\pi n}{N-1}\right)
+\label{eq:fft-windows}
+\end{align}
+
+图~\ref{fig:fft-window-functions}~显示了四种窗函数的形状。横轴使用归一化采样位置，因此不依赖具体点数。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=10cm,y=4.5cm]
+    \draw[->,thick] (0,0) -- (1.08,0) node[right] {归一化位置};
+    \draw[->,thick] (0,0) -- (0,1.18) node[above] {权重};
+    \draw[gray,thick] (0,1) -- (1,1);
+    \draw[structurecolor,thick] plot[domain=0:1,samples=100] (\x,{0.5-0.5*cos(deg(2*pi*\x))});
+    \draw[red,thick] plot[domain=0:1,samples=100] (\x,{0.54-0.46*cos(deg(2*pi*\x))});
+    \draw[green!50!black,thick] plot[domain=0:1,samples=100] (\x,{0.42-0.5*cos(deg(2*pi*\x))+0.08*cos(deg(4*pi*\x))});
+    \node[gray] at (0.83,1.08) {矩形窗};
+    \node[structurecolor] at (0.78,0.72) {汉宁窗};
+    \node[red] at (0.78,0.58) {海明窗};
+    \node[green!50!black] at (0.78,0.43) {布莱克曼窗};
+\end{tikzpicture}
+\caption{四种常用窗函数图} \label{fig:fft-window-functions}
+\end{figure}
+
+矩形窗的主瓣最窄，频率分辨能力强，但旁瓣高；布莱克曼窗的旁瓣低，抑制泄漏能力强，但主瓣更宽；汉宁窗和海明窗位于两者之间。没有一种窗函数在所有指标上都最好，选择取决于更关心“分开两个接近频率”，还是更关心“看见强信号旁边的弱信号”。
+
+\subsection{加窗前后的频谱}
+
+图~\ref{fig:fft-leakage-comparison}~以频率没有落在整数频点上的正弦信号为例。矩形窗下能量分散到较宽范围，汉宁窗降低了远端旁瓣，但主峰附近变宽。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.45cm,y=3.6cm]
+    \draw[->,thick] (0,0) -- (13.2,0) node[right] {频点};
+    \draw[->,thick] (0,0) -- (0,1.25) node[above] {幅值};
+    \draw[gray,thick] plot[smooth] coordinates {(0,0.03) (1,0.04) (2,0.05) (3,0.07) (4,0.10) (5,0.16) (6,0.30) (7,0.86) (8,0.66) (9,0.25) (10,0.14) (11,0.09) (12,0.06)};
+    \draw[structurecolor,thick] plot[smooth] coordinates {(0,0.00) (1,0.00) (2,0.00) (3,0.01) (4,0.02) (5,0.08) (6,0.42) (7,0.92) (8,0.78) (9,0.28) (10,0.04) (11,0.01) (12,0.00)};
+    \node[gray] at (10.2,1.05) {矩形窗};
+    \node[structurecolor] at (10.2,0.88) {汉宁窗};
+\end{tikzpicture}
+\caption{加窗前后的频谱泄漏对比} \label{fig:fft-leakage-comparison}
+\end{figure}
+
+窗函数会改变幅值。需要精确测量幅值时，应根据所选窗函数的相干增益做补偿。本章示例重点演示频率成分识别，因此只完成标准单边幅值换算，没有额外加入窗增益补偿。
+
+% ---------------------------------------------------------------------
+\section{时域与频域对照}
+
+设测试信号由 $8\,\mathrm{Hz}$ 和 $20\,\mathrm{Hz}$ 两个正弦分量组成：
+
+\begin{equation}
+x(t)=\sin(2\pi\cdot8t)+0.5\sin(2\pi\cdot20t)
+\end{equation}
+
+图~\ref{fig:fft-time-frequency}~左侧时域波形比较复杂，右侧频域却只在两个频率附近出现明显峰值。幅值较小的二十赫兹分量，对应频谱中的峰值也较低。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.72cm,y=1.4cm]
+    \draw[->,thick] (0,0) -- (7.2,0) node[right] {时间};
+    \draw[->,thick] (0,-1.5) -- (0,1.7) node[above] {幅值};
+    \draw[structurecolor,thick] plot[domain=0:6.3,samples=180] (\x,{sin(deg(2*\x))+0.5*sin(deg(5*\x))});
+    \node at (3.3,-1.75) {时域波形};
+
+    \begin{scope}[xshift=9cm]
+        \draw[->,thick] (0,0) -- (7.2,0) node[right] {频率};
+        \draw[->,thick] (0,0) -- (0,1.7) node[above] {幅值};
+        \draw[structurecolor,very thick] (2,0) -- (2,1.25);
+        \draw[red,very thick] (5,0) -- (5,0.63);
+        \node[below] at (2,0) {$8\,\mathrm{Hz}$};
+        \node[below] at (5,0) {$20\,\mathrm{Hz}$};
+        \node at (3.4,-1.25) {单边幅值谱};
+    \end{scope}
+\end{tikzpicture}
+\caption{双频信号的时域与频域对照图} \label{fig:fft-time-frequency}
+\end{figure}
+
+% ---------------------------------------------------------------------
+\section{程序实现}
+
+示例代码提供五个公共函数：
+
+\begin{itemize}
+\item \texttt{FFT\_IsPowerOfTwo}：检查数据长度；
+\item \texttt{FFT\_ApplyWindow}：施加四种窗函数之一；
+\item \texttt{FFT\_Transform}：执行原地基二时间抽取 FFT；
+\item \texttt{FFT\_CalcMagnitude}：计算单边幅值谱；
+\item \texttt{FFT\_GetBinFrequency}：把频点下标换算为实际频率。
+\end{itemize}
+
+典型调用流程如下：
+
+\begin{lstlisting}[style=c]
+/* ADC 采样值放入实部，虚部清零 */
+FFT_ApplyWindow(realPart, sampleCount, FFT_WINDOW_HANN);
+FFT_Transform(realPart, imaginaryPart, sampleCount);
+FFT_CalcMagnitude(realPart, imaginaryPart, magnitude, sampleCount);
+
+/* 将峰值下标换算成实际频率 */
+peakFrequency = FFT_GetBinFrequency(peakIndex,
+                                    sampleFrequency,
+                                    sampleCount);
+\end{lstlisting}
+
+FFT 包含较多乘法、三角函数和浮点数组。STM32 移植时应关注三点：采样必须由定时器触发，避免主循环抖动；数组较大时应放在静态存储区，避免压垮任务栈；芯片已经提供硬件浮点单元或 CMSIS-DSP 时，可以用经过优化的库函数替换教学实现。
+
+% ---------------------------------------------------------------------
+\section{PC 验证结果}
+
+本章示例使用 C99 编译，并打开 \texttt{-Wall}、\texttt{-Wextra}、\texttt{-Wpedantic} 和 \texttt{-Werror} 严格警告选项。链接时加入数学库，\texttt{fft\_transform.c} 与 \texttt{main.c} 编译过程没有产生警告，程序正常结束。
+
+测试信号由幅值为 $1$ 的 $8\,\mathrm{Hz}$ 正弦波和幅值为 $0.5$ 的 $20\,\mathrm{Hz}$ 正弦波组成。采样频率为 $128\,\mathrm{Hz}$，FFT 点数为 128，因此频率分辨率为 $1\,\mathrm{Hz}$。程序输出的两个主要峰值如表~\ref{tab:fft-pc-result}~所示。
+
+\begin{table}[htbp]
+\centering
+\caption{FFT 示例的 PC 频谱结果} \label{tab:fft-pc-result}
+\begin{tabular}{llll}
+\toprule
+\textbf{频点下标} & \textbf{实际频率} & \textbf{理论幅值} & \textbf{计算幅值} \\
+\midrule
+8 & $8.00\,\mathrm{Hz}$ & 1.0000 & 1.0000 \\
+20 & $20.00\,\mathrm{Hz}$ & 0.5000 & 0.5000 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+结果表明频点换算与单边幅值归一化符合测试信号。独立断言还验证了二次幂长度判断、汉宁窗端点、海明窗端点、布莱克曼窗端点和八点单频 FFT，断言均正常通过。
+
+% ---------------------------------------------------------------------
+\section{单片机移植实验}
+
+本节预留 FFT 在 STM32 开发板上的采样、计算与频谱输出实验。FFT 算法本身只处理数组，真正影响频谱质量的是采样时钟、模拟前端和缓冲区交接方式。
+
+\subsection{硬件接口预留}
+
+\begin{table}[htbp]
+\centering
+\caption{FFT 单片机移植接口记录表} \label{tab:fft-mcu-interface}
+\begin{tabularx}{\textwidth}{lllX}
+\toprule
+\textbf{项目} & \textbf{计划接口} & \textbf{当前配置} & \textbf{实测备注} \\
+\midrule
+模拟输入 & ADC & 待选择 & 记录输入范围与直流偏置 \\
+采样触发 & 定时器触发 ADC & 待选择 & 记录实际采样频率 \\
+数据搬运 & DMA 双缓冲 & 待选择 & 记录缓冲区长度 \\
+频谱输出 & 串口或显示屏 & 待选择 & 记录刷新周期 \\
+测试信号 & 信号发生器 & 待选择 & 记录频率与幅值 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{移植步骤}
+
+\begin{enumerate}
+\item 把 \texttt{fft\_transform.c} 与 \texttt{fft\_transform.h} 加入单片机工程，并确认链接器包含数学库；
+\item 使用定时器触发 ADC，禁止使用执行时间不确定的软件循环产生采样时刻；
+\item 使用 DMA 双缓冲接收数据，一块缓冲区采样时处理另一块缓冲区；
+\item 把 ADC 原始码值转换为以零为中心的浮点采样值，并根据需要去除直流分量；
+\item 选择窗函数，执行 FFT 和单边幅值计算，再查找目标频段内的峰值；
+\item 测量一次完整计算的执行时间，保证它小于采满下一块缓冲区所需的时间；
+\item 根据芯片 RAM 和实时性决定继续使用教学实现，还是替换为 CMSIS-DSP 实现。
+\end{enumerate}
+
+DMA 缓冲区填满以后，可以在主循环或低优先级任务中执行下面的处理流程：
+
+\begin{lstlisting}[style=c]
+/**
+  * @brief  对一帧 ADC 采样数据执行频谱分析。
+  * @param  无。
+  * @retval 无。
+  * @note   DMA 中断只置完成标志，FFT 计算放在任务中执行。
+  */
+void FFT_AppProcess(void)
+{
+    uint16_t index;
+
+    /* 把 ADC 数据转换为实部，并将虚部清零 */
+    for (index = 0u; index < FFT_SAMPLE_COUNT; index++)
+    {
+        realPart[index] = ADC_ConvertToSignal(adcBuffer[index]);
+        imaginaryPart[index] = 0.0f;
+    }
+
+    /* 加窗后计算单边幅值谱 */
+    (void)FFT_ApplyWindow(realPart, FFT_SAMPLE_COUNT, FFT_WINDOW_HANN);
+    (void)FFT_Transform(realPart, imaginaryPart, FFT_SAMPLE_COUNT);
+    (void)FFT_CalcMagnitude(realPart, imaginaryPart, magnitude, FFT_SAMPLE_COUNT);
+}
+\end{lstlisting}
+
+\subsection{资源与实测记录预留}
+
+\begin{table}[htbp]
+\centering
+\caption{FFT 单片机实测结果记录表} \label{tab:fft-mcu-result}
+\begin{tabular}{lllll}
+\toprule
+\textbf{FFT 点数} & \textbf{采样频率} & \textbf{计算时间} & \textbf{峰值频率} & \textbf{峰值幅值} \\
+\midrule
+128 & 待记录 & 待记录 & 待记录 & 待记录 \\
+256 & 待记录 & 待记录 & 待记录 & 待记录 \\
+512 & 待记录 & 待记录 & 待记录 & 待记录 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox[c][4.0cm][c]{0.82\textwidth}{\centering 此处预留信号源连接照片、串口输出和单片机实测频谱图}}
+\caption{FFT 单片机移植实验记录预留} \label{fig:fft-mcu-result}
+\end{figure}
+
+% ---------------------------------------------------------------------
+\section{完整示例代码}
+
+完整示例位于 \texttt{Chapter-fft/FFT变换/}：
+
+\begin{itemize}
+\item \texttt{fft\_transform.h}：窗函数枚举与 FFT 公共函数；
+\item \texttt{fft\_transform.c}：位逆序、蝶形、窗函数和幅值计算；
+\item \texttt{main.c}：双频测试信号生成与频谱输出。
+\end{itemize}
+
+% ---------------------------------------------------------------------
+\section{本章小结}
+
+FFT 的输出不是抽象的数学结果，而是一组有明确物理含义的频点。采样频率决定可观察的最高频率，采样点数决定频率分辨率，窗函数决定主瓣宽度和旁瓣高度。只有同时理解采样、加窗、变换和幅值换算，频谱图上的峰值才能正确对应到真实系统中的振动、噪声与周期信号。

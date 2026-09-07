@@ -1,0 +1,318 @@
+\chapter{PID 控制器设计} \label{ch:pid-control}
+
+很多单片机程序都要回答同一个问题：测量值偏离目标以后，执行器应该输出多大的控制量？温度控制、电机调速与云台角度控制看起来各不相同，但它们都可以抽象成“测量偏差，再根据偏差修正输出”的闭环系统。本章从反馈控制的基本结构入手，依次介绍比例、积分与微分三种作用，再实现带积分限幅、输出限幅和微分滤波的 PID 控制器。完整示例代码位于 \texttt{Chapter-pid-control/PID控制/} 目录。
+
+\medskip \textbf{本章涉及到的实验内容：}
+\begin{enumerate}
+\item 闭环控制系统与误差的定义；
+\item 位置式 PID 与增量式 PID；
+\item 积分饱和、输出限幅与微分噪声处理；
+\item 一阶惯性对象的闭环控制实验。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{从开环控制到闭环控制}
+
+开环控制只负责给出命令，不关心被控对象有没有达到目标。例如固定输出一半占空比驱动电机，电池电压、机械负载和摩擦力发生变化以后，转速也会跟着变化。闭环控制则不断读取传感器反馈，用设定值与反馈值之差修正控制量。
+
+设定值记为 $r(t)$，反馈值记为 $y(t)$，两者的误差为：
+
+\begin{equation}
+e(t)=r(t)-y(t)
+\label{eq:pid-error}
+\end{equation}
+
+图~\ref{fig:pid-control-loop}~给出了一个典型的 PID 闭环控制系统。圆形节点完成误差计算，PID 控制器根据误差产生控制量 $u(t)$，被控对象输出 $y(t)$，传感器再把输出送回比较节点。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    block/.style={draw=structurecolor, thick, rounded corners=2pt, minimum width=2.7cm, minimum height=1.0cm, align=center, fill=structurecolor!8},
+    sum/.style={draw=structurecolor, thick, circle, minimum size=0.8cm},
+    arrow/.style={-stealth, thick}
+]
+    \node (setpoint) at (-5.2,0) {$r(t)$};
+    \node[sum] (sum) at (-3.7,0) {$+$};
+    \node[block] (pid) at (-1.2,0) {PID 控制器};
+    \node[block] (plant) at (2.2,0) {被控对象};
+    \node (output) at (5.0,0) {$y(t)$};
+    \node[block, minimum width=2.3cm] (sensor) at (2.2,-2.0) {反馈测量};
+
+    \draw[arrow] (setpoint) -- (sum);
+    \draw[arrow] (sum) -- node[above] {$e(t)$} (pid);
+    \draw[arrow] (pid) -- node[above] {$u(t)$} (plant);
+    \draw[arrow] (plant) -- (output);
+    \draw[arrow] (4.1,0) |- (sensor.east);
+    \draw[arrow] (sensor.west) -| node[pos=0.9,left] {$-$} (sum.south);
+\end{tikzpicture}
+\caption{PID 闭环控制系统框图} \label{fig:pid-control-loop}
+\end{figure}
+
+闭环不等于一定稳定。控制器参数过小，系统响应迟缓；参数过大，输出会在目标附近反复振荡。PID 参数整定的本质，就是在响应速度、稳态误差与抗干扰能力之间寻找平衡。
+
+% ---------------------------------------------------------------------
+\section{PID 三种控制作用}
+
+\subsection{比例作用}
+
+比例项直接放大当前误差：
+
+\begin{equation}
+u_{P}(t)=K_{p}e(t)
+\end{equation}
+
+$K_p$ 越大，系统对误差的反应越强，但过大的比例系数也容易引起超调和振荡。只使用比例控制时，为了维持一个非零控制输出，系统往往需要保留一部分稳态误差。
+
+\subsection{积分作用}
+
+积分项累积从开始运行到当前时刻的全部误差：
+
+\begin{equation}
+u_{I}(t)=K_{i}\int_{0}^{t}e(\tau)\,\mathrm{d}\tau
+\end{equation}
+
+只要误差还没有归零，积分项就会继续变化，因此它能够消除稳态误差。代价是积分存在记忆，执行器已经达到极限时仍继续累积，就会形成积分饱和。
+
+\subsection{微分作用}
+
+微分项观察误差的变化速度：
+
+\begin{equation}
+u_{D}(t)=K_{d}\frac{\mathrm{d}e(t)}{\mathrm{d}t}
+\end{equation}
+
+误差正在快速增大时，微分项提前加强修正；误差正在快速减小时，微分项提前收住控制量。因此微分具有预测趋势、抑制超调的作用。然而差分运算也会放大测量噪声，工程中通常需要对微分项进行低通滤波。
+
+综合三种作用，连续形式的 PID 为：
+
+\begin{equation}
+u(t)=K_{p}e(t)+K_{i}\int_{0}^{t}e(\tau)\,\mathrm{d}\tau+K_{d}\frac{\mathrm{d}e(t)}{\mathrm{d}t}
+\label{eq:continuous-pid}
+\end{equation}
+
+% ---------------------------------------------------------------------
+\section{离散化与程序实现}
+
+单片机只能在离散时刻计算控制量。设固定采样周期为 $T_s$，第 $k$ 次采样的误差为 $e[k]$，位置式 PID 可以写成：
+
+\begin{align}
+I[k] &= I[k-1]+K_iT_se[k] \label{eq:pid-integral}\\
+D[k] &= K_d\frac{e[k]-e[k-1]}{T_s} \label{eq:pid-derivative}\\
+u[k] &= K_pe[k]+I[k]+D[k] \label{eq:pid-position}
+\end{align}
+
+这里特意使用 \texttt{align} 环境排列多条相互关联的公式。正文中的单个变量使用行内数学环境，独立且需要编号的公式使用 \texttt{equation} 环境，程序名称和路径则使用 \texttt{texttt} 命令，三种内容不要混在一起。
+
+示例代码用 \texttt{PIDController\_T} 保存参数和历史状态。公共函数包括：
+
+\begin{itemize}
+\item \texttt{PID\_Init}：设置控制周期与工作模式；
+\item \texttt{PID\_SetTunings}：设置 $K_p$、$K_i$ 和 $K_d$；
+\item \texttt{PID\_SetLimits}：设置积分项和最终输出的范围；
+\item \texttt{PID\_SetDerivativeFilter}：设置微分低通滤波系数；
+\item \texttt{PID\_Calculate}：完成一个控制周期的计算。
+\end{itemize}
+
+调用方式如下：
+
+\begin{lstlisting}[style=c]
+PIDController_T controller;
+
+PID_Init(&controller, PID_MODE_POSITIONAL, 0.01f);
+PID_SetTunings(&controller, 1.8f, 0.8f, 0.05f);
+PID_SetLimits(&controller, -30.0f, 30.0f, -100.0f, 100.0f);
+PID_SetDerivativeFilter(&controller, 0.2f);
+
+/* 固定周期读取反馈，并计算新的执行器输出 */
+controlOutput = PID_Calculate(&controller, setpoint, feedback);
+\end{lstlisting}
+
+\begin{anybox}{固定控制周期}
+PID 中的积分与微分都依赖采样周期。如果 \texttt{PID\_Calculate} 的调用间隔忽长忽短，等效参数也会跟着变化。裸机程序应把控制计算放进固定周期定时任务，而不是放在执行时间不确定的主循环里。
+\end{anybox}
+
+% ---------------------------------------------------------------------
+\section{位置式与增量式 PID}
+
+位置式 PID 直接给出当前控制量，结构直观，适合温度和位置控制。增量式 PID 则计算本周期输出相对于上一周期的变化量：
+
+\begin{equation}
+\begin{aligned}
+\Delta u[k]={}&K_p\bigl(e[k]-e[k-1]\bigr)+K_iT_se[k]\\
+&+\frac{K_d}{T_s}\bigl(e[k]-2e[k-1]+e[k-2]\bigr)
+\end{aligned}
+\label{eq:pid-increment}
+\end{equation}
+
+再把增量累加到上一周期输出：
+
+\begin{equation}
+u[k]=u[k-1]+\Delta u[k]
+\end{equation}
+
+增量式 PID 在切换控制器时冲击较小，常用于电机速度控制。它依赖上一周期输出，因此执行器输出被其他逻辑修改以后，需要同步更新控制器状态，或者调用 \texttt{PID\_Reset} 重新开始。
+
+% ---------------------------------------------------------------------
+\section{工程中的三个保护措施}
+
+\subsection{积分限幅}
+
+执行器达到最大输出以后，继续累积积分并不能让执行器更用力，只会使控制器恢复得更慢。示例把积分状态限制在 $I_{\min}$ 和 $I_{\max}$ 之间：
+
+\begin{equation}
+I[k]=\operatorname{clip}\bigl(I[k],I_{\min},I_{\max}\bigr)
+\end{equation}
+
+\subsection{输出限幅}
+
+计算结果还要受到执行器物理能力约束。例如占空比只能在允许范围内变化，双向电机控制量则可以设置为对称的正负区间。限幅应放在控制器内部，避免任何调用者忘记处理。
+
+\subsection{微分滤波}
+
+示例先计算原始误差微分 $d_{\mathrm{raw}}[k]$，再用一阶低通滤波得到 $d_f[k]$：
+
+\begin{equation}
+d_f[k]=d_f[k-1]+\alpha\bigl(d_{\mathrm{raw}}[k]-d_f[k-1]\bigr)
+\end{equation}
+
+$\alpha$ 越小，微分输出越平滑，但相位延迟也会增加。噪声较大的编码器和 ADC 信号可以从较小系数开始调整。
+
+% ---------------------------------------------------------------------
+\section{控制响应示意图}
+
+图~\ref{fig:pid-step-response}~展示了同一个阶跃目标下三种典型响应。该图用于理解整定方向，并不是某一组参数的精确仿真结果。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=1.05cm,y=0.8cm]
+    \draw[->,thick] (0,0) -- (10.5,0) node[right] {时间};
+    \draw[->,thick] (0,0) -- (0,6.2) node[above] {输出};
+    \draw[dashed,thick] (0,4.5) -- (10,4.5) node[right] {设定值};
+    \draw[structurecolor,thick] plot[domain=0:10,samples=100] (\x,{4.5*(1-exp(-0.42*\x))});
+    \draw[red,thick] plot[domain=0:10,samples=120] (\x,{4.5*(1-exp(-0.55*\x)*(cos(deg(1.5*\x))+0.25*sin(deg(1.5*\x))))});
+    \draw[green!50!black,thick] plot[domain=0:10,samples=100] (\x,{4.2*(1-exp(-0.8*\x))});
+    \node[structurecolor] at (7.8,2.8) {响应迟缓};
+    \node[red] at (6.8,5.4) {超调振荡};
+    \node[green!50!black] at (8.0,3.9) {存在稳态误差};
+\end{tikzpicture}
+\caption{PID 参数不同时的阶跃响应示意图} \label{fig:pid-step-response}
+\end{figure}
+
+参数整定可以从纯比例控制开始：先把 $K_i$ 和 $K_d$ 设为零，逐步增加 $K_p$，直到响应速度合适但还没有持续振荡；随后增加 $K_i$ 消除稳态误差；最后少量增加 $K_d$ 抑制超调。每次只调整一个参数，才能看清变化来自哪里。
+
+% ---------------------------------------------------------------------
+\section{PC 验证结果}
+
+本章示例使用 C99 编译，并打开 \texttt{-Wall}、\texttt{-Wextra}、\texttt{-Wpedantic} 和 \texttt{-Werror} 严格警告选项。\texttt{pid\_control.c} 与 \texttt{main.c} 编译过程没有产生警告，程序正常结束。
+
+示例以 $10\,\mathrm{ms}$ 为控制周期，共运行 200 次，因此表~\ref{tab:pid-pc-result}~中的末次结果对应 $2\,\mathrm{s}$。设定值为 $50$，被控对象采用一阶惯性模型。
+
+\begin{table}[htbp]
+\centering
+\caption{PID 示例的 PC 运行结果} \label{tab:pid-pc-result}
+\begin{tabular}{llll}
+\toprule
+\textbf{迭代序号} & \textbf{设定值} & \textbf{对象输出} & \textbf{控制输出} \\
+\midrule
+199 & 50.000 & 41.492 & 44.819 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+两秒仿真结束时，对象输出仍在向设定值上升，因此该结果不能解释为稳态值。这个实验主要验证控制器能够连续更新、控制输出没有越过设定限幅，并且对象输出沿正确方向变化。需要观察稳态误差时，应延长运行时间，或者根据被控对象重新整定参数。
+
+除示例程序外，还使用独立断言验证了纯比例位置式 PID、纯比例增量式 PID、非法控制周期和空指针处理，断言均正常通过。
+
+% ---------------------------------------------------------------------
+\section{单片机移植实验}
+
+本节预留 PID 控制器在 STM32 开发板上的移植与实测内容。算法层不依赖具体芯片，板级程序只需要提供固定周期、反馈采样和执行器输出三个接口。
+
+\subsection{硬件接口预留}
+
+\begin{table}[htbp]
+\centering
+\caption{PID 单片机移植接口记录表} \label{tab:pid-mcu-interface}
+\begin{tabularx}{\textwidth}{lllX}
+\toprule
+\textbf{项目} & \textbf{计划接口} & \textbf{当前配置} & \textbf{实测备注} \\
+\midrule
+反馈采样 & ADC 或编码器 & 待选择 & 记录量程、方向和零点 \\
+执行器输出 & PWM 或 DAC & 待选择 & 记录限幅与安全状态 \\
+控制周期 & 定时器中断 & $10\,\mathrm{ms}$ & 记录实测周期抖动 \\
+调试输出 & 串口 & 待选择 & 输出设定值、反馈值和控制量 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{移植步骤}
+
+\begin{enumerate}
+\item 把 \texttt{pid\_control.c} 与 \texttt{pid\_control.h} 加入单片机工程；
+\item 使用硬件定时器建立固定控制周期，不在普通延时循环中调用控制器；
+\item 把 ADC、电机编码器或其他传感器结果换算为具有实际单位的反馈值；
+\item 调用 \texttt{PID\_Calculate} 得到控制量，并根据执行器能力完成 PWM 或 DAC 输出；
+\item 在过流、过温和传感器异常时停止执行器，并调用 \texttt{PID\_Reset} 清空历史状态；
+\item 通过串口连续记录设定值、反馈值与控制量，再根据实测曲线整定参数。
+\end{enumerate}
+
+控制任务可以按下面的结构接入现有调度器：
+
+\begin{lstlisting}[style=c]
+/**
+  * @brief  在固定周期任务中完成一次闭环控制。
+  * @param  无。
+  * @retval 无。
+  * @note   反馈读取和执行器输出函数由具体开发板提供。
+  */
+void PID_AppTaskRun(void)
+{
+    float feedback;
+    float controlOutput;
+
+    /* 读取真实反馈，再把控制结果交给执行器接口 */
+    feedback = Sensor_ReadFeedback();
+    controlOutput = PID_Calculate(&controller, setpoint, feedback);
+    Actuator_SetOutput(controlOutput);
+}
+\end{lstlisting}
+
+\subsection{实测记录预留}
+
+\begin{table}[htbp]
+\centering
+\caption{PID 单片机实测结果记录表} \label{tab:pid-mcu-result}
+\begin{tabular}{lllll}
+\toprule
+\textbf{测试项目} & $K_p$ & $K_i$ & $K_d$ & \textbf{实测结果} \\
+\midrule
+阶跃响应 & 待记录 & 待记录 & 待记录 & 待记录 \\
+负载扰动 & 待记录 & 待记录 & 待记录 & 待记录 \\
+设定值切换 & 待记录 & 待记录 & 待记录 & 待记录 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox[c][4.0cm][c]{0.82\textwidth}{\centering 此处预留开发板连接照片与 PID 实测响应曲线}}
+\caption{PID 单片机移植实验记录预留} \label{fig:pid-mcu-result}
+\end{figure}
+
+% ---------------------------------------------------------------------
+\section{完整示例代码}
+
+完整示例位于 \texttt{Chapter-pid-control/PID控制/}：
+
+\begin{itemize}
+\item \texttt{pid\_control.h}：PID 模式、控制器结构体与公共函数；
+\item \texttt{pid\_control.c}：位置式、增量式、限幅与微分滤波实现；
+\item \texttt{main.c}：一阶惯性对象的闭环控制演示。
+\end{itemize}
+
+移植到 STM32 时，只需要把示例中的一阶对象替换成真实传感器反馈，再把 \texttt{controlOutput} 写入 PWM、DAC 或其他执行器接口。控制算法本身不依赖具体芯片外设。
+
+% ---------------------------------------------------------------------
+\section{本章小结}
+
+PID 并不神秘：比例项处理当前误差，积分项处理历史误差，微分项观察误差趋势。真正决定工程可靠性的往往不是公式本身，而是固定采样周期、积分限幅、输出限幅和噪声处理。把这些边界条件封装进控制器以后，同一套代码就能稳定地复用到不同被控对象中。

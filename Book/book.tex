@@ -37,9 +37,13 @@
 
 \maketitle
 
+\pagestyle{empty}                 % 关闭页眉和页码
 \input{chapters/preface.tex}
+\pagestyle{plain}                 % 恢复页码
 
 % ------------------------- 目录 -------------------------
+\pagenumbering{roman}
+\setcounter{page}{1}
 \tableofcontents
 \clearpage
 

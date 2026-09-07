@@ -1,0 +1,403 @@
+\chapter{Python 语法转换器与动态类型解析} \label{app:parser-generator-runtime}
+
+第~\ref{ch:script-engine}~章介绍了递归下降解析器、LL(1) 文法和 Python 解析器生成器，但正文把实现细节控制在了“能够理解整体思路”的范围内。本附录沿着仓库中的真实源码继续向下分析：\texttt{grammar\_loader.py} 如何把文法文本转换成内部数据，\texttt{parser\_gen.py} 如何把产生式变成 C 函数，语义动作如何接入 \texttt{VarValue\_T} 动态类型运行时，以及字符串、数组、字典和结构体由谁创建、持有与释放。
+
+完整实现位于 \texttt{Chapter-script-engine/} 目录。本附录只解释现有实现，不另外设计一套解析框架。
+
+\medskip \textbf{本附录涉及到的内容：}
+\begin{enumerate}
+\item 文法文件的词法切分与结构化加载；
+\item First 集、Follow 集与 LL(1) 选择集；
+\item 直接左递归产生式的循环化生成；
+\item 语义动作到 C 表达式的转换；
+\item \texttt{VarValue\_T} 动态类型表示与类型转换；
+\item 容器扩容、深拷贝、递归释放和所有权边界；
+\item 生成器、运行时和命令参数动态类型之间的区别。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{从文法文本到运行结果}
+
+整个工具链可以分成“生成期”和“运行期”。生成期在 PC 上执行 Python，把文法转换为 C 源码；运行期在目标程序中执行生成出的解析器，并通过动态类型运行时完成语义计算。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    block/.style={draw=structurecolor, thick, rounded corners=2pt, minimum width=2.8cm, minimum height=1.0cm, align=center, fill=structurecolor!8, font=\small},
+    arrow/.style={-stealth, thick},
+    note/.style={font=\small, align=center}
+]
+    \node[block] (grammar) at (-5.0,2.0) {文法文件\\\texttt{.gram}};
+    \node[block] (loader) at (-1.7,2.0) {文法加载器\\\texttt{grammar\_loader.py}};
+    \node[block] (model) at (1.7,2.0) {Python 内部模型\\终结符、规则、变量};
+    \node[block] (generator) at (5.0,2.0) {代码生成器\\\texttt{parser\_gen.py}};
+    \node[block] (cparser) at (5.0,-0.4) {生成的 C 解析器};
+    \node[block] (tokens) at (1.7,-0.4) {运行期 Token 流};
+    \node[block] (runtime) at (-1.7,-0.4) {动态类型运行时\\\texttt{VarValue\_T}};
+    \node[block] (result) at (-5.0,-0.4) {表达式结果或错误};
+
+    \draw[arrow] (grammar) -- (loader);
+    \draw[arrow] (loader) -- (model);
+    \draw[arrow] (model) -- (generator);
+    \draw[arrow] (generator) -- (cparser);
+    \draw[arrow] (tokens) -- (cparser);
+    \draw[arrow] (cparser) -- (runtime);
+    \draw[arrow] (runtime) -- (result);
+    \node[note] at (0,3.15) {生成期：只在开发电脑上运行};
+    \node[note] at (0,-1.65) {运行期：可放在 PC，也可按资源条件移植到单片机};
+\end{tikzpicture}
+\caption{语法转换器与动态类型运行时的数据流} \label{fig:app-parser-pipeline}
+\end{figure}
+
+这条边界非常重要。目标单片机不需要安装 Python，也不需要在运行时计算 First 集和 Follow 集。Python 已经把选择关系固化为 C 语言的 \texttt{switch} 分支，运行期只需要读取 Token、调用产生式函数和计算语义值。
+
+% ---------------------------------------------------------------------
+\section{文法文件的输入格式}
+
+\texttt{grammar\_loader.py} 接收一种精简的 Yacc 风格文法。终结符通过 \texttt{\%token} 声明，起始非终结符通过 \texttt{\%start} 声明，动态变量通过 \texttt{\%var} 声明，每条产生式独立写成一行。
+
+\begin{lstlisting}
+/* 声明词法层能够产生的终结符 */
+%token NUMBER PLUS STAR LPAREN RPAREN
+%start expr
+
+/* 声明一个由生成器初始化的动态变量 */
+%var total int32 = 0
+
+/* 每条产生式包含左部、右部和语义动作 */
+expr := expr PLUS term { $$ = $1 + $3; }
+expr := term           { $$ = $1; }
+term := term STAR atom { $$ = $1 * $3; }
+term := atom           { $$ = $1; }
+atom := NUMBER         { $$ = $1; }
+atom := LPAREN expr RPAREN { $$ = $2; }
+\end{lstlisting}
+
+这里的 \texttt{\$\$} 表示当前产生式的结果，\texttt{\$1}、\texttt{\$2} 和 \texttt{\$3} 表示右部各符号的语义值。它们不是 Python 变量，也不是 C 宏，而是生成器在语义动作转换阶段识别的占位符。
+
+\subsection{词法切分}
+
+类 \texttt{\_GramTokenizer} 逐字符扫描文法文本。它先处理空白和注释，再用正则表达式识别数字、字符串、标识符、美元占位符、运算符和换行。换行没有被完全丢弃，因为 \texttt{\%token} 与 \texttt{\%start} 指令需要用行尾判断结束位置。
+
+扫描器需要特别处理三种容易出错的边界：
+
+\begin{enumerate}
+\item 字符串内部的注释符号只是普通字符，不能提前结束扫描；
+\item 转义字符需要与后一个字符一起读取，避免把转义引号误判为字符串结尾；
+\item 语义动作中的花括号可以跨行，必须按配对深度寻找真正的结束位置。
+\end{enumerate}
+
+发现无法识别的字符时，加载器抛出 \texttt{GrammarLoadError}，并保留字符位置。错误在生成期暴露，比生成一个不完整的 C 文件以后再交给编译器处理更容易定位。
+
+\subsection{结构化解析}
+
+类 \texttt{\_GramParser} 根据当前 Token 决定解析哪一种顶层语句。最终返回的字典包含三个核心部分，如表~\ref{tab:app-grammar-model}~所示。
+
+\begin{table}[htbp]
+\centering
+\caption{文法加载器的内部模型} \label{tab:app-grammar-model}
+\begin{tabularx}{\textwidth}{llX}
+\toprule
+\textbf{字段} & \textbf{主要内容} & \textbf{用途} \\
+\midrule
+\texttt{tokens} & 终结符名称列表 & 生成 Token 枚举并计算选择集 \\
+\texttt{grammar.start} & 起始非终结符 & 决定 \texttt{Parser\_Run} 首先调用哪个解析函数 \\
+\texttt{grammar.rules} & 产生式字典 & 为每个非终结符生成一个 C 函数 \\
+\texttt{variables} & 变量类型与初值描述 & 生成动态变量构造函数和查找表 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+加载结束前还会检查右部符号。一个符号既不是已声明终结符，也不是任何产生式的左部，就会直接报错。这个检查阻止了变量名拼写错误悄悄变成永远无法匹配的分支。
+
+% ---------------------------------------------------------------------
+\section{First 集、Follow 集与选择集}
+
+生成器要根据当前 Token 选择产生式，因此必须知道一条产生式可能从哪些终结符开始。对符号串 $\alpha$，First 集记为 $\operatorname{FIRST}(\alpha)$；对非终结符 $A$，Follow 集记为 $\operatorname{FOLLOW}(A)$。
+
+如果产生式 $A\rightarrow\alpha$ 不能推出空串，它的选择集为：
+
+\begin{equation}
+\operatorname{SELECT}(A\rightarrow\alpha)=\operatorname{FIRST}(\alpha)
+\end{equation}
+
+如果 $\alpha$ 可以推出空串 $\varepsilon$，选择集还要包含 $A$ 的 Follow 集：
+
+\begin{equation}
+\operatorname{SELECT}(A\rightarrow\alpha)=
+\bigl(\operatorname{FIRST}(\alpha)-\{\varepsilon\}\bigr)
+\cup\operatorname{FOLLOW}(A)
+\end{equation}
+
+\texttt{compute\_first} 和 \texttt{compute\_follow} 都使用“不动点迭代”：反复扫描全部产生式，只要集合仍有新增元素就继续，直到一轮扫描没有变化。文法规模通常很小，这种实现比引入复杂图算法更直接。
+
+同一个非终结符的两条候选产生式如果在同一个 Token 上拥有重叠选择集，生成器会报告“文法不是 LL(1)”。这是一个生成期错误，因为生成的 \texttt{switch} 无法为同一个 \texttt{case} 同时选择两条规则。
+
+% ---------------------------------------------------------------------
+\section{直接左递归如何转换为循环}
+
+普通递归下降不能直接处理下面的规则：
+
+\begin{equation}
+E\rightarrow E+T\mid T
+\end{equation}
+
+如果 \texttt{Parse\_E} 一进入函数就再次调用自己，输入位置还没有前进，程序会一直递归直到栈溢出。仓库中的生成器没有要求用户手工改写文法，而是把产生式分成两组：
+
+\begin{itemize}
+\item 基产生式：右部第一个符号不是当前非终结符，例如 $E\rightarrow T$；
+\item 续产生式：右部第一个符号就是当前非终结符，例如 $E\rightarrow E+T$。
+\end{itemize}
+
+生成的函数先解析一次基产生式，把结果保存到 \texttt{accum}，再用循环匹配续产生式：
+
+\begin{lstlisting}[style=c]
+/**
+  * @brief  展示左递归产生式生成后的核心结构。
+  * @param  ctx 解析器上下文。
+  * @retval 当前非终结符的解析结果。
+  * @note   代码为结构化节选，实际函数由生成器输出。
+  */
+static ParseResult_T Parse_Expr(ParserCtx_T *ctx)
+{
+    ParseResult_T result = {0};
+    VarValue_T *accum = NULL;
+    uint8_t matched = 0u;
+
+    /* 先选择并执行基产生式 */
+    result = Parse_Term(ctx);
+    accum = result.value;
+
+    /* 再循环吸收加法续产生式，保持运算左结合 */
+    while (1u)
+    {
+        matched = 0u;
+        if (ctx->cur.type == TOKEN_PLUS)
+        {
+            Parser_Advance(ctx);
+            result.value = Var_Add(accum, Parse_Term(ctx).value);
+            accum = result.value;
+            matched = 1u;
+        }
+        if (matched == 0u)
+        {
+            break;
+        }
+    }
+    return result;
+}
+\end{lstlisting}
+
+这个结构等价于“先得到左操作数，再不断读取运算符和右操作数”。它既消除了无限递归，又保留了 $a-b-c$ 应解释为 $(a-b)-c$ 的左结合语义。当前实现处理的是直接左递归，不负责自动消除跨多个非终结符形成的间接左递归。
+
+% ---------------------------------------------------------------------
+\section{语义动作转换器}
+
+文法右侧花括号中的内容不是直接复制到 C 文件。类 \texttt{\_ActionTranslator} 会再次对动作文本做词法分析，并用 Pratt 解析方法处理运算符优先级。这样，\texttt{\$1 + \$3 * \$5} 能够先生成乘法，再生成加法。
+
+内部表达式节点 \texttt{\_ExprNode} 区分两类值：
+
+\begin{itemize}
+\item \texttt{raw}：普通 C 标量，携带 \texttt{int32}、\texttt{float} 或其他静态类型；
+\item \texttt{ptr}：指向 \texttt{VarValue\_T} 的运行时值，具体类型要到运行时读取。
+\end{itemize}
+
+这一区分决定运算符如何生成，如表~\ref{tab:app-action-map}~所示。
+
+\begin{table}[htbp]
+\centering
+\caption{语义动作的主要转换规则} \label{tab:app-action-map}
+\begin{tabularx}{\textwidth}{llX}
+\toprule
+\textbf{动作写法} & \textbf{生成形式} & \textbf{说明} \\
+\midrule
+\texttt{\$\$ = \$1 + \$3;} & \texttt{Var\_Add(...)} & 两侧为运行时对象时调用动态运算 \\
+\texttt{\$\$ = int32(3);} & \texttt{Var\_CreateInt(3)} & 类型构造器创建新对象 \\
+\texttt{\$1.float} & \texttt{Var\_ToDouble(...)} & 把运行时值读取为 C 标量 \\
+\texttt{[\$1]} & \texttt{Var\_FindVariable(...)} & 用 Token 携带的名称查找变量 \\
+\texttt{\$1.int32 = 5;} & \texttt{Var\_SetInt(...)} & 覆盖对象内容但保持对象地址不变 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+直接给 \texttt{\$1} 赋一个新对象会改变子结果指针，原对象的归属关系随之丢失，因此生成器明确拒绝这种写法。需要修改变量时，应使用带类型字段的赋值；需要产生新的当前结果时，应给 \texttt{\$\$} 赋值。
+
+\subsection{类型提升}
+
+生成期能够确定的 C 标量遵循一组简化提升规则：相同类型保持不变；只要一侧是 \texttt{double}，结果就是 \texttt{double}；存在其他浮点类型时结果为 \texttt{float}；两个不同整数类型统一提升为 \texttt{int64}。运行时对象之间的算术则交给 \texttt{Var\_Add}、\texttt{Var\_Sub}、\texttt{Var\_Mul} 和 \texttt{Var\_Div}。
+
+位运算和移位没有定义为动态对象操作。遇到运行时对象时，生成器会发出警告并按整数读取。这个选择保证生成过程能够继续，但也提醒文法作者显式写出目标类型，避免依赖隐式截断。
+
+% ---------------------------------------------------------------------
+\section{生成的 C 解析器结构}
+
+生成结果主要包含四部分：Token 枚举、解析上下文、每个非终结符的解析函数，以及统一入口 \texttt{Parser\_Run}。解析上下文持有 Token 数组、总数、当前位置和当前 Token；解析函数只移动上下文中的位置，不复制整条 Token 流。
+
+普通非终结符会生成一个按当前 Token 分派的 \texttt{switch}。每个分支按右部顺序消费终结符或调用其他非终结符函数，并把语义值保存到 \texttt{values} 数组。产生式动作执行完成后，\texttt{ParseResult\_T} 同时返回成功标志、动态值和错误信息。
+
+\begin{anybox}{固定的语义值数组}
+当前生成模板为每个产生式准备 16 个 \texttt{values} 槽位。文法右部超过该数量时会发生越界风险。若项目需要更长产生式，应在生成期增加长度检查，或者根据最长右部自动生成数组容量，不能只把现有模板直接用于任意规模文法。
+\end{anybox}
+
+% ---------------------------------------------------------------------
+\section{VarValue\_T 的动态类型表示}
+
+动态类型的核心是“类型标签加联合体”。标签说明当前联合体中哪个成员有效，容器成员再通过指针连接到其他 \texttt{VarValue\_T} 对象。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    block/.style={draw=structurecolor, thick, rounded corners=2pt, minimum width=3.0cm, minimum height=0.9cm, align=center, fill=structurecolor!8, font=\small},
+    arrow/.style={-stealth, thick}
+]
+    \node[block] (value) at (0,2.4) {\texttt{VarValue\_T}\\类型标签和联合体};
+    \node[block] (scalar) at (-5.0,0) {标量\\整数、浮点数、字符};
+    \node[block] (string) at (-1.7,0) {字符串\\独立字符缓冲区};
+    \node[block] (array) at (1.7,0) {数组\\元素指针表};
+    \node[block] (mapping) at (5.0,0) {字典与结构体\\名称和值指针};
+    \node[block] (child) at (2.8,-2.0) {子 \texttt{VarValue\_T} 对象};
+
+    \draw[arrow] (value) -- (scalar);
+    \draw[arrow] (value) -- (string);
+    \draw[arrow] (value) -- (array);
+    \draw[arrow] (value) -- (mapping);
+    \draw[arrow] (array) -- (child);
+    \draw[arrow] (mapping) -- (child);
+\end{tikzpicture}
+\caption{动态变量的层次结构} \label{fig:app-var-layout}
+\end{figure}
+
+标量值直接存放在联合体内。字符串成员指向单独分配的字符数组。数组保存 \texttt{VarValue\_T} 指针表，字典保存键和值，结构体保存成员名和值。数组、字典和结构体都拥有自己的子对象，因此释放时必须递归向下遍历。
+
+% ---------------------------------------------------------------------
+\section{创建、深拷贝与递归释放}
+
+动态对象的生命周期可以概括为三条规则：
+
+\begin{enumerate}
+\item \texttt{Var\_Create...} 返回的新对象由调用者持有；
+\item 对象加入数组、字典或结构体后，容器接管该对象；
+\item 最外层对象交给 \texttt{Var\_Free} 后，内部缓冲区和全部子对象递归释放。
+\end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    block/.style={draw=structurecolor, thick, rounded corners=2pt, minimum width=2.8cm, minimum height=0.9cm, align=center, fill=structurecolor!8, font=\small},
+    arrow/.style={-stealth, thick},
+    free/.style={-stealth, thick, dashed, red}
+]
+    \node[block] (root) at (0,2.2) {根数组};
+    \node[block] (number) at (-3.2,0) {整数对象};
+    \node[block] (dict) at (0,0) {字典对象};
+    \node[block] (string) at (3.2,0) {字符串对象};
+    \node[block] (child) at (0,-2.0) {字典成员值};
+
+    \draw[arrow] (root) -- (number);
+    \draw[arrow] (root) -- (dict);
+    \draw[arrow] (root) -- (string);
+    \draw[arrow] (dict) -- (child);
+    \draw[free] (root.east) .. controls (5.0,1.2) and (4.8,-1.8) .. node[right] {一次释放递归清理整棵对象树} (child.east);
+\end{tikzpicture}
+\caption{容器对动态子对象的所有权} \label{fig:app-var-ownership}
+\end{figure}
+
+\texttt{Var\_CloneValue} 不是复制一个指针，而是深拷贝整棵对象树。字符串会获得新的字符缓冲区，数组元素和字典值会递归克隆。这样，三元表达式和拼接结果不会与原对象共享可释放内存。
+
+\texttt{Var\_SetValue} 也采用深拷贝。它先克隆源对象，再用新内容替换目标对象内部内容，最后释放目标对象原来的内容。目标对象本身的地址保持不变，所以已经保存该地址的变量表不需要更新。
+
+% ---------------------------------------------------------------------
+\section{容器扩容、切片与拼接}
+
+数组、字典和结构体都维护 \texttt{length} 与 \texttt{capacity}。容量不足时，运行时申请更大的存储区并复制旧内容。扩容失败必须保持原对象仍然可释放，不能先丢掉旧指针再检查分配结果。
+
+切片接口 \texttt{Var\_Slice} 同时支持字符串和数组。负数下标会从尾部换算，超出范围的结束位置会被限制到有效长度。字符串切片复制字符区间，数组切片深拷贝元素，因此切片结果可以独立释放。
+
+拼接接口 \texttt{Var\_Concat} 只接受两个字符串，或者两个数组。字符串结果重新分配完整字符缓冲区；数组结果依次克隆左右两侧元素。不同容器类型之间没有隐式拼接，类型不匹配时返回 \texttt{VAR\_RUNTIME\_ERR\_TYPE}。
+
+% ---------------------------------------------------------------------
+\section{错误传播与失败边界}
+
+生成器错误和运行期错误需要分开处理：
+
+\begin{table}[htbp]
+\centering
+\caption{不同阶段的错误及处理方式} \label{tab:app-parser-errors}
+\begin{tabularx}{\textwidth}{llX}
+\toprule
+\textbf{阶段} & \textbf{典型错误} & \textbf{处理方式} \\
+\midrule
+文法加载 & 未知字符、未定义符号、花括号不配对 & 抛出 \texttt{GrammarLoadError} 并停止生成 \\
+文法分析 & LL(1) 选择集冲突、只有左递归而没有基产生式 & 抛出 \texttt{ValueError} 并指出规则名称 \\
+动作转换 & 左值非法、未知标识符、类型字段错误 & 在生成期拒绝该语义动作 \\
+解析运行 & Token 不符合候选产生式 & 返回失败的 \texttt{ParseResult\_T} \\
+动态运行时 & 内存不足、类型不匹配、下标越界 & 返回空指针或 \texttt{VAR\_RUNTIME\_ERR...} 错误码 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+动态除法还需要调用者特别关注。整数除数为零时 \texttt{Var\_Div} 返回空指针；非整数分支转换为 \texttt{double} 后执行浮点除法，行为遵循目标 C 运行库和浮点环境。语义动作若没有检查空指针，错误可能继续传播到更高层。
+
+% ---------------------------------------------------------------------
+\section{与 Param\_T 动态参数的区别}
+
+第~\ref{ch:command-parser}~章的 \texttt{Param\_T} 也带有类型标签，但它和本附录的 \texttt{VarValue\_T} 解决的问题不同。
+
+\begin{table}[htbp]
+\centering
+\caption{Param\_T 与 VarValue\_T 的职责对比} \label{tab:app-param-var-compare}
+\begin{tabularx}{\textwidth}{lllX}
+\toprule
+\textbf{对比项} & \textbf{Param\_T} & \textbf{VarValue\_T} & \textbf{说明} \\
+\midrule
+主要用途 & 命令参数识别 & 语言语义值 & 前者重在输入转换，后者重在运行时计算 \\
+生命周期 & 通常随命令缓冲区结束 & 需要显式创建和释放 & 动态运行时具有完整所有权模型 \\
+容器类型 & 不提供 & 数组、字典和结构体 & \texttt{VarValue\_T} 可以形成对象树 \\
+动态运算 & 由适配器读取后计算 & 由 \texttt{Var\_...} 函数计算 & 后者支持运行时类型分派 \\
+内存代价 & 较小 & 较大 & 容器和深拷贝都会使用动态内存 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+不能因为两者都叫“动态类型”，就让命令参数直接承担脚本运行时职责。\texttt{Param\_T} 适合把一行命令转换成几个标量，\texttt{VarValue\_T} 适合保存会继续参与表达式计算和容器操作的值。
+
+% ---------------------------------------------------------------------
+\section{生成命令与验证顺序}
+
+使用文本格式文法时，可以执行：
+
+\begin{lstlisting}[language=Python]
+# 中文说明：读取文法文件并生成 C 解析器
+python Chapter-script-engine/parser_gen.py \
+    --grammar-file Chapter-script-engine/grammar_calc.gram \
+    -o parser_calc.c
+\end{lstlisting}
+
+建议按照下面的顺序验证：
+
+\begin{enumerate}
+\item 先让加载器读取最小文法，确认指令和产生式能够形成内部模型；
+\item 故意加入一个未定义符号，确认生成期能够拒绝错误文法；
+\item 故意制造两个选择集冲突的产生式，确认 LL(1) 检查生效；
+\item 用整数表达式检查优先级和左结合；
+\item 再加入浮点数、字符串和数组，检查动态类型创建与释放；
+\item 最后使用内存检查工具反复运行，观察失败分支是否仍能释放临时对象。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{单片机使用边界}
+
+Python 生成器适合放在构建电脑上，生成的 C 解析器可以移植到单片机；动态类型运行时是否适合移植，则取决于 RAM、堆管理和实时性要求。
+
+\begin{itemize}
+\item 资源紧张的单片机可以只使用生成的语法分派结构，把语义值改为固定结构体；
+\item 需要动态容器时，应为 \texttt{malloc} 建立失败策略，并测量最坏内存占用；
+\item 实时控制中断不应执行字符串创建、容器扩容和递归释放；
+\item 文法、变量表和最大产生式长度应在生成期完成边界检查；
+\item 长期运行设备需要对解析失败路径做内存泄漏测试，不能只测试成功表达式。
+\end{itemize}
+
+% ---------------------------------------------------------------------
+\section{本附录小结}
+
+语法转换器的价值不只是“少写几段 C 代码”，而是把文法合法性、选择集冲突和语义动作类型问题提前到生成期。\texttt{grammar\_loader.py} 负责把文本变成可靠的结构，\texttt{parser\_gen.py} 负责把结构变成确定的递归下降函数，\texttt{variable\_runtime.c} 负责承接运行期的动态值。三层各自拥有清晰边界以后，解析器才能既方便扩展，又不把所有复杂度塞进目标单片机。

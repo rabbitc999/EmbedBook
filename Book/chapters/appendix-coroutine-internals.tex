@@ -1,0 +1,461 @@
+\chapter{深入理解第 11 章的协程任务管理器} \label{app:coroutine-internals}
+
+第~\ref{ch:coroutine-scheduler}~章从使用者视角介绍了有栈协程：任务可以在 \texttt{Task\_Wait} 处暂停，时间到达以后再从下一行继续。本附录换到实现者视角，对照 \texttt{Chapter-coroutine-scheduler/协程调度器setjmp/} 中的源码，追踪任务控制块、循环链表、\texttt{setjmp}、\texttt{longjmp} 和任务栈之间的关系。
+
+本实现是教学用协作式调度器，不是可直接替代 RTOS 的通用内核。它主动暴露栈切换和现场恢复过程，适合学习底层机制，也意味着使用者必须理解编译器 ABI、栈方向、中断状态和 C 运行库限制。
+
+\medskip \textbf{本附录涉及到的内容：}
+\begin{enumerate}
+\item 调度器对象、任务控制块和静态资源池；
+\item 任务创建、首次启动、主动挂起和恢复；
+\item 独立栈与共享栈的不同切换路径；
+\item 延时等待、条件等待、任务连接和销毁；
+\item 调度器必须保持的内部不变量；
+\item 当前实现中的忙等、时间回绕和栈检查边界；
+\item Cortex-M 移植时需要重新实现的底层部分。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{三层对象关系}
+
+理解源码时，可以先把所有数据分成三层，如图~\ref{fig:app-coro-object-relation}~所示。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    block/.style={draw=structurecolor, thick, rounded corners=2pt, minimum width=3.4cm, minimum height=1.0cm, align=center, fill=structurecolor!8, font=\small},
+    arrow/.style={-stealth, thick},
+    link/.style={-stealth, thick, dashed}
+]
+    \node[block] (scheduler) at (0,3.0) {\texttt{TaskScheduler\_T}\\当前任务、任务链表、主现场};
+    \node[block] (tcb1) at (-4.5,0.5) {任务控制块 A\\状态、入口、\texttt{jmp\_buf}};
+    \node[block] (tcb2) at (0,0.5) {任务控制块 B\\状态、入口、\texttt{jmp\_buf}};
+    \node[block] (tcb3) at (4.5,0.5) {任务控制块 C\\状态、入口、\texttt{jmp\_buf}};
+    \node[block] (stack1) at (-4.5,-2.0) {独立栈区};
+    \node[block] (stack2) at (0,-2.0) {共享栈备份区};
+    \node[block] (stack3) at (4.5,-2.0) {入口参数与等待条件};
+
+    \draw[arrow] (scheduler) -- (tcb1);
+    \draw[arrow] (scheduler) -- (tcb2);
+    \draw[arrow] (scheduler) -- (tcb3);
+    \draw[link] (tcb1) -- (stack1);
+    \draw[link] (tcb2) -- (stack2);
+    \draw[link] (tcb3) -- (stack3);
+    \draw[arrow,rounded corners] (tcb1.east) -- ++(0.6,0) |- (tcb2.west);
+    \draw[arrow,rounded corners] (tcb2.east) -- ++(0.6,0) |- (tcb3.west);
+    \draw[arrow,rounded corners] (tcb3.north) -- ++(0,1.1) -| (tcb1.north);
+\end{tikzpicture}
+\caption{调度器、任务控制块与任务资源的关系} \label{fig:app-coro-object-relation}
+\end{figure}
+
+\texttt{TaskScheduler\_T} 只有一个静态实例 \texttt{s\_TaskScheduler}。它保存时间回调、当前任务指针、循环任务链表、主调度现场 \texttt{envMain} 和两个资源位图。任务控制块来自静态数组 \texttt{s\_TcbPool}，共享栈备份区来自 \texttt{s\_SharedStackBuffers}，所以任务创建过程不调用动态内存分配函数。
+
+% ---------------------------------------------------------------------
+\section{任务控制块逐项说明}
+
+任务控制块（Task Control Block，TCB）既描述“任务是什么”，也保存“任务暂停在哪里”。表~\ref{tab:app-coro-tcb}~按职责重新整理了主要成员。
+
+\begin{table}[htbp]
+\centering
+\caption{TaskControlBlock\_T 成员职责} \label{tab:app-coro-tcb}
+\begin{tabularx}{\textwidth}{llX}
+\toprule
+\textbf{职责} & \textbf{成员} & \textbf{含义} \\
+\midrule
+身份 & \texttt{name}、\texttt{pid} & 调试名称与任务编号 \\
+调度状态 & \texttt{state}、\texttt{nextRunTime} & 当前状态与延时唤醒时刻 \\
+执行入口 & \texttt{pfnEntry}、\texttt{entryArg} & 第一次启动时调用的函数与参数 \\
+寄存器现场 & \texttt{env} & \texttt{setjmp} 保存、\texttt{longjmp} 恢复的上下文 \\
+栈描述 & \texttt{stackTop}、\texttt{stackSize}、\texttt{stackType} & 栈顶、容量与栈策略 \\
+共享栈 & \texttt{pBackupStack}、\texttt{stackUsed} & 备份缓冲区和本次实际复制长度 \\
+等待关系 & \texttt{pWaitCondition}、\texttt{condition} & 外部条件和任务结束条件 \\
+生命周期 & \texttt{joinWaitCount}、\texttt{pNext} & 等待者数量与循环链表连接 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\texttt{env} 不能代替任务栈。它通常只保存栈指针、程序计数位置和 ABI 规定的非易失寄存器，不保存整个栈内存。独立栈任务依靠自己的栈区保留自动变量；共享栈任务则必须额外复制当前使用的栈内容。
+
+% ---------------------------------------------------------------------
+\section{静态资源池与位图分配}
+
+\texttt{tcbMask} 的每一位对应 \texttt{s\_TcbPool} 中一个任务控制块。位为零表示空闲，位为一表示已经分配。共享栈备份区使用相同思路，由 \texttt{stackMask} 标记。
+
+假设最大任务总数为八，位图为：
+
+\begin{equation}
+\texttt{tcbMask}=00101101_{(2)}
+\end{equation}
+
+那么下标 0、2、3 和 5 对应的 TCB 已经占用。分配函数从低位开始扫描，因此它返回的只是“第一个空闲槽”，不包含优先级含义。
+
+静态池带来三个直接结果：
+
+\begin{itemize}
+\item 创建和释放时间有明确上界；
+\item 不产生堆碎片；
+\item 最大任务数量必须在编译期通过配置宏确定。
+\end{itemize}
+
+资源位图和循环链表必须同步更新。如果已经把 TCB 加入链表，却忘记设置位图，后续分配会重复使用同一个控制块；如果已经清除位图，却没有把节点移出链表，调度器会访问已经重新分配的数据。
+
+% ---------------------------------------------------------------------
+\section{循环任务链表}
+
+第一个任务创建时，\texttt{pTaskList} 指向它自己，\texttt{pNext} 也指回自己。后续任务插入尾部，最后一个节点继续指向表头。调度器从当前任务的下一个节点开始扫描，所以自然形成协作式轮转顺序。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    task/.style={draw=structurecolor, thick, circle, minimum size=1.5cm, fill=structurecolor!8},
+    arrow/.style={-stealth, thick}
+]
+    \node[task] (a) at (-4,0) {A};
+    \node[task] (b) at (0,0) {B};
+    \node[task] (c) at (4,0) {C};
+    \draw[arrow] (a) to[bend left=18] node[above] {\texttt{pNext}} (b);
+    \draw[arrow] (b) to[bend left=18] node[above] {\texttt{pNext}} (c);
+    \draw[arrow] (c) to[bend left=35] node[below] {回到表头} (a);
+\end{tikzpicture}
+\caption{任务控制块组成的循环链表} \label{fig:app-coro-ring}
+\end{figure}
+
+这种结构删除表头时需要额外处理：必须让尾节点改为指向新的表头。删除唯一节点时，则把 \texttt{pTaskList} 设为空指针。任务数量很少时，线性寻找尾节点和前驱节点的代价可以接受。
+
+% ---------------------------------------------------------------------
+\section{setjmp 与 longjmp 的双重返回}
+
+\texttt{setjmp(env)} 首次执行时返回零；以后调用 \texttt{longjmp(env, value)} 恢复该现场时，同一个 \texttt{setjmp} 表达式会再次返回，这次返回 \texttt{value}。调度器正是用不同的非零返回码描述跳转原因。
+
+主调度现场使用四个返回码：
+
+\begin{table}[htbp]
+\centering
+\caption{envMain 的返回码含义} \label{tab:app-coro-main-code}
+\begin{tabular}{lll}
+\toprule
+\textbf{返回码} & \textbf{宏} & \textbf{下一步动作} \\
+\midrule
+0 & \texttt{TASK\_MAIN\_INIT} & 选定表头任务 \\
+1 & \texttt{TASK\_MAIN\_EXIT} & 所有任务结束，返回调用者 \\
+2 & \texttt{TASK\_MAIN\_JUMP\_SHARED} & 恢复共享栈后跳入任务现场 \\
+3 & \texttt{TASK\_MAIN\_START\_TASK} & 第一次启动当前任务 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+任务自己的 \texttt{env} 使用零表示首次保存，使用 \texttt{TASK\_COMMON\_RUN} 表示恢复执行。必须保证传给 \texttt{longjmp} 的值非零，因为 C 标准规定传入零时，\texttt{setjmp} 观察到的结果仍会变成一。
+
+\begin{anybox}{源代码与接口注释的细微差别}
+头文件把 \texttt{Task\_Start} 注释为“不会返回”，但当前实现收到 \texttt{TASK\_MAIN\_EXIT} 后会落到函数末尾并返回零。也就是说，只要全部任务入口正常结束，当前代码实际上可以返回。工程文档和调用者应以实现行为为准，或者后续统一接口契约与实现。
+\end{anybox}
+
+% ---------------------------------------------------------------------
+\section{独立栈任务的完整时间线}
+
+独立栈任务由 \texttt{Task\_CreateWithStack} 创建。创建阶段只填写 TCB，并没有立即执行任务入口。
+
+\subsection{第一次启动}
+
+\begin{enumerate}
+\item \texttt{Task\_Start} 用 \texttt{setjmp(envMain)} 保存主调度现场；
+\item 初次返回值为零，调度器把 \texttt{pCurrent} 指向表头任务；
+\item \texttt{longjmp} 让 \texttt{setjmp(envMain)} 以启动任务返回码再次返回；
+\item 独立栈分支通过 \texttt{TASK\_SET\_STACK} 修改栈指针；
+\item \texttt{Task\_RunEntry} 在新栈上调用用户任务入口。
+\end{enumerate}
+
+\subsection{主动挂起}
+
+任务调用 \texttt{Task\_Wait(timeMs)} 时，函数先计算绝对唤醒时刻，把状态改为 \texttt{SUSPEND}，再执行 \texttt{setjmp(current->env)}。首次保存返回零，因此进入调度路径。
+
+\subsection{恢复执行}
+
+时间条件满足后，\texttt{Task\_JumpNext} 把任务改为 \texttt{READY}。任务被选中时，调度器调用 \texttt{longjmp(current->env, TASK\_COMMON\_RUN)}。原来的 \texttt{setjmp} 以非零值再次返回，跳过调度分支，执行 \texttt{TASK\_ENABLE\_IRQ}，随后 \texttt{Task\_Wait} 返回到用户任务。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    block/.style={draw=structurecolor, thick, rounded corners=2pt, minimum width=3.4cm, minimum height=0.85cm, align=center, fill=structurecolor!8, font=\small},
+    arrow/.style={-stealth, thick}
+]
+    \node[block] (start) at (0,4.0) {切换到独立栈并进入任务};
+    \node[block] (run) at (0,2.6) {执行用户代码};
+    \node[block] (wait) at (0,1.2) {\texttt{Task\_Wait} 保存任务现场};
+    \node[block] (schedule) at (0,-0.2) {调度其他任务};
+    \node[block] (ready) at (0,-1.6) {时间到达，状态变为 READY};
+    \node[block] (restore) at (0,-3.0) {\texttt{longjmp} 恢复任务现场};
+    \draw[arrow] (start) -- (run);
+    \draw[arrow] (run) -- (wait);
+    \draw[arrow] (wait) -- (schedule);
+    \draw[arrow] (schedule) -- (ready);
+    \draw[arrow] (ready) -- (restore);
+    \draw[arrow,rounded corners] (restore.east) -- ++(2.5,0) |- node[right] {从等待函数下一行继续} (run.east);
+\end{tikzpicture}
+\caption{独立栈任务的挂起与恢复时间线} \label{fig:app-coro-unique-timeline}
+\end{figure}
+
+独立栈没有复制步骤，任务自动变量仍留在自己的栈区。代价是每个任务都要按最坏调用深度预留完整栈空间。
+
+% ---------------------------------------------------------------------
+\section{共享栈任务为什么必须复制}
+
+共享栈任务第一次启动时运行在调度器当前使用的主栈上。任务 A 挂起后，如果任务 B 继续使用同一栈区，B 的函数调用会覆盖 A 的自动变量和返回地址。只保存 \texttt{jmp\_buf} 无法阻止这种覆盖。
+
+\subsection{备份阶段}
+
+\texttt{Task\_CalcStackUsage} 用当前局部变量地址近似当前栈指针，以 \texttt{stackTop-currentSp} 估计已用空间，再增加安全余量并向 16 字节对齐。\texttt{Task\_BackupSharedStack} 把这段内存复制到任务专属的 \texttt{pBackupStack}。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    cell/.style={draw=structurecolor, thick, minimum width=3.1cm, minimum height=0.8cm, align=center, font=\small},
+    used/.style={fill=structurecolor!16},
+    arrow/.style={-stealth, thick}
+]
+    \node[cell] (top) at (-3.0,2.4) {共享栈高地址};
+    \node[cell,used] (frame1) at (-3.0,1.55) {任务入口栈帧};
+    \node[cell,used] (frame2) at (-3.0,0.70) {用户函数栈帧};
+    \node[cell,used] (frame3) at (-3.0,-0.15) {\texttt{Task\_Wait} 栈帧};
+    \node[cell] (free) at (-3.0,-1.0) {未使用区域};
+    \node[cell,used,minimum height=2.55cm] (backup) at (3.0,0.70) {任务专属备份区\\\texttt{stackUsed} 字节};
+    \draw[arrow] (-1.3,1.2) -- node[above] {挂起时复制} (1.3,1.2);
+    \draw[arrow] (1.3,0.25) -- node[below] {恢复前写回} (-1.3,0.25);
+\end{tikzpicture}
+\caption{共享栈任务的备份与恢复} \label{fig:app-coro-shared-copy}
+\end{figure}
+
+如果计算出的 \texttt{stackUsed} 大于 \texttt{TASK\_SHARED\_BAK\_STACK\_SIZE}，当前实现进入空循环。它不会写越界，但系统也不会继续运行，因此产品代码应把这里替换为可诊断的错误处理。
+
+\subsection{恢复阶段}
+
+共享栈任务被选中后，调度器不能直接跳回任务，因为任务原来的栈内容还没有恢复。它先跳到 \texttt{envMain} 的共享栈恢复分支，调用 \texttt{Task\_RestoreSharedStack} 写回栈内容，最后再 \texttt{longjmp} 到任务自己的 \texttt{env}。
+
+恢复函数本身也正在主栈上运行。如果复制区域覆盖了恢复函数当前栈帧，函数还没有执行完就会破坏自己。因此 \texttt{Task\_StartShared} 建立 \texttt{reserve} 安全区，恢复函数还会检查当前栈位置与目标栈顶之间是否留有足够距离。
+
+\begin{anybox}{共享栈不是零成本}
+共享栈减少了每个任务长期占用的完整栈空间，却把代价转移成每次切换时的内存复制。栈使用越深，复制时间越长。当前头文件还明确禁止在共享栈任务的嵌套函数中调用等待接口，因此它适合栈深度可控的简单流程。
+\end{anybox}
+
+% ---------------------------------------------------------------------
+\section{Task\_JumpNext 的三阶段扫描}
+
+\texttt{Task\_JumpNext} 是调度器的核心。它在一个无限循环中完成三个阶段。
+
+\subsection{阶段一：更新就绪状态}
+
+调度器遍历所有未删除且已经启动的任务。延时时刻已经超过，或者等待条件的标志已经置位时，任务状态变为 \texttt{READY}。
+
+当前源码使用：
+
+\begin{lstlisting}[style=c]
+/* 时间超过目标，或者等待条件已经触发，就把任务改为就绪 */
+if (((p->nextRunTime != 0u) &&
+     (pObj->pfnGetTime() > p->nextRunTime)) ||
+    ((p->pWaitCondition != NULL) &&
+     (p->pWaitCondition->flag == 1u)))
+{
+    p->state = TASK_STATUS_READY;
+}
+\end{lstlisting}
+
+这里使用严格大于，因此时间刚好等于 \texttt{nextRunTime} 时不会唤醒，要等到后一次扫描。对于毫秒计数器，这通常只增加一个时基以内的延迟。
+
+\subsection{阶段二：消费条件标志}
+
+所有因同一条件变为 \texttt{READY} 的等待者已经在第一阶段完成状态更新，第二阶段再清除标志。因此当前条件通知更接近一次“广播”：扫描时正在等待该条件的任务都可能变为就绪，而不是只唤醒其中一个任务。
+
+\subsection{阶段三：选择任务}
+
+扫描从 \texttt{pCurrent->pNext} 开始。遇到 \texttt{READY} 任务就恢复它；遇到 \texttt{INIT} 任务就回到主调度现场首次启动它；遇到其他状态则继续前进。代码没有优先级字段，也没有时间片，所以这是按链表顺序运行的协作式轮转调度。
+
+如果所有任务都处于 \texttt{SUSPEND}，函数会不断读取时间并扫描链表，不会进入低功耗等待。这种忙等结构适合 PC 教学演示，单片机上应增加空闲钩子，或者根据最近唤醒时间进入睡眠。
+
+% ---------------------------------------------------------------------
+\section{延时等待与时间回绕}
+
+\texttt{Task\_Wait} 把当前时间和延时相加，保存为绝对唤醒时刻：
+
+\begin{equation}
+t_{\mathrm{wake}}=t_{\mathrm{now}}+\Delta t
+\end{equation}
+
+当毫秒计数器是 32 位无符号数时，它最终会从最大值回绕到零。直接使用 \texttt{now > wake} 比较无法正确处理跨越回绕点的延时。常见做法是使用有符号差值判断：
+
+\begin{lstlisting}[style=c]
+/**
+  * @brief  判断当前时间是否已经到达目标时间。
+  * @param  currentTime 当前无符号计数值。
+  * @param  targetTime 目标无符号计数值。
+  * @retval 非零表示已经到达，零表示尚未到达。
+  * @note   延时间隔必须小于无符号计数范围的一半。
+  */
+static uint8_t Task_IsTimeReached(uint32_t currentTime,
+                                  uint32_t targetTime)
+{
+    /* 转成有符号差值后，计数器回绕仍能保持先后关系 */
+    return ((int32_t)(currentTime - targetTime) >= 0) ? 1u : 0u;
+}
+\end{lstlisting}
+
+这段代码用于说明改进方向，本附录没有修改现有调度器源码。
+
+% ---------------------------------------------------------------------
+\section{条件等待与任务连接}
+
+\texttt{Task\_ConditionWait} 与 \texttt{Task\_Wait} 的现场切换结构相同，区别是它把 \texttt{nextRunTime} 清零，并把 \texttt{pWaitCondition} 指向目标条件。\texttt{Task\_ConditionNotify} 只把条件标志置一，真正的状态更新仍由调度扫描完成。
+
+每个任务控制块内部还有一个结束条件 \texttt{condition}。\texttt{Task\_Join(taskId)} 找到目标任务后，增加 \texttt{joinWaitCount}，再等待该结束条件。目标入口返回时，\texttt{Task\_RunEntry} 把任务状态改为 \texttt{DELETED}，并通知结束条件。
+
+\texttt{joinWaitCount} 解决了一个生命周期问题：如果还有任务等待目标结束，目标 TCB 不能立刻回收到资源池。等待者恢复后减少计数，最后一个等待者再尝试销毁目标任务。
+
+% ---------------------------------------------------------------------
+\section{任务正常结束后的路径}
+
+用户任务入口返回到 \texttt{Task\_RunEntry} 后，调度器依次执行：
+
+\begin{enumerate}
+\item 检查传入的魔法字是否仍等于 \texttt{TCB\_MAGIC\_WORD}；
+\item 把当前任务状态改为 \texttt{DELETED}；
+\item 通知等待该任务结束的连接者；
+\item 在没有连接者时移除链表节点并释放静态资源槽；
+\item 仍有活动任务时继续调度，否则跳回主现场并返回。
+\end{enumerate}
+
+魔法字只能发现部分栈破坏。它不能给出最高栈水位，也不能保证所有越界都会覆盖这个参数。更可靠的办法是在任务启动前用固定字节填充整个栈区，运行一段时间后扫描仍未改写的区域，从而估算最大使用量。
+
+% ---------------------------------------------------------------------
+\section{调度器必须保持的内部不变量}
+
+所谓“不变量”，是指无论任务切换多少次都必须成立的条件。理解不变量比逐行背代码更有价值。
+
+\begin{enumerate}
+\item \texttt{pCurrent} 在执行用户代码时必须指向正在运行的任务；
+\item 状态为 \texttt{RUNNING} 的任务最多只能有一个；
+\item 所有链表节点都必须来自已占用的 TCB 槽位；
+\item 独立栈区之间不能重叠，并且栈顶必须满足 ABI 对齐要求；
+\item 共享栈任务恢复 \texttt{env} 之前，原栈内容必须已经写回；
+\item 任务现场仍可能恢复时，对应 TCB 和栈存储不能释放；
+\item 禁止中断以后必须存在确定的重新使能路径；
+\item 任务只有主动调用等待接口或入口返回时，才会把执行权交给调度器。
+\end{enumerate}
+
+只要其中一条被破坏，故障就可能表现为跳转到错误地址、局部变量突然变化、循环链表无法结束或系统中断长期关闭。
+
+% ---------------------------------------------------------------------
+\section{当前实现值得特别审计的边界}
+
+本节不是否定示例，而是说明从教学实现走向产品实现时必须补上的检查。
+
+\subsection{入口函数与初始化参数}
+
+\texttt{Task\_CreateWithStack} 和 \texttt{Task\_Create} 当前没有拒绝空入口函数。创建成功后，\texttt{Task\_RunEntry} 会直接调用 \texttt{pfnEntry}。产品版本应在创建阶段验证入口指针。
+
+\texttt{Task\_Init} 允许传入空时间回调，随后创建和启动接口会返回未初始化错误。这个行为可以工作，但接口文档需要明确“初始化函数是否接受空指针”。
+
+\subsection{独立栈重叠检查}
+
+\texttt{Task\_CheckStackOverlap} 的意图是比较新栈区和已有独立栈区。共享栈任务的 \texttt{stackTop} 为零，且 \texttt{stackSize} 不参与共享栈管理。检查时应明确跳过共享栈任务，避免把没有独立栈区的 TCB 当成地址区间参与计算。
+
+\subsection{中断临界区}
+
+配置文件中的 \texttt{TASK\_DISABLE\_IRQ} 和 \texttt{TASK\_ENABLE\_IRQ} 默认是空宏。PC 示例没有真正中断，但 STM32 移植后，任务状态、链表和共享栈复制如果会被中断访问，就必须提供真实实现，并明确允许屏蔽中断的最长时间。
+
+\subsection{C 标准与 ABI}
+
+标准 C 支持同一线程内的 \texttt{setjmp} 和 \texttt{longjmp}，却没有标准接口允许程序任意改写栈指针。\texttt{TASK\_SET\_STACK}、共享栈复制和从复制后的栈帧继续执行都依赖编译器、优化选项和 ABI。升级编译器以后需要重新验证，不能只凭 C 源码相同就认定行为不变。
+
+% ---------------------------------------------------------------------
+\section{Cortex-M 移植的关键问题}
+
+现有配置中的 \texttt{TASK\_SET\_STACK} 使用 x86\_64 的 \texttt{rsp}，不能直接放到 Cortex-M。移植前需要回答以下问题。
+
+\subsection{选择 MSP 还是 PSP}
+
+Cortex-M 有主栈指针 MSP 和进程栈指针 PSP。异常处理默认使用 MSP，线程模式可以配置为使用 PSP。若希望中断始终拥有稳定的内核栈，而协程任务使用各自栈区，通常应让线程模式任务使用 PSP，并保留 MSP 给异常处理。
+
+\subsection{保存哪些寄存器}
+
+必须确认目标 C 库的 \texttt{jmp\_buf} 保存哪些寄存器。根据 ARM 过程调用规范，调用者保存寄存器和被调用者保存寄存器承担不同职责；启用硬件浮点以后，还要确认浮点寄存器现场是否包含在实现中。
+
+\subsection{栈对齐}
+
+ARM EABI 要求公共调用边界满足栈对齐。创建独立栈时不能只把数组末地址直接写入栈指针，还要向下对齐，并预留启动入口需要的初始空间。栈区还应放在允许 CPU 访问且具备正确读写属性的 RAM 中。
+
+\subsection{中断切换时机}
+
+当前调度器是协作式，任务切换只发生在普通函数调用路径中。不要在任意中断里直接 \texttt{longjmp} 到任务现场。中断可以更新时间或设置条件标志，任务切换仍应回到确定的线程模式位置执行。
+
+\begin{table}[htbp]
+\centering
+\caption{Cortex-M 移植检查表} \label{tab:app-coro-cortex-check}
+\begin{tabularx}{\textwidth}{lXX}
+\toprule
+\textbf{检查项} & \textbf{需要确认的内容} & \textbf{失败表现} \\
+\midrule
+栈指针 & 线程模式使用 MSP 还是 PSP & 首次启动立即 HardFault \\
+寄存器现场 & \texttt{jmp\_buf} 的实际布局 & 恢复后变量或返回地址错误 \\
+栈对齐 & 入口前是否满足 ABI 对齐 & 函数调用或浮点指令异常 \\
+中断宏 & 屏蔽与恢复是否成对 & 调度竞争或中断永久关闭 \\
+共享栈容量 & 最大调用深度和复制时间 & 空循环停机或实时性下降 \\
+时间回绕 & 延时比较是否跨回绕安全 & 长期运行后任务提前或延后唤醒 \\
+优化选项 & 编译器是否内联关键栈函数 & 栈顶估算和恢复范围错误 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% ---------------------------------------------------------------------
+\section{调试协程故障的顺序}
+
+协程故障常常表现为“程序跳飞”，但根因可能位于更早的栈复制或状态更新。建议按以下顺序定位：
+
+\begin{enumerate}
+\item 在每次切换前记录当前 PID、目标 PID、状态和跳转返回码；
+\item 检查 \texttt{pCurrent} 是否与实际运行任务一致；
+\item 检查独立栈上下界、栈对齐和最高水位；
+\item 对共享栈记录 \texttt{stackTop}、当前栈位置和 \texttt{stackUsed}；
+\item 检查备份区写入前后的校验值，确认复制长度没有变化；
+\item 检查中断关闭点与重新使能点是否成对；
+\item 最后再检查 \texttt{setjmp} 实现和汇编栈切换，避免一开始就把所有问题归咎于底层库。
+\end{enumerate}
+
+\begin{table}[htbp]
+\centering
+\caption{典型故障现象与优先检查位置} \label{tab:app-coro-faults}
+\begin{tabularx}{\textwidth}{lXX}
+\toprule
+\textbf{现象} & \textbf{优先检查} & \textbf{可能原因} \\
+\midrule
+首次启动即异常 & 栈指针与对齐 & 架构宏错误，栈顶地址错误 \\
+第一次等待后异常 & 任务 \texttt{env} & 现场未保存，局部栈帧已失效 \\
+共享栈恢复后变量变化 & 复制范围 & \texttt{stackUsed} 过小或恢复覆盖自身栈帧 \\
+任务永远不再运行 & 状态与时间 & 条件未触发，时间比较错误，链表扫描遗漏 \\
+其他任务全部饿死 & 当前任务代码 & 协作式任务没有主动等待 \\
+任务结束后随机异常 & 销毁顺序 & TCB 或栈在最后一次恢复前被回收 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+% ---------------------------------------------------------------------
+\section{适用范围与停止扩展的边界}
+
+这个调度器适合任务数量少、切换点明确、任务之间只需要简单条件通知的系统。它不提供优先级继承、互斥量、消息队列、抢占时间片和内存保护。
+
+当项目出现以下需求时，与其继续给教学调度器增加补丁，不如评估成熟 RTOS：
+
+\begin{itemize}
+\item 高优先级控制任务必须立即打断低优先级任务；
+\item 多个任务需要可靠的队列、信号量和互斥保护；
+\item 需要芯片厂商已经验证的 Cortex-M 上下文切换；
+\item 需要追踪工具、运行时间统计和标准化故障钩子；
+\item 团队需要跨编译器、跨芯片维护同一套任务接口。
+\end{itemize}
+
+也可以采用折中方案：在 RTOS 的一个线程内部运行少量协程，把它们作为顺序流程管理工具。此时 RTOS 负责硬实时调度和线程间通信，协程只负责把单个线程内部的等待流程写得更清晰。
+
+% ---------------------------------------------------------------------
+\section{本附录小结}
+
+第 11 章协程任务管理器的核心不是某一个 \texttt{setjmp} 调用，而是一组必须同时成立的关系：TCB 保存调度状态，\texttt{jmp\_buf} 保存寄存器现场，任务栈保存自动变量，循环链表决定选择顺序，条件和时间决定何时重新就绪。独立栈用空间换取简单切换，共享栈用复制时间换取较低的长期内存占用。
+
+真正移植到单片机时，最需要谨慎的不是上层任务 API，而是栈指针、ABI、中断临界区和计时回绕。把这些边界逐项验证清楚以后，协程才能从“能够演示跳转”变成“行为可以解释的任务管理器”。

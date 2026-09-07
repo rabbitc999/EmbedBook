@@ -1,0 +1,293 @@
+\chapter{数字滤波器设计} \label{ch:digital-filter}
+
+传感器输出很少是一条完全平滑的曲线。ADC 量化误差、电源纹波、机械振动和通信干扰都会叠加到真实信号上。如果直接把带噪测量值送给显示界面或控制器，轻则数字跳动，重则控制输出振荡。本章从容易理解的滑动平均开始，依次实现一阶低通、中值和一维卡尔曼滤波，并比较它们各自适合处理的噪声类型。完整示例代码位于 \texttt{Chapter-filter/数字滤波器/} 目录。
+
+\medskip \textbf{本章涉及到的实验内容：}
+\begin{enumerate}
+\item 滑动平均滤波；
+\item 一阶低通滤波；
+\item 中值滤波；
+\item 一维卡尔曼滤波；
+\item 同一组含噪数据的滤波结果比较。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+\section{滤波器在系统中的位置}
+
+滤波不是让数据“看起来漂亮”，而是在保留有效变化的前提下削弱不需要的成分。图~\ref{fig:filter-data-flow}~给出了传感器数据进入控制系统之前的典型处理流程。滤波器参数过强会掩盖真实变化，因此滤波后的数据仍然需要结合原始数据和系统响应一起观察。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[
+    block/.style={draw=structurecolor, thick, rounded corners=2pt, minimum width=2.5cm, minimum height=1.0cm, align=center, fill=structurecolor!8},
+    arrow/.style={-stealth, thick}
+]
+    \node[block] (sensor) at (-4.5,0) {传感器};
+    \node[block] (sample) at (-1.5,0) {定时采样};
+    \node[block] (filter) at (1.5,0) {数字滤波器};
+    \node[block] (consumer) at (4.5,0) {显示或控制器};
+
+    \draw[arrow] (sensor) -- node[above] {模拟量} (sample);
+    \draw[arrow] (sample) -- node[above] {$x[k]$} (filter);
+    \draw[arrow] (filter) -- node[above] {$y[k]$} (consumer);
+\end{tikzpicture}
+\caption{数字滤波器的数据处理流程} \label{fig:filter-data-flow}
+\end{figure}
+
+% ---------------------------------------------------------------------
+\section{滑动平均滤波}
+
+滑动平均滤波保留最近 $N$ 个采样值，并输出它们的算术平均值：
+
+\begin{equation}
+y[k]=\frac{1}{N}\sum_{i=0}^{N-1}x[k-i]
+\label{eq:moving-average}
+\end{equation}
+
+最直接的实现每次都重新累加 $N$ 个数据，计算量为 $O(N)$。示例代码保存窗口累计和，新数据进入时减去最旧数据，再加上新数据，因此每次更新只需要常数次运算：
+
+\begin{lstlisting}[style=c]
+/* 更新累计和与循环窗口 */
+filter->sum -= filter->buffer[filter->index];
+filter->buffer[filter->index] = input;
+filter->sum += input;
+filter->index = (filter->index + 1u) % filter->length;
+\end{lstlisting}
+
+窗口越长，随机噪声被平均得越充分，但阶跃变化也会被拖成斜坡。它适合重量、温度和电池电压等变化较慢的信号，不适合要求快速响应的保护判断。
+
+% ---------------------------------------------------------------------
+\section{一阶低通滤波}
+
+一阶低通滤波只保存上一次输出，不需要数组：
+
+\begin{equation}
+y[k]=y[k-1]+\alpha\bigl(x[k]-y[k-1]\bigr)
+\label{eq:first-low-pass}
+\end{equation}
+
+其中 $\alpha$ 的范围为零到一。$\alpha$ 接近一时，新数据占主要部分，响应快但平滑能力弱；$\alpha$ 接近零时，旧输出占主要部分，响应慢但更加平滑。
+
+如果已知采样周期 $T_s$ 和期望截止频率 $f_c$，可以先计算时间常数：
+
+\begin{align}
+\tau &= \frac{1}{2\pi f_c} \\
+\alpha &= \frac{T_s}{\tau+T_s}
+\end{align}
+
+同一个 $\alpha$ 只有在采样周期固定时才有确定的滤波效果。采样周期改变以后，应重新计算系数。
+
+% ---------------------------------------------------------------------
+\section{中值滤波}
+
+平均滤波擅长处理连续的小幅随机噪声，却容易被单个极大值拉偏。中值滤波先把窗口中的数据排序，再取中间值：
+
+\begin{equation}
+y[k]=\operatorname{median}\{x[k-m],\ldots,x[k],\ldots,x[k+m]\}
+\end{equation}
+
+例如窗口数据为 $10.0$、$10.2$、$25.0$、$9.9$ 和 $10.1$，排序后中间值是 $10.1$。突发的 $25.0$ 不会直接影响输出，所以中值滤波特别适合去除开关干扰、接触抖动和偶发通信错误形成的尖峰。
+
+中值滤波需要排序。示例把窗口限制为不超过九个元素，并使用插入排序。小数组上算法结构简单、执行时间容易估算，比引入通用排序库更适合裸机环境。
+
+% ---------------------------------------------------------------------
+\section{一维卡尔曼滤波}
+
+前面三种方法只观察数据本身，卡尔曼滤波则同时描述“系统状态如何变化”和“测量有多可信”。本章使用最简单的一维常量状态模型，适合缓慢变化的温度、距离和压力信号。
+
+设上一时刻的状态估计为 $\hat{x}_{k-1}$，估计误差协方差为 $P_{k-1}$，过程噪声协方差为 $Q$，测量噪声协方差为 $R$。每次更新分成预测与校正两个阶段。
+
+\subsection{预测阶段}
+
+常量状态模型认为本次预测值等于上一次估计值，但不确定性会增加：
+
+\begin{align}
+\hat{x}_{k}^{-} &= \hat{x}_{k-1} \\
+P_{k}^{-} &= P_{k-1}+Q
+\label{eq:kalman-predict}
+\end{align}
+
+上标负号表示测量值到来之前的先验估计。这里使用 \texttt{align} 环境，是因为状态预测与协方差预测属于同一个数学步骤，需要对齐展示。
+
+\subsection{校正阶段}
+
+测量值 $z_k$ 到来以后，先计算卡尔曼增益：
+
+\begin{equation}
+K_k=\frac{P_k^{-}}{P_k^{-}+R}
+\label{eq:kalman-gain}
+\end{equation}
+
+随后更新状态估计与协方差：
+
+\begin{align}
+\hat{x}_k &= \hat{x}_k^{-}+K_k\bigl(z_k-\hat{x}_k^{-}\bigr) \\
+P_k &= (1-K_k)P_k^{-}
+\label{eq:kalman-correct}
+\end{align}
+
+$R$ 越大，表示越不相信传感器测量，卡尔曼增益会变小，输出更平滑；$Q$ 越大，表示越不相信状态保持不变的假设，滤波器会更快跟随新测量。两者不是随意的“平滑旋钮”，而是对噪声强度的数学描述。
+
+示例的核心更新过程如下：
+
+\begin{lstlisting}[style=c]
+/* 预测误差协方差，并计算测量所占权重 */
+predictedCovariance = filter->errorCovariance
+                      + filter->processNoise;
+kalmanGain = predictedCovariance
+             / (predictedCovariance + filter->measurementNoise);
+
+/* 根据测量残差修正状态估计 */
+filter->estimate += kalmanGain * (measurement - filter->estimate);
+filter->errorCovariance = (1.0f - kalmanGain) * predictedCovariance;
+\end{lstlisting}
+
+\begin{anybox}{卡尔曼滤波不是固定公式模板}
+本章的一维模型假定真实状态变化缓慢，没有速度、加速度和控制输入。如果对象具有明确的运动模型，应把状态扩展为向量，并建立对应的状态转移矩阵。不能只因为算法名字相同，就把一维参数直接套到所有系统。
+\end{anybox}
+
+% ---------------------------------------------------------------------
+\section{四种滤波结果对比}
+
+图~\ref{fig:filter-result-comparison}~以带有随机扰动和单次尖峰的信号为例，说明不同滤波器的典型表现。为了让曲线便于辨认，图中的滤波结果是教学示意，不对应示例程序的逐点精确输出。
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[x=0.75cm,y=0.58cm]
+    \draw[->,thick] (0,0) -- (13,0) node[right] {采样序号};
+    \draw[->,thick] (0,0) -- (0,8.2) node[above] {测量值};
+    \draw[dashed] (0,4) -- (12.5,4) node[right] {真实值};
+    \draw[gray,thin] plot[smooth] coordinates {(0,4.2) (1,3.5) (2,4.4) (3,3.8) (4,4.3) (5,7.6) (6,3.7) (7,4.4) (8,3.6) (9,4.2) (10,3.8) (11,4.1) (12,3.9)};
+    \draw[structurecolor,thick] plot[smooth] coordinates {(0,4.2) (1,3.9) (2,4.0) (3,3.9) (4,4.1) (5,4.8) (6,4.8) (7,4.8) (8,4.7) (9,4.7) (10,3.9) (11,4.0) (12,3.9)};
+    \draw[red,thick] plot[smooth] coordinates {(0,4.2) (1,4.0) (2,4.1) (3,4.0) (4,4.1) (5,5.0) (6,4.6) (7,4.5) (8,4.2) (9,4.2) (10,4.1) (11,4.1) (12,4.0)};
+    \draw[green!50!black,thick] plot[smooth] coordinates {(0,4.2) (1,3.9) (2,4.2) (3,3.8) (4,4.3) (5,4.3) (6,4.3) (7,4.4) (8,3.7) (9,4.2) (10,3.8) (11,4.1) (12,3.9)};
+    \draw[purple,thick] plot[smooth] coordinates {(0,4.2) (1,4.0) (2,4.1) (3,4.0) (4,4.1) (5,4.6) (6,4.4) (7,4.4) (8,4.2) (9,4.2) (10,4.1) (11,4.1) (12,4.0)};
+    \node[gray] at (2.0,7.5) {原始信号};
+    \node[structurecolor] at (5.0,6.9) {滑动平均};
+    \node[red] at (8.1,6.9) {一阶低通};
+    \node[green!50!black] at (5.0,6.3) {中值};
+    \node[purple] at (8.1,6.3) {卡尔曼};
+\end{tikzpicture}
+\caption{含噪信号与四种滤波结果对比} \label{fig:filter-result-comparison}
+\end{figure}
+
+选择滤波器时可以先判断噪声特点：连续的小幅随机波动适合滑动平均或一阶低通；孤立尖峰适合中值滤波；能够建立状态模型并估计噪声强度时，可以使用卡尔曼滤波。工程中也可以串联使用，例如先用中值滤波去掉尖峰，再用一阶低通削弱高频波动。
+
+% ---------------------------------------------------------------------
+\section{PC 验证结果}
+
+本章示例使用 C99 编译，并打开 \texttt{-Wall}、\texttt{-Wextra}、\texttt{-Wpedantic} 和 \texttt{-Werror} 严格警告选项。\texttt{digital\_filter.c} 与 \texttt{main.c} 编译过程没有产生警告，程序正常结束。
+
+测试序列的第四个采样值从约 $10$ 突然跳到 $24$。表~\ref{tab:filter-pc-result}~记录了该采样时刻四种滤波器的输出。
+
+\begin{table}[htbp]
+\centering
+\caption{尖峰输入时的 PC 滤波结果} \label{tab:filter-pc-result}
+\begin{tabular}{lllll}
+\toprule
+\textbf{原始值} & \textbf{滑动平均} & \textbf{一阶低通} & \textbf{中值} & \textbf{卡尔曼} \\
+\midrule
+24.000 & 13.550 & 13.519 & 10.200 & 13.691 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+中值滤波输出仍保持在正常数据附近，说明它成功压制了单次孤立尖峰。滑动平均、一阶低通和当前参数下的卡尔曼滤波都会受到尖峰影响，随后再逐步回落。这与四种算法的数学特性一致。
+
+独立断言还验证了滑动平均的启动阶段、一阶低通的递推结果、中值窗口排序、一维卡尔曼增益和非法初始化参数，断言均正常通过。
+
+% ---------------------------------------------------------------------
+\section{单片机移植实验}
+
+本节预留四种滤波器在 STM32 开发板上的移植与实测内容。移植实验应让原始数据和滤波数据使用同一采样时刻，避免把任务调度误差误认为滤波误差。
+
+\subsection{硬件接口预留}
+
+\begin{table}[htbp]
+\centering
+\caption{数字滤波器单片机移植接口记录表} \label{tab:filter-mcu-interface}
+\begin{tabularx}{\textwidth}{lllX}
+\toprule
+\textbf{项目} & \textbf{计划接口} & \textbf{当前配置} & \textbf{实测备注} \\
+\midrule
+信号来源 & ADC 或数字传感器 & 待选择 & 记录量程与噪声范围 \\
+采样周期 & 定时器 & 待选择 & 记录实际采样频率 \\
+数据输出 & 串口 & 待选择 & 同步输出原始值与滤波值 \\
+滤波对象 & 温度、压力或距离 & 待选择 & 记录真实变化速度 \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{移植步骤}
+
+\begin{enumerate}
+\item 把 \texttt{digital\_filter.c} 与 \texttt{digital\_filter.h} 加入单片机工程；
+\item 根据传感器变化速度确定采样周期，并使用定时器或数据就绪中断触发采样；
+\item 分别创建四种滤波器状态，禁止多个信号通道共用同一个状态结构体；
+\item 同时输出原始值与滤波值，观察尖峰抑制、随机噪声和响应延迟；
+\item 根据实测噪声调整窗口长度、低通系数、过程噪声和测量噪声；
+\item 统计结构体数量与数组容量，确认静态 RAM 占用没有超过芯片限制。
+\end{enumerate}
+
+采样任务可以按下面的结构接入现有工程：
+
+\begin{lstlisting}[style=c]
+/**
+  * @brief  采集传感器数据并更新四种滤波结果。
+  * @param  无。
+  * @retval 无。
+  * @note   串口发送应放在低优先级任务，避免阻塞采样。
+  */
+void Filter_AppTaskRun(void)
+{
+    float rawValue;
+
+    /* 所有滤波器处理同一个采样值，便于比较结果 */
+    rawValue = Sensor_ReadValue();
+    movingAverageValue = Filter_MovingAverageUpdate(&movingAverage, rawValue);
+    lowPassValue = Filter_LowPassUpdate(&lowPass, rawValue);
+    medianValue = Filter_MedianUpdate(&median, rawValue);
+    kalmanValue = Filter_KalmanUpdate(&kalman, rawValue);
+}
+\end{lstlisting}
+
+\subsection{实测记录预留}
+
+\begin{table}[htbp]
+\centering
+\caption{数字滤波器单片机实测结果记录表} \label{tab:filter-mcu-result}
+\begin{tabular}{llll}
+\toprule
+\textbf{滤波方法} & \textbf{参数} & \textbf{噪声范围} & \textbf{响应延迟} \\
+\midrule
+滑动平均 & 待记录 & 待记录 & 待记录 \\
+一阶低通 & 待记录 & 待记录 & 待记录 \\
+中值滤波 & 待记录 & 待记录 & 待记录 \\
+卡尔曼滤波 & 待记录 & 待记录 & 待记录 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\fbox{\parbox[c][4.0cm][c]{0.82\textwidth}{\centering 此处预留开发板连接照片与原始数据、滤波数据实测曲线}}
+\caption{数字滤波器单片机移植实验记录预留} \label{fig:filter-mcu-result}
+\end{figure}
+
+% ---------------------------------------------------------------------
+\section{完整示例代码}
+
+完整示例位于 \texttt{Chapter-filter/数字滤波器/}：
+
+\begin{itemize}
+\item \texttt{digital\_filter.h}：四种滤波器的数据结构与公共函数；
+\item \texttt{digital\_filter.c}：滑动平均、一阶低通、中值和一维卡尔曼滤波实现；
+\item \texttt{main.c}：同一组含噪数据的对比实验。
+\end{itemize}
+
+示例不依赖动态内存。所有窗口和状态都由调用者提供，适合直接放进 STM32 裸机任务。需要注意的是，滑动平均与中值滤波结构体包含固定容量数组，创建大量通道时应计算总 RAM 占用。
+
+% ---------------------------------------------------------------------
+\section{本章小结}
+
+滤波器没有绝对的“最好”，只有是否匹配噪声和信号特征。滑动平均实现直观，一阶低通占用内存少，中值滤波擅长抑制尖峰，卡尔曼滤波能够把模型不确定性和测量不确定性统一起来。滤波强度越大通常意味着延迟越明显，最终参数必须放回真实采样周期和真实控制系统中观察。
