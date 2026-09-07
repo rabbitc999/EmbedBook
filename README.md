@@ -86,25 +86,36 @@ xelatex book.tex        # 第二次编译生成正确目录与引用
 
 ## 解析器生成器
 
-仓库提供 Yacc 风格的 LL(1) 递归下降解析器生成器：
+仓库提供单文件、Yacc 风格的非递归 LL(1) 解析器生成器：
 
 ```bash
-python Chapter-script-engine/parser_gen.py -o parser_gen.c
+python Chapter-script-engine/parser_gen.py \
+    --grammar-file Chapter-script-engine/grammar_calc.gram \
+    --report grammar_calc.report \
+    -o parser_gen.c
 ```
 
-`generate_parser_c(grammar, tokens)` 接收：
+`generate_parser_c(grammar, tokens, variables, token_defs)` 接收：
 
 - `grammar`：文法规则与 `$$/$1/$2...` 语义动作；
-- `tokens`：终结符（TOKEN 流）名称列表。
+- `tokens`：额外终结符名称列表；`STRING`、`NUMBER`、`VARIABLE` 默认存在；
+- `variables`：可选的预声明动态变量；
+- `token_defs`：由 `%define` 得到的固定字符串词法规则。
 
-生成结果包含 Token 枚举、`ParserToken_T` 与每个非终结符对应的
-`Parse_xxx()` 递归函数。可通过 `--grammar grammar.json` 或
-`--grammar-file grammar.gram` 使用自定义文法。
+生成结果包含默认 Lexer、Token 枚举、预测分析表和显式分析栈，并提供
+`Parser_Run()` 与 `Parser_RunText()`。可通过 `--grammar grammar.json` 或
+`--grammar-file grammar.gram` 使用自定义文法；生成时会输出最终产生式、
+FIRST、FOLLOW 和预测分析表。
 
 除 JSON 外，文法和变量也可以写成 `.gram` 文本（推荐），不需要再维护 JSON：
 
 ```text
-%token NUMBER PLUS MINUS STAR SLASH LPAREN RPAREN VAR
+%define PLUS "+"
+%define MINUS "-"
+%define STAR "*"
+%define SLASH "/"
+%define LPAREN "("
+%define RPAREN ")"
 %start expr
 
 %var X int32 = 0

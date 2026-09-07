@@ -164,6 +164,26 @@ VarValue_T *Var_Or(VarValue_T *pLeft, VarValue_T *pRight);
 #define VAR_RUNTIME_ERR_BOUND       -2
 #define VAR_RUNTIME_ERR_NOT_FOUND   -3
 #define VAR_RUNTIME_ERR_MEMORY      -4
+#define VAR_RUNTIME_ERR_RANGE       -5
+
+/* 强类型读取：成功后才写输出参数，源变量保持不变 */
+int32_t Var_GetInt8(const VarValue_T *pValue, int8_t *pResult);
+int32_t Var_GetUint8(const VarValue_T *pValue, uint8_t *pResult);
+int32_t Var_GetInt16(const VarValue_T *pValue, int16_t *pResult);
+int32_t Var_GetUint16(const VarValue_T *pValue, uint16_t *pResult);
+int32_t Var_GetInt32(const VarValue_T *pValue, int32_t *pResult);
+int32_t Var_GetUint32(const VarValue_T *pValue, uint32_t *pResult);
+int32_t Var_GetInt64(const VarValue_T *pValue, int64_t *pResult);
+int32_t Var_GetUint64(const VarValue_T *pValue, uint64_t *pResult);
+int32_t Var_GetFloat(const VarValue_T *pValue, float *pResult);
+int32_t Var_GetDouble(const VarValue_T *pValue, double *pResult);
+int32_t Var_GetChar(const VarValue_T *pValue, char *pResult);
+int32_t Var_GetString(const VarValue_T *pValue, const char **ppResult);
+
+/* 按类型模板构造转换后的独立值，仅支持简单类型与数组 */
+int32_t Var_ConvertValue(const VarValue_T *pSource,
+                         const VarValue_T *pTypeTemplate,
+                         VarValue_T **ppResult);
 
 /* 切片：字符串/数组共用，start 可为负数，end 可为负数或大于长度 */
 int32_t Var_Slice(VarValue_T *pValue,

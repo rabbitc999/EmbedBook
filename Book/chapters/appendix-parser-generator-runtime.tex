@@ -1,6 +1,6 @@
 \chapter{Python 语法转换器与动态类型解析} \label{app:parser-generator-runtime}
 
-第~\ref{ch:script-engine}~章介绍了递归下降解析器、LL(1) 文法和 Python 解析器生成器，但正文把实现细节控制在了“能够理解整体思路”的范围内。本附录沿着仓库中的真实源码继续向下分析：\texttt{grammar\_loader.py} 如何把文法文本转换成内部数据，\texttt{parser\_gen.py} 如何把产生式变成 C 函数，语义动作如何接入 \texttt{VarValue\_T} 动态类型运行时，以及字符串、数组、字典和结构体由谁创建、持有与释放。
+第~\ref{ch:script-engine}~章介绍了递归下降解析器、LL(1) 文法和 Python 解析器生成器，但正文把实现细节控制在了“能够理解整体思路”的范围内。本附录沿着仓库中的真实源码继续向下分析：单文件 \texttt{parser\_gen.py} 如何加载文法、生成默认 Lexer 与非递归预测分析器，语义动作如何接入 \texttt{VarValue\_T} 动态类型运行时，以及字符串、数组、字典和结构体由谁创建、持有与释放。
 
 完整实现位于 \texttt{Chapter-script-engine/} 目录。本附录只解释现有实现，不另外设计一套解析框架。
 
@@ -8,7 +8,7 @@
 \begin{enumerate}
 \item 文法文件的词法切分与结构化加载；
 \item First 集、Follow 集与 LL(1) 选择集；
-\item 直接左递归产生式的循环化生成；
+\item 直接左递归产生式的转换与显式分析栈；
 \item 语义动作到 C 表达式的转换；
 \item \texttt{VarValue\_T} 动态类型表示与类型转换；
 \item 容器扩容、深拷贝、递归释放和所有权边界；
@@ -28,7 +28,7 @@
     note/.style={font=\small, align=center}
 ]
     \node[block] (grammar) at (-5.0,2.0) {文法文件\\\texttt{.gram}};
-    \node[block] (loader) at (-1.7,2.0) {文法加载器\\\texttt{grammar\_loader.py}};
+    \node[block] (loader) at (-1.7,2.0) {单文件加载与分析\\\texttt{parser\_gen.py}};
     \node[block] (model) at (1.7,2.0) {Python 内部模型\\终结符、规则、变量};
     \node[block] (generator) at (5.0,2.0) {代码生成器\\\texttt{parser\_gen.py}};
     \node[block] (cparser) at (5.0,-0.4) {生成的 C 解析器};
@@ -49,16 +49,19 @@
 \caption{语法转换器与动态类型运行时的数据流} \label{fig:app-parser-pipeline}
 \end{figure}
 
-这条边界非常重要。目标单片机不需要安装 Python，也不需要在运行时计算 First 集和 Follow 集。Python 已经把选择关系固化为 C 语言的 \texttt{switch} 分支，运行期只需要读取 Token、调用产生式函数和计算语义值。
+这条边界非常重要。目标单片机不需要安装 Python，也不需要在运行时计算 FIRST 集和 FOLLOW 集。Python 已经把选择关系固化为 C 预测分析表，运行期只需要运行 Lexer、操作显式分析栈并计算语义值。
 
 % ---------------------------------------------------------------------
 \section{文法文件的输入格式}
 
-\texttt{grammar\_loader.py} 接收一种精简的 Yacc 风格文法。终结符通过 \texttt{\%token} 声明，起始非终结符通过 \texttt{\%start} 声明，动态变量通过 \texttt{\%var} 声明，每条产生式独立写成一行。
+\texttt{parser\_gen.py} 接收一种精简的 Yacc 风格文法。\texttt{STRING}、\texttt{NUMBER} 和 \texttt{VARIABLE} 默认存在；固定字符串 Token 通过 \texttt{\%define} 声明，起始非终结符通过 \texttt{\%start} 声明，动态变量通过 \texttt{\%var} 声明，每条产生式独立写成一行。
 
 \begin{lstlisting}
-/* 声明词法层能够产生的终结符 */
-%token NUMBER PLUS STAR LPAREN RPAREN
+/* 声明固定字符串 Token，竖线只表示候选“或” */
+%define PLUS "+"
+%define STAR "*"
+%define LPAREN "("
+%define RPAREN ")"
 %start expr
 
 /* 声明一个由生成器初始化的动态变量 */
@@ -91,7 +94,7 @@ atom := LPAREN expr RPAREN { $$ = $2; }
 
 \subsection{结构化解析}
 
-类 \texttt{\_GramParser} 根据当前 Token 决定解析哪一种顶层语句。最终返回的字典包含三个核心部分，如表~\ref{tab:app-grammar-model}~所示。
+类 \texttt{\_GramParser} 根据当前 Token 决定解析哪一种顶层语句。最终返回的字典包含几个核心部分，如表~\ref{tab:app-grammar-model}~所示。
 
 \begin{table}[htbp]
 \centering
@@ -102,13 +105,20 @@ atom := LPAREN expr RPAREN { $$ = $2; }
 \midrule
 \texttt{tokens} & 终结符名称列表 & 生成 Token 枚举并计算选择集 \\
 \texttt{grammar.start} & 起始非终结符 & 决定 \texttt{Parser\_Run} 首先调用哪个解析函数 \\
-\texttt{grammar.rules} & 产生式字典 & 为每个非终结符生成一个 C 函数 \\
+\texttt{token\_defs} & 固定字符串 Token & 生成最长匹配优先的 Lexer 规则 \\
+\texttt{grammar.rules} & 产生式字典 & 生成最终产生式和预测分析表 \\
 \texttt{variables} & 变量类型与初值描述 & 生成动态变量构造函数和查找表 \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
 加载结束前还会检查右部符号。一个符号既不是已声明终结符，也不是任何产生式的左部，就会直接报错。这个检查阻止了变量名拼写错误悄悄变成永远无法匹配的分支。
+
+\subsection{运行期默认 Lexer}
+
+生成的 Lexer 默认提供 \texttt{STRING}、\texttt{NUMBER} 和 \texttt{VARIABLE}。数字根据形式创建动态值：普通整数为 \texttt{int32\_t}，\texttt{u} 后缀为 \texttt{uint32\_t}，小数或科学计数法为 \texttt{float}，浮点形式加 \texttt{d} 后缀为 \texttt{double}。字符串在 Lexer 内完成反转义，变量 Token 保存名称而不提前查表。
+
+\texttt{\%define EQ "==|="} 中的竖线只表示两个固定候选，不是正则表达式。Python 会按长度降序生成规则，所以 \texttt{==} 先于 \texttt{=} 匹配。
 
 % ---------------------------------------------------------------------
 \section{First 集、Follow 集与选择集}
@@ -133,64 +143,44 @@ atom := LPAREN expr RPAREN { $$ = $2; }
 
 同一个非终结符的两条候选产生式如果在同一个 Token 上拥有重叠选择集，生成器会报告“文法不是 LL(1)”。这是一个生成期错误，因为生成的 \texttt{switch} 无法为同一个 \texttt{case} 同时选择两条规则。
 
-% ---------------------------------------------------------------------
-\section{直接左递归如何转换为循环}
+每次生成时，工具都会在控制台输出转换后的最终产生式、FIRST、FOLLOW 和预测分析表。参数 \texttt{--report 文件名} 可以保存相同的 UTF-8 报告；发生冲突时，错误会指出具体表项及其对应的两条产生式。
 
-普通递归下降不能直接处理下面的规则：
+% ---------------------------------------------------------------------
+\section{直接左递归与非递归预测分析}
+
+普通 LL(1) 文法不能含有左递归。生成器遇到 $E\rightarrow E+T\mid T$ 时，会在 Python 端先构造合成尾非终结符，再对最终文法计算 FIRST、FOLLOW 和预测表：
 
 \begin{equation}
-E\rightarrow E+T\mid T
+E\rightarrow T\ E\_tail,\qquad
+E\_tail\rightarrow +T\ E\_tail\mid\varepsilon
 \end{equation}
 
-如果 \texttt{Parse\_E} 一进入函数就再次调用自己，输入位置还没有前进，程序会一直递归直到栈溢出。仓库中的生成器没有要求用户手工改写文法，而是把产生式分成两组：
+转换过程会保留原动作与“上一轮结果”的关系。基产生式动作先得到累计值；续产生式把该值放入原规则的 \texttt{\$1}，计算后再传给下一个尾规则。因此减法和除法仍保持左结合。当前实现只转换直接左递归；间接左递归会在生成阶段报告完整环路。
+
+生成的 C 不为非终结符创建递归函数，而是使用三类显式数据：
 
 \begin{itemize}
-\item 基产生式：右部第一个符号不是当前非终结符，例如 $E\rightarrow T$；
-\item 续产生式：右部第一个符号就是当前非终结符，例如 $E\rightarrow E+T$。
+\item 预测分析表：根据“非终结符 + 当前 Token”选出产生式；
+\item 分析栈：逆序保存待匹配符号与待执行动作；
+\item 语义帧栈：保存 \texttt{\$1}、\texttt{\$2}、变量名和产生式结果。
 \end{itemize}
 
-生成的函数先解析一次基产生式，把结果保存到 \texttt{accum}，再用循环匹配续产生式：
-
 \begin{lstlisting}[style=c]
-/**
-  * @brief  展示左递归产生式生成后的核心结构。
-  * @param  ctx 解析器上下文。
-  * @retval 当前非终结符的解析结果。
-  * @note   代码为结构化节选，实际函数由生成器输出。
-  */
-static ParseResult_T Parse_Expr(ParserCtx_T *ctx)
-{
-    ParseResult_T result = {0};
-    VarValue_T *accum = NULL;
-    uint8_t matched = 0u;
-
-    /* 先选择并执行基产生式 */
-    result = Parse_Term(ctx);
-    accum = result.value;
-
-    /* 再循环吸收加法续产生式，保持运算左结合 */
-    while (1u)
-    {
-        matched = 0u;
-        if (ctx->cur.type == TOKEN_PLUS)
-        {
-            Parser_Advance(ctx);
-            result.value = Var_Add(accum, Parse_Term(ctx).value);
-            accum = result.value;
-            matched = 1u;
-        }
-        if (matched == 0u)
-        {
-            break;
-        }
+/* 概念性伪代码：实际代码由 parser_gen.py 输出 */
+while (context.stackTop > 0u) {
+    item = Parser_Pop(&context);
+    if (item.kind == PARSER_ITEM_TERMINAL) {
+        Parser_MatchTerminal(&context, item);
+    } else if (item.kind == PARSER_ITEM_NONTERM) {
+        production = table[item.symbol][context.current.type];
+        Parser_ExpandProduction(&context, production);
+    } else {
+        Parser_ExecuteAction(&context, item.symbol);
     }
-    return result;
 }
 \end{lstlisting}
 
-这个结构等价于“先得到左操作数，再不断读取运算符和右操作数”。它既消除了无限递归，又保留了 $a-b-c$ 应解释为 $(a-b)-c$ 的左结合语义。当前实现处理的是直接左递归，不负责自动消除跨多个非终结符形成的间接左递归。
-
-% ---------------------------------------------------------------------
+这里的“非递归”指语法分析不再随文法嵌套增加 C 调用栈。最大深度由 \texttt{PARSER\_MAX\_STACK\_DEPTH} 明确控制，超过容量时返回错误，避免在小栈 MCU 上悄悄触发 HardFault。
 \section{语义动作转换器}
 
 文法右侧花括号中的内容不是直接复制到 C 文件。类 \texttt{\_ActionTranslator} 会再次对动作文本做词法分析，并用 Pratt 解析方法处理运算符优先级。这样，\texttt{\$1 + \$3 * \$5} 能够先生成乘法，再生成加法。
@@ -214,7 +204,8 @@ static ParseResult_T Parse_Expr(ParserCtx_T *ctx)
 \texttt{\$\$ = \$1 + \$3;} & \texttt{Var\_Add(...)} & 两侧为运行时对象时调用动态运算 \\
 \texttt{\$\$ = int32(3);} & \texttt{Var\_CreateInt(3)} & 类型构造器创建新对象 \\
 \texttt{\$1.float} & \texttt{Var\_ToDouble(...)} & 把运行时值读取为 C 标量 \\
-\texttt{[\$1]} & \texttt{Var\_FindVariable(...)} & 用 Token 携带的名称查找变量 \\
+\texttt{[\$1] = \$3;} & \texttt{Parser\_AssignVariable(...)} & 转换后写入已有固定类型变量 \\
+\texttt{def[\$1,int32] = \$3;} & \texttt{Parser\_DefineTyped(...)} & 定义并固定变量类型 \\
 \texttt{\$1.int32 = 5;} & \texttt{Var\_SetInt(...)} & 覆盖对象内容但保持对象地址不变 \\
 \bottomrule
 \end{tabularx}
@@ -231,12 +222,12 @@ static ParseResult_T Parse_Expr(ParserCtx_T *ctx)
 % ---------------------------------------------------------------------
 \section{生成的 C 解析器结构}
 
-生成结果主要包含四部分：Token 枚举、解析上下文、每个非终结符的解析函数，以及统一入口 \texttt{Parser\_Run}。解析上下文持有 Token 数组、总数、当前位置和当前 Token；解析函数只移动上下文中的位置，不复制整条 Token 流。
+生成结果主要包含默认 Lexer、Token 枚举、预测分析表、显式分析栈、语义帧栈和变量注册表。\texttt{Parser\_Run} 继续接收调用者准备的 Token 数组；\texttt{Parser\_RunText} 则直接从脚本文本按需取出 Token，两者复用同一个 \texttt{Parser\_ParseLoop}。
 
-普通非终结符会生成一个按当前 Token 分派的 \texttt{switch}。每个分支按右部顺序消费终结符或调用其他非终结符函数，并把语义值保存到 \texttt{values} 数组。产生式动作执行完成后，\texttt{ParseResult\_T} 同时返回成功标志、动态值和错误信息。
+预测表单元保存产生式编号。主循环展开产生式时逆序压栈，使符号仍按文法从左到右匹配；动作标记最后执行，并把结果回填父语义帧。整个语法分析过程没有非终结符函数之间的递归调用。
 
 \begin{anybox}{固定的语义值数组}
-当前生成模板为每个产生式准备 16 个 \texttt{values} 槽位。文法右部超过该数量时会发生越界风险。若项目需要更长产生式，应在生成期增加长度检查，或者根据最长右部自动生成数组容量，不能只把现有模板直接用于任意规模文法。
+生成器根据最终文法的最长右部计算每个语义帧的 \texttt{values} 槽位数量；分析栈和语义帧的总深度由 \texttt{PARSER\_MAX\_STACK\_DEPTH} 配置。容量不足会返回明确错误，不会越界写入。
 \end{anybox}
 
 % ---------------------------------------------------------------------
@@ -306,6 +297,10 @@ static ParseResult_T Parse_Expr(ParserCtx_T *ctx)
 
 \texttt{Var\_SetValue} 也采用深拷贝。它先克隆源对象，再用新内容替换目标对象内部内容，最后释放目标对象原来的内容。目标对象本身的地址保持不变，所以已经保存该地址的变量表不需要更新。
 
+脚本变量定义后类型固定。\texttt{Parser\_AssignVariable} 先调用 \texttt{Var\_ConvertValue} 按目标类型构造完整临时值，转换全部成功后才替换目标内容。浮点转整数截断小数，超出目标范围返回 \texttt{VAR\_RUNTIME\_ERR\_RANGE}；字符串不隐式转换为数值。数组逐元素转换，任一元素失败时原数组保持不变。
+
+外部 C 程序不必直接访问联合体，可以调用 \texttt{Var\_GetInt32}、\texttt{Var\_GetUint32}、\texttt{Var\_GetFloat}、\texttt{Var\_GetDouble} 和其他同族 Getter。这些函数通过输出参数返回结果，失败时不修改输出参数，因此能够区分“值为 0”和“转换失败”。
+
 % ---------------------------------------------------------------------
 \section{容器扩容、切片与拼接}
 
@@ -370,6 +365,7 @@ static ParseResult_T Parse_Expr(ParserCtx_T *ctx)
 # 中文说明：读取文法文件并生成 C 解析器
 python Chapter-script-engine/parser_gen.py \
     --grammar-file Chapter-script-engine/grammar_calc.gram \
+    --report parser_calc.report \
     -o parser_calc.c
 \end{lstlisting}
 
@@ -400,4 +396,4 @@ Python 生成器适合放在构建电脑上，生成的 C 解析器可以移植�
 % ---------------------------------------------------------------------
 \section{本附录小结}
 
-语法转换器的价值不只是“少写几段 C 代码”，而是把文法合法性、选择集冲突和语义动作类型问题提前到生成期。\texttt{grammar\_loader.py} 负责把文本变成可靠的结构，\texttt{parser\_gen.py} 负责把结构变成确定的递归下降函数，\texttt{variable\_runtime.c} 负责承接运行期的动态值。三层各自拥有清晰边界以后，解析器才能既方便扩展，又不把所有复杂度塞进目标单片机。
+语法转换器的价值不只是“少写几段 C 代码”，而是把文法合法性、选择集冲突和语义动作类型问题提前到生成期。单文件 \texttt{parser\_gen.py} 负责文法加载、分析报告、默认 Lexer 和非递归预测分析代码生成，\texttt{variable\_runtime.c} 负责承接运行期的动态值与严格类型转换。生成期和运行期边界清晰以后，解析器才能既方便扩展，又不把文法分析复杂度塞进目标单片机。

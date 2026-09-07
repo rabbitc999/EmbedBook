@@ -6,6 +6,9 @@
  *          字符串长度不固定，由 malloc/free 管理。
  */
 
+#include <float.h>
+#include <limits.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include "variable_runtime.h"
@@ -729,6 +732,298 @@ int32_t Var_Concat(VarValue_T *pLeft,
 VarValue_T *Var_CloneValue(const VarValue_T *pValue)
 {
     return Var_Clone(pValue);
+}
+
+/**
+ * @brief  把简单数值统一读取为 long double，供严格 Getter 做范围检查。
+ * @param  pValue 源动态值。
+ * @param  pResult 输出的高精度临时数值。
+ * @retval VAR_RUNTIME_OK 表示成功，其他值表示类型或参数错误。
+ */
+static int32_t Var_GetLongDouble(const VarValue_T *pValue,
+                                 long double *pResult)
+{
+    long double value = 0.0L;
+
+    if ((pValue == NULL) || (pResult == NULL)) {
+        return VAR_RUNTIME_ERR_TYPE;
+    }
+    switch (pValue->type) {
+        case VAR_TYPE_INT:    value = (long double)pValue->u.intValue; break;
+        case VAR_TYPE_UINT8:  value = (long double)pValue->u.uint8Value; break;
+        case VAR_TYPE_INT8:   value = (long double)pValue->u.int8Value; break;
+        case VAR_TYPE_UINT16: value = (long double)pValue->u.uint16Value; break;
+        case VAR_TYPE_INT16:  value = (long double)pValue->u.int16Value; break;
+        case VAR_TYPE_UINT32: value = (long double)pValue->u.uint32Value; break;
+        case VAR_TYPE_UINT64: value = (long double)pValue->u.uint64Value; break;
+        case VAR_TYPE_INT64:  value = (long double)pValue->u.int64Value; break;
+        case VAR_TYPE_FLOAT:  value = (long double)pValue->u.floatValue; break;
+        case VAR_TYPE_DOUBLE: value = (long double)pValue->u.doubleValue; break;
+        case VAR_TYPE_CHAR:   value = (long double)pValue->u.charValue; break;
+        default: return VAR_RUNTIME_ERR_TYPE;
+    }
+    if (isfinite(value) == 0) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = value;
+    return VAR_RUNTIME_OK;
+}
+
+/**
+ * @brief  严格读取 int8_t。
+ * @param  pValue 源动态值。
+ * @param  pResult 输出值。
+ * @retval 运行时状态码。
+ */
+int32_t Var_GetInt8(const VarValue_T *pValue, int8_t *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < INT8_MIN) || (value > INT8_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (int8_t)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 uint8_t。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetUint8(const VarValue_T *pValue, uint8_t *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < 0.0L) || (value > UINT8_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (uint8_t)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 int16_t。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetInt16(const VarValue_T *pValue, int16_t *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < INT16_MIN) || (value > INT16_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (int16_t)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 uint16_t。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetUint16(const VarValue_T *pValue, uint16_t *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < 0.0L) || (value > UINT16_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (uint16_t)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 int32_t。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetInt32(const VarValue_T *pValue, int32_t *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < INT32_MIN) || (value > INT32_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (int32_t)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 uint32_t。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetUint32(const VarValue_T *pValue, uint32_t *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < 0.0L) || (value > UINT32_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (uint32_t)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 int64_t。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetInt64(const VarValue_T *pValue, int64_t *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < (long double)INT64_MIN) ||
+        (value > (long double)INT64_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (int64_t)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 uint64_t。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetUint64(const VarValue_T *pValue, uint64_t *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < 0.0L) || (value > (long double)UINT64_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (uint64_t)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 float。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetFloat(const VarValue_T *pValue, float *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < -(long double)FLT_MAX) ||
+        (value > (long double)FLT_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (float)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 double。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetDouble(const VarValue_T *pValue, double *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < -(long double)DBL_MAX) ||
+        (value > (long double)DBL_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (double)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 char。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetChar(const VarValue_T *pValue, char *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < CHAR_MIN) || (value > CHAR_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (char)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 读取字符串只读指针。 @param pValue 源值。 @param ppResult 输出指针。 @retval 运行时状态码。 */
+int32_t Var_GetString(const VarValue_T *pValue, const char **ppResult)
+{
+    if ((pValue == NULL) || (ppResult == NULL)) {
+        return VAR_RUNTIME_ERR_TYPE;
+    }
+    if (pValue->type != VAR_TYPE_STRING) {
+        return VAR_RUNTIME_ERR_TYPE;
+    }
+    *ppResult = pValue->u.stringValue;
+    return VAR_RUNTIME_OK;
+}
+
+/**
+ * @brief  按简单类型或数组模板转换并深拷贝动态值。
+ * @param  pSource 源动态值。
+ * @param  pTypeTemplate 类型模板。
+ * @param  ppResult 输出的新动态值。
+ * @retval 运行时状态码。
+ */
+int32_t Var_ConvertValue(const VarValue_T *pSource,
+                         const VarValue_T *pTypeTemplate,
+                         VarValue_T **ppResult)
+{
+    VarValue_T *pResult = NULL;
+    size_t index = 0u;
+    int32_t ret = VAR_RUNTIME_OK;
+
+    if ((pSource == NULL) || (pTypeTemplate == NULL) ||
+        (ppResult == NULL)) {
+        return VAR_RUNTIME_ERR_TYPE;
+    }
+    switch (pTypeTemplate->type) {
+        case VAR_TYPE_INT: { int32_t value; ret = Var_GetInt32(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateInt(value); } break; }
+        case VAR_TYPE_UINT8: { uint8_t value; ret = Var_GetUint8(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateUint8(value); } break; }
+        case VAR_TYPE_INT8: { int8_t value; ret = Var_GetInt8(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateInt8(value); } break; }
+        case VAR_TYPE_UINT16: { uint16_t value; ret = Var_GetUint16(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateUint16(value); } break; }
+        case VAR_TYPE_INT16: { int16_t value; ret = Var_GetInt16(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateInt16(value); } break; }
+        case VAR_TYPE_UINT32: { uint32_t value; ret = Var_GetUint32(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateUint32(value); } break; }
+        case VAR_TYPE_UINT64: { uint64_t value; ret = Var_GetUint64(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateUint64(value); } break; }
+        case VAR_TYPE_INT64: { int64_t value; ret = Var_GetInt64(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateInt64(value); } break; }
+        case VAR_TYPE_FLOAT: { float value; ret = Var_GetFloat(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateFloat(value); } break; }
+        case VAR_TYPE_DOUBLE: { double value; ret = Var_GetDouble(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateDouble(value); } break; }
+        case VAR_TYPE_CHAR: { char value; ret = Var_GetChar(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateChar(value); } break; }
+        case VAR_TYPE_STRING: { const char *pText = NULL; ret = Var_GetString(pSource, &pText); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateString(pText); } break; }
+        case VAR_TYPE_ARRAY:
+            if ((pSource->type != VAR_TYPE_ARRAY) ||
+                (pSource->u.array.length != pTypeTemplate->u.array.length)) {
+                return VAR_RUNTIME_ERR_BOUND;
+            }
+            pResult = Var_CreateArray();
+            if (pResult == NULL) {
+                return VAR_RUNTIME_ERR_MEMORY;
+            }
+            for (index = 0u; index < pSource->u.array.length; index++) {
+                VarValue_T *pItem = NULL;
+                ret = Var_ConvertValue(pSource->u.array.items[index],
+                                       pTypeTemplate->u.array.items[index],
+                                       &pItem);
+                if (ret != VAR_RUNTIME_OK) {
+                    Var_Free(pResult);
+                    return ret;
+                }
+                ret = Var_ArrayPush(pResult, pItem);
+                if (ret != VAR_RUNTIME_OK) {
+                    Var_Free(pItem);
+                    Var_Free(pResult);
+                    return ret;
+                }
+            }
+            break;
+        default:
+            return VAR_RUNTIME_ERR_TYPE;
+    }
+    if (ret != VAR_RUNTIME_OK) {
+        return ret;
+    }
+    if (pResult == NULL) {
+        return VAR_RUNTIME_ERR_MEMORY;
+    }
+    *ppResult = pResult;
+    return VAR_RUNTIME_OK;
 }
 
 /**

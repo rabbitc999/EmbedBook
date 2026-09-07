@@ -110,11 +110,70 @@ static void Test_DictStructNested(void)
     Var_Free(pStruct);
 }
 
+/**
+ * @brief  验证强类型 Getter 的转换、截断和范围检查。
+ * @retval 无。
+ * @note   转换失败时输出参数必须保持调用前的值。
+ */
+static void Test_StrictGetters(void)
+{
+    VarValue_T *pLarge = Var_CreateInt(300);
+    VarValue_T *pFloat = Var_CreateFloat(1.9f);
+    VarValue_T *pString = Var_CreateString("12");
+    uint8_t uint8Result = 77u;
+    int32_t int32Result = -1;
+    double doubleResult = 0.0;
+
+    Check(Var_GetUint8(pLarge, &uint8Result) == VAR_RUNTIME_ERR_RANGE,
+          "Getter：uint8 越界被拒绝");
+    Check(uint8Result == 77u, "Getter：失败后输出参数不变");
+    Check(Var_GetInt32(pFloat, &int32Result) == VAR_RUNTIME_OK,
+          "Getter：float 可以转换为 int32");
+    Check(int32Result == 1, "Getter：浮点转整数截断小数");
+    Check(Var_GetDouble(pLarge, &doubleResult) == VAR_RUNTIME_OK,
+          "Getter：整数可以转换为 double");
+    Check(doubleResult == 300.0, "Getter：double 转换结果正确");
+    Check(Var_GetInt32(pString, &int32Result) == VAR_RUNTIME_ERR_TYPE,
+          "Getter：字符串不能隐式转换为数字");
+
+    Var_Free(pLarge);
+    Var_Free(pFloat);
+    Var_Free(pString);
+}
+
+/**
+ * @brief  验证数组转换失败时不会产生部分结果。
+ * @retval 无。
+ */
+static void Test_ArrayConversionTransaction(void)
+{
+    VarValue_T *pSource = Var_CreateArray();
+    VarValue_T *pTemplate = Var_CreateArray();
+    VarValue_T *pResult = NULL;
+
+    /* 第二个字符串元素不能转换为 int32，整次转换应失败。 */
+    Var_ArrayPush(pSource, Var_CreateFloat(1.5f));
+    Var_ArrayPush(pSource, Var_CreateString("bad"));
+    Var_ArrayPush(pTemplate, Var_CreateInt(0));
+    Var_ArrayPush(pTemplate, Var_CreateInt(0));
+    Check(Var_ConvertValue(pSource, pTemplate, &pResult) ==
+          VAR_RUNTIME_ERR_TYPE,
+          "数组转换：任一元素失败则整体失败");
+    Check(pResult == NULL, "数组转换：失败时不返回部分数组");
+    Check(pTemplate->u.array.items[0]->u.intValue == 0,
+          "数组转换：失败时类型模板保持不变");
+
+    Var_Free(pSource);
+    Var_Free(pTemplate);
+}
+
 int main(void)
 {
     Test_StringSliceConcat();
     Test_ArrayTempSliceConcat();
     Test_DictStructNested();
+    Test_StrictGetters();
+    Test_ArrayConversionTransaction();
 
     if (s_FailCount == 0) {
         printf("\nVarValue runtime test passed\n");

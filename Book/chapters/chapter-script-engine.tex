@@ -530,7 +530,7 @@ Lua 的代价是需要移植内存分配、提供系统时间，并严格限制�
 % ---------------------------------------------------------------------
 \section{Python 解析生成器}
 
-仓库里的 \texttt{Chapter-script-engine/parser\_gen.py} 会根据“文法 + TOKEN 流”自动生成 C 解析器，配套的 \texttt{Chapter-script-engine/grammar\_loader.py} 负责把下面的 \texttt{.gram} 文本文法转换成生成器能识别的内部结构。
+仓库里的 \texttt{Chapter-script-engine/parser\_gen.py} 是一个单文件工具：它负责加载 \texttt{.gram}、计算最终文法和预测分析表，并生成自带 Lexer 的非递归 C 解析器。生成结果既可以继续接收调用者准备的 TOKEN 流，也可以通过 \texttt{Parser\_RunText} 直接解析脚本文本。
 
 一开始我们尝试用 JSON 描述文法，但 JSON 的嵌套规则写起来很痛苦：
 
@@ -547,7 +547,12 @@ Lua 的代价是需要移植内存分配、提供系统时间，并严格限制�
 于是改成 Yacc 风格但去掉 \texttt{|} 分隔符的 \texttt{.gram} 文本格式：
 
 \begin{lstlisting}
-%Token NUMBER PLUS MINUS STAR SLASH LPAREN RPAREN VAR
+%define PLUS "+"
+%define MINUS "-"
+%define STAR "*"
+%define SLASH "/"
+%define LPAREN "("
+%define RPAREN ")"
 %start expr
 
 %var X int32 = 0
@@ -567,19 +572,40 @@ term := term STAR factor    { $$ = $1 * $3; }
 term := factor              { $$ = $1; }
 
 factor := NUMBER            { $$ = $1; }
-factor := VAR               { $$ = [$1]; }
+factor := VARIABLE          { $$ = [$1]; }
 factor := LPAREN expr RPAREN { $$ = $2; }
 \end{lstlisting}
 
 语法约定如下：
 
 \begin{itemize}
-\item \texttt{\%Token}：声明终结符，一行一条指令，换行结束；
+\item \texttt{STRING}、\texttt{NUMBER} 与 \texttt{VARIABLE} 是默认终结符，不需要使用 \texttt{\%token} 重复声明；
+\item \texttt{\%token}：声明只由外部 TOKEN 流提供的其他终结符；
+\item \texttt{\%define}：声明固定字符串 Token，例如 \texttt{\%define EQ "==|="}；其中只支持竖线表示“或”，不支持正则表达式；
 \item \texttt{\%start}：起始非终结符；
 \item \texttt{\%var}：声明脚本变量及其类型，可带初始值；
 \item 每条产生式单独写成 \texttt{lhs := rhs \{ 动作 \}}，不使用 \texttt{|}，也不需要结尾 \texttt{;}；
 \item \texttt{\%empty} 表示空产生式，例如 \texttt{else\_part := \%empty \{ \$\$ = int32(0); \}}。
 \end{itemize}
+
+\subsection{默认 Lexer 与动态数字}
+
+\texttt{Parser\_RunText} 会自动识别双引号字符串、C 风格变量名和数字。整数默认创建为 \texttt{int32\_t}；整数后缀 \texttt{u} 创建为 \texttt{uint32\_t}；带小数点或科学计数法的数字默认创建为 \texttt{float}；后缀 \texttt{d} 则创建为 \texttt{double}。例如 \texttt{1}、\texttt{1u}、\texttt{1.2}、\texttt{1e3} 和 \texttt{1.2d} 会得到不同的 \texttt{VarType\_T}。正负号仍由文法作为运算符处理，以免把 \texttt{1-2} 的减号误收进数字。
+
+多个固定字符串写在同一个 \texttt{\%define} 中时，Lexer 使用最长匹配。因此 \texttt{\%define EQ "==|="} 会先尝试 \texttt{==}，不会把它拆成两个 \texttt{=}。
+
+\subsection{变量定义与固定类型赋值}
+
+\begin{lstlisting}
+def[$1] = $3;             /* 类型由 $3 推导 */
+def[$1, int32] = $3;      /* 定义为 int32，并转换初值 */
+def[$1, int32[8]] = $3;   /* 定义固定元素类型与长度的数组 */
+def[$1, $2] = $3;         /* 复制 $2 的简单类型或数组类型 */
+[$1] = $3;                /* 给已有变量赋值 */
+$$ = [$1];                /* 读取变量作为产生式结果 */
+\end{lstlisting}
+
+变量定义后类型不再改变。再次赋值时，运行时先把右值转换为目标变量原有类型；转换越界、重复定义或给不存在的变量赋值都会失败。\texttt{def} 的类型复制只支持简单数据类型和数组，不接受字典或结构体。
 
 “一个非终结符的多条候选”不再用 \texttt{|} 连接，而是重复写 \texttt{lhs :=}：
 
@@ -595,31 +621,26 @@ expr := term                { $$ = $1; }
 \item 先解析一条“基产生式”（例如 \texttt{expr := term}），得到左值；
 \item 循环检查当前 TOKEN 是否属于续产生式的开始符集合；
 \item 每次命中续产生式时，把上一轮结果当作新的 \texttt{\$1}，解析后续操作数后重新执行动作；
-\item 不再命中续产生式时结束循环。
+\item 不再命中续产生式时结束折叠。
 \end{enumerate}
 
-因此 \texttt{a - b - c} 仍保持左结合，效果等价于：
+Python 端会把直接左递归转换成带尾非终结符的最终文法。C 端不再生成 \texttt{Parse\_expr} 一类递归函数，而是把终结符、非终结符和语义动作标记压入显式分析栈。上一轮的结果作为尾规则的继承值继续折叠，因此 \texttt{a - b - c} 仍解释为 \texttt{(a-b)-c}。
 
 \begin{lstlisting}[style=c]
-/* 概念性伪代码：Parse_expr 内部 */
-result = Parse_term(ctx);        /* 基产生式 expr := term */
-while (当前 Token 属于 PLUS 或 MINUS) {
-    values[1] = result.value;    /* 上一轮结果就是 $1 */
-    if (PLUS) {
-        Parse_term(ctx);         /* 存入 values[3] */
-        result.value = Var_Add(values[1], values[3]);
-    } else if (MINUS) {
-        Parse_term(ctx);
-        result.value = Var_Sub(values[1], values[3]);
-    }
+/* 概念性伪代码：表驱动主循环 */
+while (分析栈不为空) {
+    item = 弹出分析栈;
+    if (item 是终结符) 匹配当前 Token;
+    else if (item 是非终结符) 按预测表展开产生式;
+    else 执行产生式语义动作;
 }
 \end{lstlisting}
 
-生成器仍然会做 $LL(1)$ 冲突检查，但冲突检测被拆分到“基产生式集合”和“续产生式集合”两组内，因此左递归非终结符也能被正确处理。
+这种实现的 C 调用深度固定，解析深度只受 \texttt{PARSER\_MAX\_STACK\_DEPTH} 限制。生成器仍拒绝间接左递归和预测表冲突，因为本工具的目标是轻量 LL(1)，而不是制造 YACC。
 
 \subsection{复杂变量与初始化列表}
 
-\texttt{\%var} 支持标量、定长数组、结构体和字典。变量类型会直接生成对应的运行时构建函数（\texttt{Vars\_Create\_s\_变量名}），并使用 \texttt{VarValue\_T} 动态运行时保存：
+\texttt{\%var} 支持标量、定长数组、结构体和字典。变量类型会直接生成对应的运行时构建函数（\texttt{Parser\_CreateBuiltin\_序号}），并使用 \texttt{VarValue\_T} 动态运行时保存：
 
 \begin{lstlisting}
 %var X int32 = 0                  // 标量
@@ -662,12 +683,13 @@ $$ = $1.int32 ^ $2.int32;          /* 显式 int32 位运算 */
 \begin{itemize}
 \item \texttt{+ - * /} 依次对应 \texttt{Var\_Add}、\texttt{Var\_Sub}、\texttt{Var\_Mul} 与 \texttt{Var\_Div}；
 \item \texttt{\&\& || !} 依次对应 \texttt{Var\_And}、\texttt{Var\_Or} 和 \texttt{Var\_Not}；
-\item \texttt{[\$1]}：把当前终结符名字解析成运行时变量对象，等价 \texttt{Var\_FindVariable(names[1])}；
+\item \texttt{[\$1]}：读取已有变量；放在赋值号左侧时执行固定类型转换后赋值；
+\item \texttt{def[\$1, int32]}：定义具有固定类型的新变量，也可用 \texttt{\$n} 提供类型模板；
 \item \texttt{\$1.int32}：按 int32 读取和写入运行时值的数值；
 \item 未显式类型就对运行时值做位运算，生成时会告警；建议先写 \texttt{\$1.int32} 这样的类型字段，再参与异或、位与等运算。
 \end{itemize}
 
-生成结果包含 Token 枚举、\texttt{ParserToken\_T}、每个非终结符对应的 \texttt{Parse\_xxx()} 函数，以及由 \texttt{\%var} 展开的变量构建函数。语义值使用 \texttt{VarValue\_T}（无 GC，由 \texttt{Var\_Free} 手动释放）。
+生成结果包含 Token 枚举、默认 Lexer、预测分析表、显式分析栈、变量表，以及 \texttt{Parser\_Run} 和 \texttt{Parser\_RunText} 两个入口。语义值使用 \texttt{VarValue\_T}（无 GC，由 \texttt{Var\_Free} 手动释放）。外部 C 程序可以用 \texttt{Var\_GetInt32}、\texttt{Var\_GetUint32}、\texttt{Var\_GetFloat}、\texttt{Var\_GetDouble} 等 Getter 做带范围检查的访问。
 
 \subsection{生成命令}
 
@@ -682,8 +704,11 @@ python Chapter-script-engine/parser_gen.py -o parser_gen.c
 \begin{lstlisting}[language=Python]
 python Chapter-script-engine/parser_gen.py \
     --grammar-file Chapter-script-engine/grammar_calc.gram \
+    --report parser_calc.report \
     -o parser_calc.c
 \end{lstlisting}
+
+生成器默认在控制台输出消除直接左递归后的最终产生式、FIRST 集合、FOLLOW 集合和预测分析表；\texttt{--report} 会把同样内容保存为 UTF-8 文本，便于读者逐项核对。
 
 生成高级 IF 与 FOR 测试文法：
 
@@ -694,11 +719,11 @@ python Chapter-script-engine/parser_gen.py --advanced -o parser_adv.c
 完整示例见 \texttt{Chapter-script-engine/grammar\_calc.gram}。
 
 \begin{anybox}{为什么不把运行时与生成器展开讲解}
-	细心的读者可能已经注意到，本章的示例代码仓库里还包含了 \texttt{variable\_runtime.c}、\texttt{parser\_gen.py}和 \texttt{grammar\_loader.py}，但正文中只是浅尝辄止地介绍了它们的存在。这并不是遗漏，而是刻意的边界划定。
+	细心的读者可能已经注意到，本章的示例代码仓库里还包含了 \texttt{variable\_runtime.c} 和单文件工具 \texttt{parser\_gen.py}，但正文中只是浅尝辄止地介绍了它们的存在。这并不是遗漏，而是刻意的边界划定。
 	
 	\texttt{variable\_runtime.c} 实现了一套完整的动态类型系统——支持多种类型、深拷贝、切片拼接、类型自动提升等。这套代码本身已经构成了一个“微型语言运行时”，其设计涉及内存所有权、容器扩容、类型转换等话题，如果要讲透，至少需要再写半本书。本章的核心目标是让读者理解“如何用递归下降解析表达式”，而不是“如何设计一个动态语言虚拟机”，因此运行时的细节被封装到仓库里，作为“愿意深究的读者可以翻阅”的材料。
 	
-	\texttt{parser\_gen.py} 和 \texttt{grammar\_loader.py} 则更是“工具链的工具链”——它们负责把人类可读的文法描述翻译成可编译的 C 递归下降代码。这套生成器涉及 First/Follow 集合计算、LL(1) 冲突检测、左递归自动展开、动作表达式翻译等编译原理话题，每一部分都足以单独成章。如果把这些内容全部铺进正文，这章就会从“单片机脚本引擎”变成“编译原理实践教程”，彻底脱离本书“嵌入式 C 生存实战”的定位。
+	\texttt{parser\_gen.py} 则是“工具链的工具链”——它把人类可读的文法描述翻译成带 Lexer 和显式分析栈的 C 代码。这套生成器涉及 FIRST/FOLLOW 集合、预测表、左递归转换、动作表达式翻译等编译原理话题，每一部分都足以单独成章。如果把这些内容全部铺进正文，这章就会从“单片机脚本引擎”变成“编译原理实践教程”，彻底脱离本书“嵌入式 C 生存实战”的定位。
 	
 	因此，作者的选择是：在正文中保留生成器的“使用方式”和“设计思路”，让读者知道存在这样一套工具，但把实现细节留在源码里。工具的价值在于被使用，而不是被背诵。对于有兴趣深挖的读者，仓库里的源码和注释是比任何书本都更直接的老师。
 	
