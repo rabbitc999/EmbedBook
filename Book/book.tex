@@ -14,7 +14,7 @@
 \ifrelease
 \title{嵌入式C语言生存手册}
 \else
-\title{塑料轮子：一个嵌入式工程师的荒野求生笔记}
+\title{一个嵌入式工程师的荒野求生笔记}
 \fi
 
 \author{最爱小兔糖糖}
@@ -62,18 +62,25 @@
 \input{chapters/chapter-script-engine}
 \input{chapters/chapter-coroutine-scheduler}
 \input{chapters/chapter-memory-hardfault}
+\input{chapters/chapter-pid-control}
+\input{chapters/chapter-fft}
+\input{chapters/chapter-filter}
 
 \ifrelease
-% 正式版：跳过13、14、15章的所有介绍
+% 正式版：跳过16章的所有介绍
 \else
-\input{chapters/chapter-linux}
 \input{chapters/chapter-deadline-ai}
-\input{chapters/chapter-about-author}
 \fi
 
 \appendix
 \input{chapters/appendix-board-bsp}
+\input{chapters/appendix-linux}
 \input{chapters/appendix-code-source}
+\ifrelease
+% 正式版
+\else
+\input{chapters/appendix-about-author}
+\fi
 \input{chapters/appendix-answers}
 
 \end{document}

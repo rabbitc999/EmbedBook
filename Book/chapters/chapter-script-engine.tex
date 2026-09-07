@@ -640,7 +640,7 @@ while (分析栈不为空) {
 
 \subsection{复杂变量与初始化列表}
 
-\texttt{\%var} 支持标量、定长数组、结构体和字典。变量类型会直接生成对应的运行时构建函数（\texttt{Parser\_CreateBuiltin\_序号}），并使用 \texttt{VarValue\_T} 动态运行时保存：
+\texttt{\%var} 支持标量、定长数组、结构体和字典。变量类型会直接生成对应的运行时构建函数，并使用 \texttt{VarValue\_T} 动态运行时保存：
 
 \begin{lstlisting}
 %var X int32 = 0                  // 标量
