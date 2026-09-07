@@ -832,14 +832,34 @@ def _eliminate_direct_left_recursion(grammar):
 
 
 def _check_indirect_left_recursion(rules):
-    """检查各产生式首符号构成的环，拒绝间接左递归。"""
+    """检查含可空前缀的左角图，拒绝间接左递归。"""
     nonterms = set(rules)
+    nullable = set()
+    changed = True
+
+    # 先求可空非终结符闭包，避免漏掉 b 可空时 a := b c 的左角 c。
+    while changed:
+        changed = False
+        for lhs, productions in rules.items():
+            for prod in productions:
+                rhs = prod.get("rhs", [])
+                if all(symbol in nullable for symbol in rhs):
+                    if lhs not in nullable:
+                        nullable.add(lhs)
+                        changed = True
+                    break
+
+    # 每条产生式沿可空前缀收集所有可能成为最左符号的非终结符。
     graph = {name: [] for name in rules}
     for lhs, productions in rules.items():
         for prod in productions:
             rhs = prod.get("rhs", [])
-            if rhs and rhs[0] in nonterms:
-                graph[lhs].append(rhs[0])
+            for symbol in rhs:
+                if symbol not in nonterms:
+                    break
+                graph[lhs].append(symbol)
+                if symbol not in nullable:
+                    break
 
     def visit(name, path):
         """深度优先检查当前非终结符是否回到访问路径。"""
@@ -934,8 +954,9 @@ def format_grammar_report(analysis):
     return "\n".join(lines) + "\n"
 
 
-def _compile_and_run_generated_test(generated_code, harness_code):
-    """在临时目录编译并运行生成的 C，目录退出后自动清理。"""
+def _compile_and_run_generated_test(generated_code, harness_code,
+                                    sanitize=False):
+    """在临时目录编译运行生成的 C，可选启用地址与泄漏检查。"""
     script_dir = os.path.dirname(os.path.abspath(__file__))
     with tempfile.TemporaryDirectory(prefix="ll1_generator_") as temp_dir:
         parser_path = os.path.join(temp_dir, "generated_parser.c")
@@ -945,13 +966,21 @@ def _compile_and_run_generated_test(generated_code, harness_code):
             file_handle.write(generated_code)
         with open(harness_path, "w", encoding="utf-8") as file_handle:
             file_handle.write(harness_code)
-        subprocess.run([
+        compile_command = [
             "gcc", "-std=c99", "-Wall", "-Wextra", "-Werror",
             "-I", script_dir, harness_path,
             os.path.join(script_dir, "variable_runtime.c"),
             "-lm", "-o", executable_path,
-        ], check=True)
-        subprocess.run([executable_path], check=True)
+        ]
+        if sanitize:
+            compile_command[1:1] = [
+                "-fsanitize=address,undefined", "-fno-omit-frame-pointer"
+            ]
+        subprocess.run(compile_command, check=True)
+        environment = dict(os.environ)
+        if sanitize:
+            environment["ASAN_OPTIONS"] = "detect_leaks=1:halt_on_error=1"
+        subprocess.run([executable_path], check=True, env=environment)
 
 
 # 变量标量类型 -> VarValue 构造函数
@@ -1429,7 +1458,9 @@ class _ActionTranslator:
             index = int(dollar[1:])
             self.pos += 1
             self._expect("]")
-            code = f"Parser_FindVariable(names[{index}])"
+            code = (
+                f"Var_CloneValue(Parser_FindVariable(names[{index}]))"
+            )
             return _ExprNode("ptr", code,
                              lvalue=("variable", index, code))
 
@@ -1709,13 +1740,15 @@ class _ActionTranslator:
             rhs_code = rhs.code if rhs.kind == "ptr" else self._wrap_raw(rhs).code
             if type_spec is None:
                 return (
+                    "if (actionStatus == PARSER_OK) { "
                     f"actionStatus = Parser_DefineVariable(names[{name_index}], "
-                    f"{rhs_code}, NULL);"
+                    f"{rhs_code}, NULL); }}"
                 )
             if type_spec[0] == "value":
                 return (
+                    "if (actionStatus == PARSER_OK) { "
                     f"actionStatus = Parser_DefineVariable(names[{name_index}], "
-                    f"{rhs_code}, values[{type_spec[1]}]);"
+                    f"{rhs_code}, values[{type_spec[1]}]); }}"
                 )
             _, base_type, dimensions = type_spec
             enum_name = {
@@ -1731,13 +1764,15 @@ class _ActionTranslator:
                 dims = ", ".join(str(item) + "u" for item in dimensions)
                 return (
                     f"{{ const uint32_t dimensions[] = {{ {dims} }}; "
+                    "if (actionStatus == PARSER_OK) { "
                     f"actionStatus = Parser_DefineTyped(names[{name_index}], "
                     f"{rhs_code}, {enum_name}, dimensions, "
-                    f"{len(dimensions)}u); }}"
+                    f"{len(dimensions)}u); }} }}"
                 )
             return (
+                "if (actionStatus == PARSER_OK) { "
                 f"actionStatus = Parser_DefineTyped(names[{name_index}], "
-                f"{rhs_code}, {enum_name}, NULL, 0u);"
+                f"{rhs_code}, {enum_name}, NULL, 0u); }}"
             )
 
         # [$n] = 表达式：只允许给已经存在的固定类型变量赋值
@@ -1745,8 +1780,9 @@ class _ActionTranslator:
             _, name_index, _ = lhs.lvalue
             rhs_code = rhs.code if rhs.kind == "ptr" else self._wrap_raw(rhs).code
             return (
+                "if (actionStatus == PARSER_OK) { "
                 f"actionStatus = Parser_AssignVariable(names[{name_index}], "
-                f"{rhs_code});"
+                f"{rhs_code}); }}"
             )
 
         raise ValueError(
@@ -1961,12 +1997,10 @@ def _generator_expand_cases(analysis, terminals, nonterm_ids):
         if transform == "left_base":
             base_length = prod["base_rhs_length"]
             lines.append(
-                "            if (Parser_Push(pCtx, PARSER_ITEM_FORWARD, "
-                "%du, frameIndex, %du, PARSER_INVALID_INDEX) != PARSER_OK) "
-                "{ return PARSER_ERR_STACK; }"
-                % (prod["id"], base_length + 1)
+                "            if (Parser_Push(pCtx, PARSER_ITEM_LEFT_LOOP, "
+                "%du, frameIndex, 0u, PARSER_INVALID_INDEX) != PARSER_OK) "
+                "{ return PARSER_ERR_STACK; }" % nonterm_ids[rhs[-1]]
             )
-            lines.append(push_symbol(rhs[-1], base_length + 1, "frameIndex"))
             lines.append(
                 "            if (Parser_Push(pCtx, PARSER_ITEM_ACTION_KEEP, "
                 "%du, frameIndex, 0u, PARSER_INVALID_INDEX) != PARSER_OK) "
@@ -1976,13 +2010,11 @@ def _generator_expand_cases(analysis, terminals, nonterm_ids):
             start_slot = 1
         elif transform == "left_continue":
             symbols = rhs[:-1]
-            tail_slot = len(symbols) + 2
             lines.append(
-                "            if (Parser_Push(pCtx, PARSER_ITEM_FORWARD, "
-                "%du, frameIndex, %du, PARSER_INVALID_INDEX) != PARSER_OK) "
-                "{ return PARSER_ERR_STACK; }" % (prod["id"], tail_slot)
+                "            if (Parser_Push(pCtx, PARSER_ITEM_LEFT_LOOP, "
+                "%du, frameIndex, 0u, PARSER_INVALID_INDEX) != PARSER_OK) "
+                "{ return PARSER_ERR_STACK; }" % nonterm_ids[rhs[-1]]
             )
-            lines.append(push_symbol(rhs[-1], tail_slot, "frameIndex"))
             lines.append(
                 "            if (Parser_Push(pCtx, PARSER_ITEM_ACTION_KEEP, "
                 "%du, frameIndex, 0u, PARSER_INVALID_INDEX) != PARSER_OK) "
@@ -1992,11 +2024,7 @@ def _generator_expand_cases(analysis, terminals, nonterm_ids):
         elif transform == "left_empty":
             symbols = []
             start_slot = 1
-            lines.append(
-                "            if (Parser_Push(pCtx, PARSER_ITEM_FORWARD, "
-                "%du, frameIndex, 1u, PARSER_INVALID_INDEX) != PARSER_OK) "
-                "{ return PARSER_ERR_STACK; }" % prod["id"]
-            )
+            lines.append("            /* 空尾规则由 LEFT_LOOP 直接完成。 */")
         else:
             symbols = rhs
             start_slot = 1
@@ -2048,7 +2076,7 @@ static int32_t Parser_LexNext(ParserCtx_T *pCtx, ParserToken_T *pToken)
                     case 'n': ch = '\n'; break;
                     case 'r': ch = '\r'; break;
                     case 't': ch = '\t'; break;
-                    case '0': ch = '\0'; break;
+                    case '0': return PARSER_ERR_LEXER;
                     case '\\': ch = '\\'; break;
                     case '"': ch = '"'; break;
                     default: return PARSER_ERR_LEXER;
@@ -2147,6 +2175,26 @@ static int32_t Parser_LexNext(ParserCtx_T *pCtx, ParserToken_T *pToken)
         return (pToken->pValue != NULL) ? PARSER_OK : VAR_RUNTIME_ERR_MEMORY;
     }
 
+    /* 固定规则按最长候选优先，并在关键字末尾检查标识符边界。 */
+    for (index = 0u; index < (uint32_t)(sizeof(s_ParserLexRules) /
+                                        sizeof(s_ParserLexRules[0])); index++) {
+        const ParserLexRule_T *pRule = &s_ParserLexRules[index];
+        if ((pRule->pText != NULL) &&
+            (strncmp(pStart, pRule->pText, pRule->length) == 0)) {
+            unsigned char last = (unsigned char)pRule->pText[pRule->length - 1u];
+            unsigned char next = (unsigned char)pStart[pRule->length];
+            if (((isalnum(last) != 0) || (last == '_')) &&
+                ((isalnum(next) != 0) || (next == '_'))) {
+                continue;
+            }
+            for (length = 0u; length < pRule->length; length++) {
+                Parser_ReadChar(pCtx);
+            }
+            pToken->type = pRule->type;
+            return PARSER_OK;
+        }
+    }
+
     /* C 风格标识符默认映射到 VARIABLE。 */
     if ((isalpha((unsigned char)*pStart) != 0) || (*pStart == '_')) {
         while ((isalnum((unsigned char)pCtx->pText[pCtx->textPosition]) != 0) ||
@@ -2160,20 +2208,6 @@ static int32_t Parser_LexNext(ParserCtx_T *pCtx, ParserToken_T *pToken)
         return PARSER_OK;
     }
 
-    /* 固定规则已由 Python 按最长候选优先排序。 */
-    for (index = 0u; index < (uint32_t)(sizeof(s_ParserLexRules) /
-                                        sizeof(s_ParserLexRules[0])); index++) {
-        const ParserLexRule_T *pRule = &s_ParserLexRules[index];
-        if ((pRule->pText != NULL) &&
-            (strncmp(pStart, pRule->pText, pRule->length) == 0)) {
-            uint32_t charIndex = 0u;
-            for (charIndex = 0u; charIndex < pRule->length; charIndex++) {
-                Parser_ReadChar(pCtx);
-            }
-            pToken->type = pRule->type;
-            return PARSER_OK;
-        }
-    }
     return PARSER_ERR_LEXER;
 }
 
@@ -2265,10 +2299,45 @@ static VarValue_T *Parser_ParseLoop(ParserCtx_T *pCtx)
                                 pCtx->current.column, "分析栈已满");
                 return NULL;
             }
+        } else if (item.kind == PARSER_ITEM_LEFT_LOOP) {
+            int16_t production = -1;
+            ParserSemanticFrame_T *pFrame = &pCtx->frames[item.frameIndex];
+            if (((uint16_t)pCtx->current.type >= __TERMINAL_COUNT__u) ||
+                (item.symbol >= __NONTERM_COUNT__u)) {
+                Parser_SetError(PARSER_ERR_SYNTAX, pCtx->current.line,
+                                pCtx->current.column,
+                                "左递归尾部没有可用产生式");
+                return NULL;
+            }
+            production = s_ParserTable[item.symbol][pCtx->current.type];
+            if (production < 0) {
+                Parser_SetError(PARSER_ERR_SYNTAX, pCtx->current.line,
+                                pCtx->current.column, "左递归尾部预测失败");
+                return NULL;
+            }
+            if (s_ParserProductionIsLeftEmpty[production] != 0u) {
+                if (Parser_CompleteFrame(pCtx, item.frameIndex) != PARSER_OK) {
+                    return NULL;
+                }
+            } else {
+                if (pFrame->pResult != NULL) {
+                    pFrame->values[1] = Var_CloneValue(pFrame->pResult);
+                    if (pFrame->values[1] == NULL) { return NULL; }
+                    pFrame->valueOwned[1] = 1u;
+                }
+                if (Parser_ExpandProduction(pCtx, (uint16_t)production,
+                                            item.frameIndex) != PARSER_OK) {
+                    Parser_SetError(PARSER_ERR_STACK, pCtx->current.line,
+                                    pCtx->current.column, "分析栈已满");
+                    return NULL;
+                }
+            }
         } else {
             ParserSemanticFrame_T *pFrame = &pCtx->frames[item.frameIndex];
             if (item.kind == PARSER_ITEM_FORWARD) {
-                pFrame->pResult = pFrame->values[item.valueIndex];
+                if (Parser_ForwardFrame(pFrame, item.valueIndex) != PARSER_OK) {
+                    return NULL;
+                }
             } else if (Parser_ExecuteAction(pCtx, item.symbol,
                                             item.frameIndex) != PARSER_OK) {
                 return NULL;
@@ -2291,6 +2360,7 @@ static VarValue_T *Parser_ParseLoop(ParserCtx_T *pCtx)
 VarValue_T *Parser_Run(const ParserToken_T *pTokens, uint32_t count)
 {
     ParserCtx_T *pContext = &s_ParserContext;
+    VarValue_T *pResult = NULL;
     memset(pContext, 0, sizeof(*pContext));
     memset(&s_ParserLastError, 0, sizeof(s_ParserLastError));
     pContext->pTokens = pTokens;
@@ -2298,7 +2368,9 @@ VarValue_T *Parser_Run(const ParserToken_T *pTokens, uint32_t count)
     pContext->line = 1u;
     pContext->column = 1u;
     if (Parser_Advance(pContext) != PARSER_OK) { return NULL; }
-    return Parser_ParseLoop(pContext);
+    pResult = Parser_ParseLoop(pContext);
+    if (pResult == NULL) { Parser_ReleaseContext(pContext); }
+    return pResult;
 }
 
 /** @brief 解析脚本文本。 @param pText 输入文本。 @retval 结果或 NULL。 */
@@ -2319,6 +2391,7 @@ VarValue_T *Parser_RunText(const char *pText)
         (pContext->current.pValue != NULL)) {
         Var_Free(pContext->current.pValue);
     }
+    if (pResult == NULL) { Parser_ReleaseContext(pContext); }
     return pResult;
 }
 '''
@@ -2348,6 +2421,10 @@ def generate_parser_c(grammar, tokens, variables=None, token_defs=None):
         "__NONTERM_COUNT__": str(len(nonterms)),
         "__TERMINAL_COUNT__": str(len(terminals)),
         "__TABLE_ROWS__": ",\n".join(table_rows),
+        "__PRODUCTION_LEFT_EMPTY__": ", ".join(
+            "1u" if prod.get("transform") == "left_empty" else "0u"
+            for prod in analysis["productions"]
+        ),
         "__LEX_RULES__": _generator_lex_rules(token_defs),
         "__REGISTRY__": _generator_registry_block(variables),
         "__EXPAND_CASES__": _generator_expand_cases(
@@ -2396,6 +2473,8 @@ typedef enum __ParserTokenType_T { __TOKEN_ENUM__ } ParserTokenType_T;
 typedef struct __ParserToken_T
 {
     ParserTokenType_T type;
+    int32_t value;
+    const char *name;
     VarValue_T *pValue;
     const char *pName;
     uint32_t line;
@@ -2421,7 +2500,8 @@ typedef enum __ParserItemKind_T
     PARSER_ITEM_NONTERM,
     PARSER_ITEM_ACTION,
     PARSER_ITEM_ACTION_KEEP,
-    PARSER_ITEM_FORWARD
+    PARSER_ITEM_FORWARD,
+    PARSER_ITEM_LEFT_LOOP
 } ParserItemKind_T;
 
 typedef struct __ParserStackItem_T
@@ -2438,8 +2518,10 @@ typedef struct __ParserSemanticFrame_T
     uint16_t parentFrameIndex;
     uint16_t parentValueIndex;
     VarValue_T *values[PARSER_VALUE_SLOTS];
+    uint8_t valueOwned[PARSER_VALUE_SLOTS];
     char names[PARSER_VALUE_SLOTS][PARSER_MAX_NAME_LENGTH];
     VarValue_T *pResult;
+    uint8_t resultOwned;
 } ParserSemanticFrame_T;
 
 typedef struct __ParserCtx_T
@@ -2474,6 +2556,10 @@ static ParserCtx_T s_ParserContext;
 static const int16_t s_ParserTable[__NONTERM_COUNT__][__TERMINAL_COUNT__] =
 {
 __TABLE_ROWS__
+};
+static const uint8_t s_ParserProductionIsLeftEmpty[] =
+{
+    __PRODUCTION_LEFT_EMPTY__
 };
 static const ParserLexRule_T s_ParserLexRules[] =
 {
@@ -2615,6 +2701,7 @@ static int32_t Parser_ExecuteAction(ParserCtx_T *pCtx,
     for (index = 0u; index < PARSER_VALUE_SLOTS; index++) {
         names[index] = pFrame->names[index];
     }
+    (void)values;
     (void)names;
     result.value = pFrame->pResult;
     switch (production) {
@@ -2622,11 +2709,54 @@ __ACTION_CASES__
         default: return PARSER_ERR_SYNTAX;
     }
     if (actionStatus != PARSER_OK) {
+        if ((result.value != NULL) && (result.value != pFrame->pResult)) {
+            Var_Free(result.value);
+        }
         Parser_SetError(actionStatus, pCtx->current.line,
                         pCtx->current.column, "变量定义或赋值失败");
         return actionStatus;
     }
+    if ((pFrame->resultOwned != 0u) && (pFrame->pResult != NULL) &&
+        (pFrame->pResult != result.value)) {
+        Var_Free(pFrame->pResult);
+    }
+    pFrame->resultOwned = (result.value != NULL) ? 1u : 0u;
+    for (index = 0u; index < PARSER_VALUE_SLOTS; index++) {
+        if (pFrame->values[index] == result.value) {
+            if (pFrame->valueOwned[index] != 0u) {
+                pFrame->valueOwned[index] = 0u;
+            } else if (result.value != NULL) {
+                result.value = Var_CloneValue(result.value);
+                if (result.value == NULL) { return VAR_RUNTIME_ERR_MEMORY; }
+            }
+            break;
+        }
+    }
+    for (index = 0u; index < PARSER_VALUE_SLOTS; index++) {
+        if ((pFrame->valueOwned[index] != 0u) &&
+            (pFrame->values[index] != NULL)) {
+            Var_Free(pFrame->values[index]);
+        }
+        pFrame->values[index] = NULL;
+        pFrame->valueOwned[index] = 0u;
+    }
     pFrame->pResult = result.value;
+    return PARSER_OK;
+}
+
+/** @brief 转发语义槽并处理所有权。 @retval 状态码。 */
+static int32_t Parser_ForwardFrame(ParserSemanticFrame_T *pFrame,
+                                   uint16_t valueIndex)
+{
+    VarValue_T *pValue = pFrame->values[valueIndex];
+    uint8_t owned = pFrame->valueOwned[valueIndex];
+    if ((pFrame->resultOwned != 0u) && (pFrame->pResult != NULL) &&
+        (pFrame->pResult != pValue)) {
+        Var_Free(pFrame->pResult);
+    }
+    pFrame->pResult = pValue;
+    pFrame->resultOwned = owned;
+    pFrame->valueOwned[valueIndex] = 0u;
     return PARSER_OK;
 }
 
@@ -2640,12 +2770,39 @@ static int32_t Parser_CompleteFrame(ParserCtx_T *pCtx, uint16_t frameIndex)
     }
     if (pFrame->parentFrameIndex == PARSER_INVALID_INDEX) {
         pCtx->pRootResult = pFrame->pResult;
+        pFrame->resultOwned = 0u;
     } else {
         pCtx->frames[pFrame->parentFrameIndex]
             .values[pFrame->parentValueIndex] = pFrame->pResult;
+        pCtx->frames[pFrame->parentFrameIndex]
+            .valueOwned[pFrame->parentValueIndex] = pFrame->resultOwned;
+        pFrame->resultOwned = 0u;
     }
+    memset(pFrame, 0, sizeof(*pFrame));
     pCtx->frameTop--;
     return PARSER_OK;
+}
+
+/** @brief 释放失败路径仍由语义帧持有的值。 @retval 无。 */
+static void Parser_ReleaseContext(ParserCtx_T *pCtx)
+{
+    uint16_t frameIndex = 0u;
+    uint16_t valueIndex = 0u;
+    for (frameIndex = 0u; frameIndex < pCtx->frameTop; frameIndex++) {
+        ParserSemanticFrame_T *pFrame = &pCtx->frames[frameIndex];
+        for (valueIndex = 0u; valueIndex < PARSER_VALUE_SLOTS; valueIndex++) {
+            if ((pFrame->valueOwned[valueIndex] != 0u) &&
+                (pFrame->values[valueIndex] != NULL)) {
+                Var_Free(pFrame->values[valueIndex]);
+            }
+        }
+        if ((pFrame->resultOwned != 0u) && (pFrame->pResult != NULL)) {
+            Var_Free(pFrame->pResult);
+        }
+        memset(pFrame, 0, sizeof(*pFrame));
+    }
+    pCtx->frameTop = 0u;
+    pCtx->stackTop = 0u;
 }
 
 /** @brief 捕获终结符语义。 @retval 状态码。 */
@@ -2655,13 +2812,24 @@ static int32_t Parser_CaptureTerminal(ParserCtx_T *pCtx,
 {
     ParserSemanticFrame_T *pFrame = &pCtx->frames[frameIndex];
     if (valueIndex >= PARSER_VALUE_SLOTS) { return PARSER_ERR_STACK; }
-    if (pCtx->current.pName != NULL) {
+    if ((pCtx->current.pName != NULL) || (pCtx->current.name != NULL)) {
         snprintf(pFrame->names[valueIndex],
                  sizeof(pFrame->names[valueIndex]), "%s",
-                 pCtx->current.pName);
+                 (pCtx->current.pName != NULL) ? pCtx->current.pName :
+                                                pCtx->current.name);
     }
     if (pCtx->current.pValue != NULL) {
         pFrame->values[valueIndex] = Var_CloneValue(pCtx->current.pValue);
+        if (pFrame->values[valueIndex] == NULL) {
+            return VAR_RUNTIME_ERR_MEMORY;
+        }
+        pFrame->valueOwned[valueIndex] = 1u;
+    } else if (pCtx->current.type == TOKEN_NUMBER) {
+        pFrame->values[valueIndex] = Var_CreateInt(pCtx->current.value);
+        if (pFrame->values[valueIndex] == NULL) {
+            return VAR_RUNTIME_ERR_MEMORY;
+        }
+        pFrame->valueOwned[valueIndex] = 1u;
     }
     return PARSER_OK;
 }
@@ -2715,6 +2883,19 @@ def main():
             raise AssertionError("重复固定字面量没有被拒绝")
         except GrammarLoadError:
             pass
+        nullable_cycle_cfg = load_grammar_text(
+            '%start a\n'
+            'a := b c { $$ = $2; }\n'
+            'b := %empty { $$ = int32(0); }\n'
+            'c := a { $$ = $1; }\n'
+        )
+        try:
+            prepare_grammar(
+                nullable_cycle_cfg["grammar"], nullable_cycle_cfg["tokens"]
+            )
+            raise AssertionError("可空前缀后的间接左递归没有被拒绝")
+        except ValueError as error:
+            assert "间接左递归" in str(error)
         generated_code = generate_parser_c(
             cfg["grammar"], cfg["tokens"], {}, cfg["token_defs"]
         )
@@ -2752,6 +2933,26 @@ int main(void)
     return 0;
 }
 ''')
+        _compile_and_run_generated_test(generated_code, r'''
+/** @file generated_harness.c @brief 验证旧版 Token 数组源码兼容性。 */
+#include "generated_parser.c"
+/** @brief 使用旧 value/name 字段解析数字。 @retval 0 表示通过。 */
+int main(void)
+{
+    ParserToken_T tokens[1] = { 0 };
+    VarValue_T *pValue = NULL;
+    int32_t result = 0;
+    tokens[0].type = TOKEN_NUMBER;
+    tokens[0].value = 7;
+    tokens[0].name = "legacy";
+    pValue = Parser_Run(tokens, 1u);
+    if ((pValue == NULL) ||
+        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
+        (result != 7)) { return 1; }
+    Var_Free(pValue);
+    return 0;
+}
+''')
         expression_cfg = load_grammar_text(
             '%define PLUS "+"\n'
             '%define EQ "==|="\n'
@@ -2771,15 +2972,15 @@ int main(void)
 /** @brief 执行表达式测试。 @retval 0 表示通过。 */
 int main(void)
 {
-    VarValue_T *pValue = Parser_RunText("1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1");
+    VarValue_T *pValue = Parser_RunText("1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1");
     int32_t result = 0;
     if ((pValue == NULL) ||
         (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
-        (result != 40)) { return 1; }
+        (result != 200)) { return 1; }
     Var_Free(pValue);
     return 0;
 }
-''')
+''', sanitize=True)
         string_cfg = load_grammar_text(
             '%start root\nroot := STRING { $$ = $1; }\n'
         )
@@ -2801,6 +3002,8 @@ int main(void)
         (Var_GetString(pValue, &pText) != VAR_RUNTIME_OK) ||
         (strcmp(pText, "a\n") != 0)) { return 1; }
     Var_Free(pValue);
+    if (Parser_RunText("\"a\\0b\"") != NULL) { return 2; }
+    if (Parser_GetLastError()->code != PARSER_ERR_LEXER) { return 3; }
     return 0;
 }
 ''')
@@ -2859,6 +3062,26 @@ int main(void)
     return 0;
 }
 ''')
+        action_error_cfg = load_grammar_text(
+            '%start root\n%var x int32 = 0\n'
+            'root := VARIABLE NUMBER '
+            '{ def[$1] = $2; [$1] = $2; $$ = [$1]; }\n'
+        )
+        action_error_code = generate_parser_c(
+            action_error_cfg["grammar"], action_error_cfg["tokens"],
+            action_error_cfg["variables"], action_error_cfg["token_defs"]
+        )
+        _compile_and_run_generated_test(action_error_code, r'''
+/** @file generated_harness.c @brief 验证语义动作保留首个错误。 */
+#include "generated_parser.c"
+/** @brief 执行多动作错误测试。 @retval 0 表示通过。 */
+int main(void)
+{
+    if (Parser_RunText("x 2") != NULL) { return 1; }
+    if (Parser_GetLastError()->code != PARSER_ERR_DUPLICATE) { return 2; }
+    return 0;
+}
+''')
         longest_cfg = load_grammar_text(
             '%define EQ "==|="\n%start root\n'
             'root := NUMBER EQ NUMBER { $$ = $1; }\n'
@@ -2878,6 +3101,28 @@ int main(void)
     if ((pFirst == NULL) || (pSecond == NULL)) { return 1; }
     Var_Free(pFirst);
     Var_Free(pSecond);
+    return 0;
+}
+''')
+        keyword_cfg = load_grammar_text(
+            '%define IF "if"\n%start root\n'
+            'root := IF { $$ = int32(1); }\n'
+        )
+        keyword_code = generate_parser_c(
+            keyword_cfg["grammar"], keyword_cfg["tokens"], {},
+            keyword_cfg["token_defs"]
+        )
+        _compile_and_run_generated_test(keyword_code, r'''
+/** @file generated_harness.c @brief 验证关键字优先级与标识符边界。 */
+#include "generated_parser.c"
+/** @brief 执行关键字边界测试。 @retval 0 表示通过。 */
+int main(void)
+{
+    VarValue_T *pValue = Parser_RunText("if");
+    if (pValue == NULL) { return 1; }
+    Var_Free(pValue);
+    if (Parser_RunText("ifx") != NULL) { return 2; }
+    if (Parser_GetLastError()->code != PARSER_ERR_SYNTAX) { return 3; }
     return 0;
 }
 ''')
@@ -2934,6 +3179,39 @@ int main(void)
         (Var_GetInt32(Var_ArrayGet(pResult, 0u), &first) != VAR_RUNTIME_OK) ||
         (first != 1)) { return 1; }
     Var_Free(pSource);
+    return 0;
+}
+''')
+        calc_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)), "grammar_calc.gram"
+        )
+        calc_cfg = load_grammar_file(calc_path)
+        calc_code = generate_parser_c(
+            calc_cfg["grammar"], calc_cfg["tokens"], calc_cfg["variables"],
+            calc_cfg["token_defs"]
+        )
+        _compile_and_run_generated_test(calc_code, r'''
+/** @file generated_harness.c @brief 验证正式示例的优先级与变量读取。 */
+#include "generated_parser.c"
+/** @brief 执行正式示例测试。 @retval 0 表示通过。 */
+int main(void)
+{
+    VarValue_T *pValue = Parser_RunText("X+2*3");
+    int32_t result = 0;
+    if ((pValue == NULL) ||
+        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
+        (result != 6)) { return 1; }
+    Var_Free(pValue);
+    pValue = Parser_RunText("X");
+    if ((pValue == NULL) ||
+        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
+        (result != 0)) { return 2; }
+    Var_Free(pValue);
+    pValue = Parser_RunText("X");
+    if ((pValue == NULL) ||
+        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
+        (result != 0)) { return 3; }
+    Var_Free(pValue);
     return 0;
 }
 ''')
