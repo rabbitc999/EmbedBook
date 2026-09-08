@@ -4,7 +4,7 @@
 
 本章介绍的 \texttt{simple\_task} 是一个完整的、可直接移植到 32 位单片机上的轻量级协作式任务调度器（版本 2.0）。它采用时间触发、协作运行模式：定时器中断只负责“计时”和“标记”，真正的任务代码全部在主循环中顺序执行，因此不需要任何操作系统层面的任务切换机制，也没有优先级反转、信号量等并发问题，非常适合资源受限、功能需求中等的嵌入式系统。
 
-\medskip \textbf{本章涉及到的实验内容：}
+\medskip 本章涉及到的实验内容：
 \begin{enumerate}
 \item 循环队列（FIFO）缓冲区基础（写入、读取和分段拷贝）；
 \item simple\_task 调度器基础实现（任务添加、删除、启用、禁用和立即执行）；
@@ -23,12 +23,12 @@
 在动手编写代码之前，先明确 \texttt{simple\_task} 的设计目标：
 
 \begin{itemize}
-\item \textbf{轻量级}：核心只有 \texttt{simple\_task.c} 与 \texttt{simple\_task.h} 两个文件，不依赖任何 RTOS 服务，代码量小、易于阅读。
-\item \textbf{静态分配}：任务池在编译期静态分配，运行时不使用 \texttt{malloc} 与 \texttt{free}，不会产生内存碎片，也避免了内存耗尽导致系统崩溃的风险。
-\item \textbf{可裁剪}：所有功能都通过 \texttt{simple\_task\_config.h} 中的宏开关控制，不需要的功能直接裁剪掉，以节省 RAM 和 ROM。
-\item \textbf{协作式调度}：任务在主循环中按序执行，不抢占；配合“协程式延时”可以实现任务内部的非阻塞等待。
-\item \textbf{支持硬实时扩展}：对周期要求严格的代码（如 PWM 输出、ADC 触发）可以注册为 “硬实时任务”，在定时器中断中直接执行。
-\item \textbf{可观测}：内置任务运行时间统计与 CPU 占用率计算，通过 \texttt{Task\_GetInfo} 可以随时输出系统的运行状态，方便调试。
+\item 轻量级：核心只有 \texttt{simple\_task.c} 与 \texttt{simple\_task.h} 两个文件，不依赖任何 RTOS 服务，代码量小、易于阅读。
+\item 静态分配：任务池在编译期静态分配，运行时不使用 \texttt{malloc} 与 \texttt{free}，不会产生内存碎片，也避免了内存耗尽导致系统崩溃的风险。
+\item 可裁剪：所有功能都通过 \texttt{simple\_task\_config.h} 中的宏开关控制，不需要的功能直接裁剪掉，以节省 RAM 和 ROM。
+\item 协作式调度：任务在主循环中按序执行，不抢占；配合“协程式延时”可以实现任务内部的非阻塞等待。
+\item 支持硬实时扩展：对周期要求严格的代码（如 PWM 输出、ADC 触发）可以注册为 “硬实时任务”，在定时器中断中直接执行。
+\item 可观测：内置任务运行时间统计与 CPU 占用率计算，通过 \texttt{Task\_GetInfo} 可以随时输出系统的运行状态，方便调试。
 \end{itemize}
 
 % ---------------------------------------------------------------------
@@ -61,11 +61,11 @@
 各层职责如下：
 
 \begin{itemize}
-\item \textbf{应用层}：用户编写任务回调函数，回调通过 \texttt{Task\_Add} 注册进调度器；
-\item \textbf{调度核心层}：维护任务池与就绪队列，完成计时、置位、执行、状态迁移；
-\item \textbf{配置层}：通过宏决定编译进哪些功能（队列、统计、硬实时任务等）；
-\item \textbf{硬件抽象层}：封装定时器中断开关、高精度计时、CPU 睡眠等底层操作；
-\item \textbf{硬件}：1ms 定时器提供系统节拍，DWT 提供微秒级计时。
+\item 应用层：用户编写任务回调函数，回调通过 \texttt{Task\_Add} 注册进调度器；
+\item 调度核心层：维护任务池与就绪队列，完成计时、置位、执行、状态迁移；
+\item 配置层：通过宏决定编译进哪些功能（队列、统计、硬实时任务等）；
+\item 硬件抽象层：封装定时器中断开关、高精度计时、CPU 睡眠等底层操作；
+\item 硬件：1ms 定时器提供系统节拍，DWT 提供微秒级计时。
 \end{itemize}
 
 % ---------------------------------------------------------------------
@@ -80,7 +80,7 @@
 \centering \caption{任务系统状态说明} \label{tab:task-state}
     \begin{tabular}{cll}
         \toprule
-        \textbf{状态} & \textbf{含义} & \textbf{说明} \\
+        状态 & 含义 & 说明 \\
         \midrule
         \texttt{RUN}     & 正在运行  & 内部使用，任务回调执行期间置位 \\
         \texttt{WAIT}    & 等待      & 计时中，等待下一次调度 \\
@@ -291,12 +291,12 @@ uint32_t Serial_GetFifoLength(SerialFifo_T *Fifo)
 }
 \end{lstlisting}
 
-\textbf{为什么取余之前要加上缓冲区的长度}？因为 \texttt{EndIndex} 可能已经“绕”过了 \texttt{StartIndex} （例如写入时回绕到缓冲区头部），此时 \texttt{EndIndex - StartIndex} 是负数。加上 \texttt{Size} 之后再做取余，可以保证结果恒为非负且小于 \texttt{Size}。这是循环队列最经典的写法，务必理解。
+为什么取余之前要加上缓冲区的长度？因为 \texttt{EndIndex} 可能已经“绕”过了 \texttt{StartIndex} （例如写入时回绕到缓冲区头部），此时 \texttt{EndIndex - StartIndex} 是负数。加上 \texttt{Size} 之后再做取余，可以保证结果恒为非负且小于 \texttt{Size}。这是循环队列最经典的写法，务必理解。
 
 % ---------------------------------------------------------------------
 \subsection{向缓冲区写入数据}
 
-写入时如果数据跨越缓冲区末尾，需要分两段拷贝：先拷到末尾，再从头部拷剩余部分。 \textbf{为什么要拷贝两次}？因为循环队列的物理存储是线性的，但逻辑上是环形，跨过末尾时只能分段写入，如图~\ref{fig:fifo}~所示。
+写入时如果数据跨越缓冲区末尾，需要分两段拷贝：先拷到末尾，再从头部拷剩余部分。 为什么要拷贝两次？因为循环队列的物理存储是线性的，但逻辑上是环形，跨过末尾时只能分段写入，如图~\ref{fig:fifo}~所示。
 
 \begin{figure}[htbp]
 \centering
@@ -377,9 +377,9 @@ uint32_t Serial_FifoReadBuffer(SerialFifo_T *Fifo, uint8_t *data, uint32_t lengt
 FIFO 天然支持“生产者-消费者”模型：
 
 \begin{itemize}
-\item \textbf{生产者}：串口接收中断，每收到一个字节调用 \texttt{Serial\_FifoWriteBuffer} 写入 \texttt{RxFifo}；
-\item \textbf{消费者}：主循环（或一个周期任务）调用 \texttt{Serial\_FifoReadBuffer} 批量取出数据并解析；
-\item \textbf{临界区}：写入和读取可能同时发生，操作 \texttt{StartIndex} 与 \texttt{EndIndex} 时需要临时屏蔽对应串口中断（或在临界区内完成），防止读写冲突。
+\item 生产者：串口接收中断，每收到一个字节调用 \texttt{Serial\_FifoWriteBuffer} 写入 \texttt{RxFifo}；
+\item 消费者：主循环（或一个周期任务）调用 \texttt{Serial\_FifoReadBuffer} 批量取出数据并解析；
+\item 临界区：写入和读取可能同时发生，操作 \texttt{StartIndex} 与 \texttt{EndIndex} 时需要临时屏蔽对应串口中断（或在临界区内完成），防止读写冲突。
 \end{itemize}
 
 这样中断服务函数变得非常短，复杂的协议解析全部放到主循环，既不阻塞中断，也不丢失数据。
@@ -450,9 +450,9 @@ void Task_Tick(void)
 几个值得注意的设计细节：
 
 \begin{itemize}
-\item \textbf{异常状态自愈}：如果任务状态被破坏（例如回调中写坏了状态枚举）， \texttt{Task\_Tick} 会把它重置为 \texttt{WAIT}，防止调度器崩溃；
-\item \textbf{禁用状态不消耗时间}：只有 \texttt{WAIT} 与 \texttt{READY} 状态的任务才累加 \texttt{tickCount}，被禁用的任务直接跳过；
-\item \textbf{硬实时任务隔离}：硬实时任务周期独立、独立累加，且回调中禁止调用 \texttt{Task\_DelayUntil} 等阻塞函数（会破坏中断实时性）。
+\item 异常状态自愈：如果任务状态被破坏（例如回调中写坏了状态枚举）， \texttt{Task\_Tick} 会把它重置为 \texttt{WAIT}，防止调度器崩溃；
+\item 禁用状态不消耗时间：只有 \texttt{WAIT} 与 \texttt{READY} 状态的任务才累加 \texttt{tickCount}，被禁用的任务直接跳过；
+\item 硬实时任务隔离：硬实时任务周期独立、独立累加，且回调中禁止调用 \texttt{Task\_DelayUntil} 等阻塞函数（会破坏中断实时性）。
 \end{itemize}
 
 % ---------------------------------------------------------------------
@@ -597,7 +597,7 @@ uint16_t Task_Loop(void)
 \centering \caption{simple\_task 任务管理 API} \label{tab:task-api}
     \begin{tabular}{lll}
         \toprule
-        \textbf{函数} & \textbf{功能} & \textbf{说明} \\
+        函数 & 功能 & 说明 \\
         \midrule
         \texttt{Task\_Init()}          & 初始化调度器 & 使用前必须调用一次 \\
         \texttt{Task\_Add(cb, name)}   & 添加任务 & 返回 TCB 指针，失败返回 NULL \\
@@ -753,7 +753,7 @@ printf("%s", info);
 \centering \caption{simple\_task\_config.h 主要配置宏} \label{tab:task-config}
     \begin{tabular}{lll}
         \toprule
-        \textbf{配置宏} & \textbf{默认值} & \textbf{作用} \\
+        配置宏 & 默认值 & 作用 \\
         \midrule
         \texttt{TASK\_MAX\_COUNT}              & 16   & 最大普通任务数量（静态分配） \\
         \texttt{TASK\_TICK\_PERIOD}            & 1    & 系统节拍周期（ms） \\
@@ -870,46 +870,84 @@ void TIM6_IRQHandler(void)
 \end{lstlisting}
 
 % ---------------------------------------------------------------------
-\section{移植要点}
+\section{实验报告：simple\_task 调度器移植与验证}
 
-将 \texttt{simple\_task} 移植到新的 32 位单片机时，只需要修改 \texttt{bsp\_system.h} 中的底层接口，见表~\ref{tab:task-port}~。
+\subsection{实验基本信息}
 
-\begin{table}[htbp]
-\centering \caption{bsp\_system.h 需要实现的底层接口} \label{tab:task-port}
-    \begin{tabular}{lll}
-        \toprule
-        \textbf{接口} & \textbf{功能} & \textbf{实现建议} \\
-        \midrule
-        \texttt{IS\_VALID\_FUNCTION\_POINTER(p)} & 函数指针有效性检查 & 非空判断即可 \\
-        \texttt{TASK\_ENABLE\_TIMER\_IRQ()} & 开定时器中断 & LL 与 HAL 库打开 TIM6 更新中断 \\
-        \texttt{TASK\_DISABLE\_TIMER\_IRQ()} & 关定时器中断 & 用于临界区保护 \\
-        \texttt{TASK\_CPU\_SLEEP()} & CPU 睡眠 & \texttt{\_\_WFI()} \\
-        \texttt{TASK\_TIMER\_GET\_TICK()} & 获取高精度时间戳 & DWT 计数器 \\
-        \texttt{TASK\_TIMER\_CALC\_DIFF\_US(s,e)} & 计算微秒差值 & DWT 差值换算 \\
-        \bottomrule
-    \end{tabular}
-\end{table}
+MCU 型号：\LabFillLine[3.5cm] \quad 工作主频：\LabFillLine[3.5cm]
 
-移植步骤归纳如下：
+系统节拍周期：\LabFillLine[3.5cm] \quad 最大任务数：\LabFillLine[3.5cm]
 
+就绪队列大小：\LabFillLine[3.5cm] \quad 硬实时任务数：\LabFillLine[3.5cm]
+
+\subsection{实验目的}
 \begin{enumerate}
-\item 把 \texttt{simple\_task.c}、\texttt{simple\_task.h} 与 \texttt{simple\_task\_config.h} 加入工程；
-\item 新建 \texttt{bsp\_system.h}，按上表实现底层接口；
-\item 配置一个 1ms 定时器中断，在中断服务函数中调用 \texttt{Task\_Tick()}；
-\item 按需修改 \texttt{simple\_task\_config.h} 裁剪功能；
-\item 编写任务回调，在 \texttt{main} 中 \texttt{Task\_Init()} 后 \texttt{Task\_Add()}，最后进入 \texttt{Task\_Schedule()}（或在主循环中反复调用 \texttt{Task\_Loop()}）。
+\item 掌握 simple\_task 协作式调度器在单片机上的移植方法（定时器节拍、临界区保护、时间戳）；
+\item 理解任务的五种状态（WAIT/READY/RUN/DISABLE/ONCE）及其转换条件；
+\item 验证 FIFO 就绪队列的任务调度顺序，观察“先到期先执行”的调度行为；
+\item 掌握协程式延时（Task\_DelayInterrupt）和 CPU 占用率统计功能的使用方法。
 \end{enumerate}
 
-% ---------------------------------------------------------------------
-\section{单片机移植实现}
+\subsection{实验原理}
+simple\_task 采用时间触发、协作运行模式：1ms 定时器中断调用 Task\_Tick 更新所有任务的计时，将到期的任务放入 FIFO 就绪队列；主循环调用 Task\_Loop 从队列中取出任务并执行。任务通过回调返回值（TaskRet\_T）控制下一次执行的周期和状态，实现动态周期调整和单次执行。DWT 内核定时器提供微秒级计时，用于统计每个任务的运行时间和 CPU 占用率。
 
-\begin{figure}[htbp]
+\subsection{硬件连接}
+
+\LabPasteBox{simple\_task 移植硬件连接}{粘贴开发板与调试器（或串口）的连接图片，标注 LED 指示和调试输出接口。}{fig:ch3-task-hardware}
+
+\subsection{关键代码}
+
+\LabPasteBox{Task\_Tick、Task\_Loop 与任务创建代码}{粘贴定时器中断服务函数、Task\_Loop 主循环、任务创建及回调函数的核心代码片段。}{fig:ch3-task-code}
+
+\subsection{实验步骤}
+\begin{enumerate}
+\item 将文件 \texttt{simple\_task.c}、\texttt{simple\_task.h} 和 \texttt{simple\_task\_config.h} 加入工程，配置 \texttt{bsp\_system.h} 中的底层接口（定时器中断开关、DWT 时间戳、CPU 睡眠）。
+\item 配置一个 1ms 定时器中断，在中断服务函数中调用 \texttt{Task\_Tick()}，并在主循环中调用 \texttt{Task\_Loop()}（或 \texttt{Task\_Schedule()}）。
+\item 创建三个任务：① LED 闪烁任务（周期 500ms）；② 按键扫描任务（周期 20ms）；③ 串口打印任务（周期 1000ms）。
+\item 通过串口输出 \texttt{Task\_GetInfo} 的系统信息，观察任务列表、状态、周期、个体占用率和上次运行耗时。
+\item 使用 \texttt{Task\_RunOnce} 让某个任务只执行一次后自动禁用，验证 ONCE 状态的行为。
+\item 在某个任务中调用 \texttt{Task\_DelayInterrupt(2000, callback)} 实现协程式延时，验证延时期间其他任务仍能正常调度。
+\item 启用硬实时任务（如每 5ms 翻转一个 GPIO），用逻辑分析仪测量实际周期抖动。
+\item 通过 \texttt{Task\_GetIndividualUsage} 获取各任务 CPU 占用率，分析任务调度的时间分布。
+\end{enumerate}
+
+\subsection{实验现象与数据记录}
+
+\begin{table}[htbp]
 \centering
-    \fbox{\rule{0pt}{5cm}\rule{0.8\linewidth}{0pt}}
-\caption{simple\_task 移植实验图片（粘贴处）} \label{fig:ch3-placeholder}
-\end{figure}
+\caption{simple\_task 调度器运行记录}
+\label{tab:ch3-task-record}
+\begin{tabularx}{\textwidth}{p{2.4cm}p{2.2cm}p{2.0cm}p{2.0cm}p{2.0cm}X}
+\toprule
+任务名称 & 设定周期(ms) & 状态 & 个体占用率 & 上次耗时(us) & 备注 \\
+\midrule
+\LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+\LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+\LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\LabPasteBox{simple\_task 运行日志与 CPU 占用率}{粘贴串口打印的 \texttt{Task\_GetInfo} 输出截图和逻辑分析仪捕获的任务执行时序。}{fig:ch3-task-result}
+
+\subsection{结果分析}
+
+FIFO 就绪队列中任务的执行顺序是否符合“先到期先执行”：\LabFillLine[6cm]
+
+协程式延时期间，其他任务的调度是否正常（延时任务 vs 其他任务执行次数比）：\LabFillLine[6cm]
+
+硬实时任务的实际周期抖动（最大值与最小值之差，单位 us）：\LabFillLine[6cm]
+
+系统空闲时 \texttt{isIdleFlag} 是否置位，CPU 是否进入睡眠（电流测量值）：\LabFillLine[6cm]
+
+\subsection{实验总结}
+
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]
 
 % ---------------------------------------------------------------------
+
 \begin{problemset}
 \item 请说明 \texttt{Task\_Tick}（中断侧）与 \texttt{Task\_Loop}（主循环侧）在调度器中各自扮演的角色。
 \item 循环队列为什么通常要“牺牲一个槽位”来区分空与满？如果改成记录长度字段，还需要牺牲槽位吗？

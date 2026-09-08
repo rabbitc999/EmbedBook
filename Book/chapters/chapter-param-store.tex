@@ -2,7 +2,7 @@
 
 智能小车、无人机、工业控制器等设备在断电后仍需要保存用户参数：PID 系数、轮距、最大速度、串口波特率、Wi-Fi 密码、界面标题……这些参数如果每次都烧进固件，用户就无法在运行时调整。本章以 \texttt{store.c} 与 \texttt{store.h} 的实现为例，介绍单片机上“用户参数存储”的经典做法：定义一个大参数结构体、用魔数校验合法性、按标志位分组保存、支持文件导入导出，并讨论固件升级时最容易踩的坑——参数迁移。
 
-\medskip \textbf{本章涉及到的实验内容：}
+\medskip 本章涉及到的实验内容：
 \begin{enumerate}
 \item 参数魔数与默认值恢复；
 \item 按保存标志位分组更新参数；
@@ -17,8 +17,8 @@
 不存储参数的设备存在两个问题：
 
 \begin{enumerate}
-\item \textbf{每次上电都要重新调参}：PID、限速、串口波特率等参数一改，下次开机又回到固件里的默认值；
-\item \textbf{固件与参数耦合}：用户想改一个 Wi-Fi 密码就必须重新编译、烧录，体验很差。
+\item 每次上电都要重新调参：PID、限速、串口波特率等参数一改，下次开机又回到固件里的默认值；
+\item 固件与参数耦合：用户想改一个 Wi-Fi 密码就必须重新编译、烧录，体验很差。
 \end{enumerate}
 
 解决方法是把“代码”与“配置”分开：代码里只有默认值和结构体描述，真正运行时的数值放在可擦写的非易失存储器中。常见选择如下：
@@ -27,7 +27,7 @@
 \centering \caption{常见非易失参数存储介质对比} \label{tab:param-media}
     \begin{tabular}{llll}
         \toprule
-        \textbf{介质} & \textbf{容量} & \textbf{适合场景} & \textbf{注意点} \\
+        介质 & 容量 & 适合场景 & 注意点 \\
         \midrule
         EEPROM（I2C 与 SPI） & KB 级 & 少量参数 & 按字节擦写 \\
         单片机内部 Flash & 数十 KB & 小型参数 & 需要按扇区擦除 \\
@@ -51,14 +51,14 @@ ParamData_T g_ParamData = { 0 };
 \texttt{ParamData\_T} 的字段按功能分组：
 
 \begin{itemize}
-\item \textbf{魔数}：\texttt{MagicNumber}，用于判断 Flash 里的数据是否有效；
-\item \textbf{底盘与 PID}：轮距、最大速度、X、Y、Yaw 与电机 PID；
-\item \textbf{电机映射}：电机与编码器方向映射；
-\item \textbf{通信}：广播时间、HEX 严格模式、串口波特率、校验位和停止位；
-\item \textbf{外部设备}：蓝牙名称密码、ESP8266 Wi-Fi 与 MQTT 参数；
-\item \textbf{界面信息}：GUI 标题、版本号、学校与项目名称；
-\item \textbf{避障与打滑}：激光与超声波阈值、打滑系数；
-\item \textbf{低功耗与脚本}：待机时间、Lua 自启动路径。
+\item 魔数：\texttt{MagicNumber}，用于判断 Flash 里的数据是否有效；
+\item 底盘与 PID：轮距、最大速度、X、Y、Yaw 与电机 PID；
+\item 电机映射：电机与编码器方向映射；
+\item 通信：广播时间、HEX 严格模式、串口波特率、校验位和停止位；
+\item 外部设备：蓝牙名称密码、ESP8266 Wi-Fi 与 MQTT 参数；
+\item 界面信息：GUI 标题、版本号、学校与项目名称；
+\item 避障与打滑：激光与超声波阈值、打滑系数；
+\item 低功耗与脚本：待机时间、Lua 自启动路径。
 \end{itemize}
 
 这种“整包结构体”的优点是代码简单、读写快、顺序清楚；缺点是只要结构体成员顺序改变，旧数据就不能继续按新布局解释，这正是参数迁移要解决的问题。
@@ -162,9 +162,9 @@ void Param_Export(char *filePath)
 当固件从 V1 升级到 V2 时，常见改动有三种：
 
 \begin{enumerate}
-\item \textbf{新增参数}：例如增加 \texttt{car\_slipK3}、增加一个新的串口；
-\item \textbf{删除或改名参数}：例如废弃旧接口标题，换成新的；
-\item \textbf{改变结构体字段顺序}：这种改动危害最大，会导致所有旧数据按新布局全部错位。
+\item 新增参数：例如增加 \texttt{car\_slipK3}、增加一个新的串口；
+\item 删除或改名参数：例如废弃旧接口标题，换成新的；
+\item 改变结构体字段顺序：这种改动危害最大，会导致所有旧数据按新布局全部错位。
 \end{enumerate}
 
 如果升级后直接读取旧 Flash 或旧文件，轻则参数错乱，重则把字符串数组读成浮点数、把 0xFF 读成巨大速度值，引发安全问题。
@@ -172,10 +172,10 @@ void Param_Export(char *filePath)
 \subsection{迁移设计原则}
 
 \begin{enumerate}
-\item \textbf{只在结构体末尾追加新字段}，不要插入、删除或重排旧字段；
-\item \textbf{用 DataVersion 记录布局版本}，推荐放在 MagicNumber 之后；
-\item \textbf{新增字段必须有默认值}，迁移时“旧字段原样拷贝，新字段填默认值”；
-\item \textbf{文件导入时先按版本识别}，不支持旧版本时宁可拒绝，也不要按错误布局解释。
+\item 只在结构体末尾追加新字段，不要插入、删除或重排旧字段；
+\item 用 DataVersion 记录布局版本，推荐放在 MagicNumber 之后；
+\item 新增字段必须有默认值，迁移时“旧字段原样拷贝，新字段填默认值”；
+\item 文件导入时先按版本识别，不支持旧版本时宁可拒绝，也不要按错误布局解释。
 \end{enumerate}
 
 伪代码：
@@ -279,11 +279,11 @@ void Param_MigrateV1ToV2(
 \section{为什么选择 Python 做这类工具}
 
 \begin{enumerate}
-\item \textbf{无需编译}：脚本改完立即运行，迭代参数格式时比 C 工具快得多；
-\item \textbf{标准库丰富}：\texttt{struct} 处理二进制、\texttt{json} 与 \texttt{yaml} 做人类可读配置、 \texttt{argparse} 做命令行参数、\texttt{pytest} 做单元测试；
-\item \textbf{跨平台}：Windows 导出、Linux 服务器、Mac 备份都能直接跑；
-\item \textbf{适合批量与自动化}：可以遍历整个参数目录、对比新旧文件、把结果写回 CSV；
-\item \textbf{容易阅读}：字段表 + 函数名写清楚后，同事也能快速维护。
+\item 无需编译：脚本改完立即运行，迭代参数格式时比 C 工具快得多；
+\item 标准库丰富：\texttt{struct} 处理二进制、\texttt{json} 与 \texttt{yaml} 做人类可读配置、 \texttt{argparse} 做命令行参数、\texttt{pytest} 做单元测试；
+\item 跨平台：Windows 导出、Linux 服务器、Mac 备份都能直接跑；
+\item 适合批量与自动化：可以遍历整个参数目录、对比新旧文件、把结果写回 CSV；
+\item 容易阅读：字段表 + 函数名写清楚后，同事也能快速维护。
 \end{enumerate}
 
 \begin{anybox}{Python 的代价}
@@ -343,7 +343,7 @@ void Param_MigrateV1ToV2(
 \label{tab:param-store-record}
 \begin{tabularx}{\textwidth}{p{3cm}p{3cm}p{3cm}p{3cm}X}
 \toprule
-\textbf{测试场景} & \textbf{写入值} & \textbf{重启值} & \textbf{校验结果} & \textbf{迁移结果} \\
+测试场景 & 写入值 & 重启值 & 校验结果 & 迁移结果 \\
 \midrule
 首次启动 & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] \\
 修改并保存 & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] \\
@@ -369,6 +369,7 @@ void Param_MigrateV1ToV2(
 \noindent\LabFillLine[\linewidth]\par
 \noindent\LabFillLine[\linewidth]\par
 \noindent\LabFillLine[\linewidth]
+
 % ---------------------------------------------------------------------
 \begin{problemset}
 \item 参数存储结构体中为什么要放一个魔数？如果只靠校验和，能否发现“存入了错误结构体版本”？

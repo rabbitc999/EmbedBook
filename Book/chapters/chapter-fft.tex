@@ -2,7 +2,7 @@
 
 时域波形告诉我们信号“随时间怎样变化”，却不容易直接看出信号由哪些频率组成。快速傅里叶变换（Fast Fourier Transform，FFT）把离散采样序列转换到频域，使电机振动、音频、交流电压和传感器周期干扰中的频率成分一目了然。本章先从正弦函数和离散傅里叶变换讲起，再实现基二时间抽取 FFT，最后讨论窗函数、频谱泄漏和幅值换算。完整示例代码位于 \texttt{Chapter-fft/FFT变换/} 目录。
 
-\medskip \textbf{本章涉及到的实验内容：}
+\medskip 本章涉及到的实验内容：
 \begin{enumerate}
 \item 单一正弦信号与多频率叠加信号；
 \item 离散傅里叶变换与基二 FFT；
@@ -288,7 +288,7 @@ FFT 包含较多乘法、三角函数和浮点数组。STM32 移植时应关注�
 \caption{FFT 示例的 PC 频谱结果} \label{tab:fft-pc-result}
 \begin{tabular}{llll}
 \toprule
-\textbf{频点下标} & \textbf{实际频率} & \textbf{理论幅值} & \textbf{计算幅值} \\
+频点下标 & 实际频率 & 理论幅值 & 计算幅值 \\
 \midrule
 8 & $8.00\,\mathrm{Hz}$ & 1.0000 & 1.0000 \\
 20 & $20.00\,\mathrm{Hz}$ & 0.5000 & 0.5000 \\
@@ -299,88 +299,82 @@ FFT 包含较多乘法、三角函数和浮点数组。STM32 移植时应关注�
 结果表明频点换算与单边幅值归一化符合测试信号。独立断言还验证了二次幂长度判断、汉宁窗端点、海明窗端点、布莱克曼窗端点和八点单频 FFT，断言均正常通过。
 
 % ---------------------------------------------------------------------
-\section{单片机移植实验}
+\section{实验报告：FFT 频谱分析移植与验证}
 
-本节预留 FFT 在 STM32 开发板上的采样、计算与频谱输出实验。FFT 算法本身只处理数组，真正影响频谱质量的是采样时钟、模拟前端和缓冲区交接方式。
+\subsection{实验基本信息}
 
-\subsection{硬件接口预留}
+MCU 型号：\LabFillLine[3.5cm] \quad 工作主频：\LabFillLine[3.5cm]
+
+采样频率：\LabFillLine[3.5cm] \quad FFT 点数：\LabFillLine[3.5cm]
+
+窗函数类型：\LabFillLine[3.5cm] \quad 模拟输入范围：\LabFillLine[3.5cm]
+
+\subsection{实验目的}
+\begin{enumerate}
+\item 掌握定时器触发 ADC 与 DMA 双缓冲采集连续采样数据的方法；
+\item 理解 FFT 的位逆序、蝶形运算流程，以及频点与频率分辨率的换算关系；
+\item 观察不同窗函数（矩形窗、汉宁窗、海明窗、布莱克曼窗）对频谱泄漏的抑制效果；
+\item 掌握单边幅值谱的计算方法，能够将频谱峰值正确换算为实际信号的频率和幅值。
+\end{enumerate}
+
+\subsection{实验原理}
+FFT 将时域采样序列转换到频域，其核心是基二时间抽取蝶形运算。采样频率 \( f_s \) 和点数 \( N \) 决定频率分辨率 \( \Delta f = f_s / N \)，第 \( k \) 个频点对应实际频率 \( f_k = k \cdot \Delta f \)。由于实数信号的频谱共轭对称，工程中只显示直流到奈奎斯特频率的单边幅值谱（直流外各频点幅值乘 2 后除以 \( N \)）。窗函数通过压低数据两端减小频谱泄漏，但会在频率分辨率和旁瓣抑制之间产生权衡。
+
+\subsection{硬件连接}
+
+\LabPasteBox{FFT 频谱分析硬件连接}{粘贴信号源与开发板 ADC 输入引脚的连接图片，标注信号源频率/幅值、ADC 输入通道和公共地。}{fig:ch10-fft-hardware}
+
+\subsection{关键代码}
+
+\LabPasteBox{ADC 采样触发、DMA 双缓冲与 FFT 处理代码}{粘贴定时器触发 ADC 配置、DMA 双缓冲初始化、ADC 数据转浮点以及 FFT 变换和幅值计算的完整流程代码。}{fig:ch10-fft-code}
+
+\subsection{实验步骤}
+\begin{enumerate}
+\item 将信号发生器输出连接到开发板 ADC 输入引脚，设置信号为单一正弦波（如 \( 8\,\mathrm{Hz} \)、幅值 \( 1.0\,\mathrm{V} \)，直流偏置 \( 1.65\,\mathrm{V} \)），确认共地连接。
+\item 配置定时器以目标采样频率（如 \( 128\,\mathrm{Hz} \)）触发 ADC，配置 DMA 为双缓冲模式，缓冲区大小等于 FFT 点数（如 128 点）。
+\item 编写 ADC 原始码值到浮点电压值的转换函数，去除直流偏置，将数据存入实部数组，虚部清零。
+\item 调用 \texttt{FFT\_ApplyWindow} 施加窗函数（从矩形窗开始），执行 \texttt{FFT\_Transform} 和 \texttt{FFT\_CalcMagnitude} 计算单边幅值谱。
+\item 查找幅值谱中的峰值频点，通过 \texttt{FFT\_GetBinFrequency} 换算为实际频率，记录峰值幅值。
+\item 依次切换汉宁窗、海明窗和布莱克曼窗，观察同一信号在不同窗函数下的频谱变化（主瓣宽度和旁瓣抑制效果）。
+\item 改用双频叠加信号（如 \( 8\,\mathrm{Hz} + 20\,\mathrm{Hz} \)），重复上述步骤，观察两个频率分量是否能够被清晰分辨。
+\item 测量一次完整 FFT 计算的执行时间，评估系统能否在下一个 DMA 缓冲区填满之前完成处理。
+\end{enumerate}
+
+\subsection{实验现象与数据记录}
 
 \begin{table}[htbp]
 \centering
-\caption{FFT 单片机移植接口记录表} \label{tab:fft-mcu-interface}
-\begin{tabularx}{\textwidth}{lllX}
+\caption{FFT 频谱分析实验记录}
+\label{tab:ch10-fft-record}
+\begin{tabularx}{\textwidth}{p{2.2cm}p{2.4cm}p{2.2cm}p{2.2cm}X}
 \toprule
-\textbf{项目} & \textbf{计划接口} & \textbf{当前配置} & \textbf{实测备注} \\
+信号频率 & 窗函数类型 & 峰值频点下标 & 实测频率 & 实测幅值 \\
 \midrule
-模拟输入 & ADC & 待选择 & 记录输入范围与直流偏置 \\
-采样触发 & 定时器触发 ADC & 待选择 & 记录实际采样频率 \\
-数据搬运 & DMA 双缓冲 & 待选择 & 记录缓冲区长度 \\
-频谱输出 & 串口或显示屏 & 待选择 & 记录刷新周期 \\
-测试信号 & 信号发生器 & 待选择 & 记录频率与幅值 \\
+\LabFillLine[1.8cm] & 矩形窗 & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] \\
+\LabFillLine[1.8cm] & 汉宁窗 & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] \\
+\LabFillLine[1.8cm] & 海明窗 & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] \\
+\LabFillLine[1.8cm] & 布莱克曼窗 & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-\subsection{移植步骤}
+\LabPasteBox{FFT 频谱分析运行结果}{粘贴串口打印的频谱数据表格、峰值标注截图或上位机显示的频谱曲线图。}{fig:ch10-fft-result}
 
-\begin{enumerate}
-\item 把 \texttt{fft\_transform.c} 与 \texttt{fft\_transform.h} 加入单片机工程，并确认链接器包含数学库；
-\item 使用定时器触发 ADC，禁止使用执行时间不确定的软件循环产生采样时刻；
-\item 使用 DMA 双缓冲接收数据，一块缓冲区采样时处理另一块缓冲区；
-\item 把 ADC 原始码值转换为以零为中心的浮点采样值，并根据需要去除直流分量；
-\item 选择窗函数，执行 FFT 和单边幅值计算，再查找目标频段内的峰值；
-\item 测量一次完整计算的执行时间，保证它小于采满下一块缓冲区所需的时间；
-\item 根据芯片 RAM 和实时性决定继续使用教学实现，还是替换为 CMSIS-DSP 实现。
-\end{enumerate}
+\subsection{结果分析}
 
-DMA 缓冲区填满以后，可以在主循环或低优先级任务中执行下面的处理流程：
+频率分辨率（理论值 vs. 实测值）：\LabFillLine[6cm]
 
-\begin{lstlisting}[style=c]
-/**
-  * @brief  对一帧 ADC 采样数据执行频谱分析。
-  * @param  无。
-  * @retval 无。
-  * @note   DMA 中断只置完成标志，FFT 计算放在任务中执行。
-  */
-void FFT_AppProcess(void)
-{
-    uint16_t index;
+不同窗函数下峰值幅值的变化趋势：\LabFillLine[6cm]
 
-    /* 把 ADC 数据转换为实部，并将虚部清零 */
-    for (index = 0u; index < FFT_SAMPLE_COUNT; index++)
-    {
-        realPart[index] = ADC_ConvertToSignal(adcBuffer[index]);
-        imaginaryPart[index] = 0.0f;
-    }
+双频信号分离效果最好的窗函数：\LabFillLine[6cm]
 
-    /* 加窗后计算单边幅值谱 */
-    (void)FFT_ApplyWindow(realPart, FFT_SAMPLE_COUNT, FFT_WINDOW_HANN);
-    (void)FFT_Transform(realPart, imaginaryPart, FFT_SAMPLE_COUNT);
-    (void)FFT_CalcMagnitude(realPart, imaginaryPart, magnitude, FFT_SAMPLE_COUNT);
-}
-\end{lstlisting}
+一次 FFT 计算耗时（CPU 周期/微秒）：\LabFillLine[6cm]
 
-\subsection{资源与实测记录预留}
+\subsection{实验总结}
 
-\begin{table}[htbp]
-\centering
-\caption{FFT 单片机实测结果记录表} \label{tab:fft-mcu-result}
-\begin{tabular}{lllll}
-\toprule
-\textbf{FFT 点数} & \textbf{采样频率} & \textbf{计算时间} & \textbf{峰值频率} & \textbf{峰值幅值} \\
-\midrule
-128 & 待记录 & 待记录 & 待记录 & 待记录 \\
-256 & 待记录 & 待记录 & 待记录 & 待记录 \\
-512 & 待记录 & 待记录 & 待记录 & 待记录 \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\begin{figure}[htbp]
-\centering
-\fbox{\parbox[c][4.0cm][c]{0.82\textwidth}{\centering 此处预留信号源连接照片、串口输出和单片机实测频谱图}}
-\caption{FFT 单片机移植实验记录预留} \label{fig:fft-mcu-result}
-\end{figure}
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]
 
 % ---------------------------------------------------------------------
 \section{完整示例代码}

@@ -2,7 +2,7 @@
 
 人机交互不只有按键和菜单。当设备需要接收 \texttt{"led on"}、\texttt{"add 12 30"} 这类文本命令时，就需要一个字符串命令解析器：它把一行字符串拆成“命令名 + 参数”，再调用对应的处理函数。本章先介绍最直接的字符串比较方法，再引出词法分析，最后用哈希表构建可扩展的命令注册表。在此基础上，本章还会把参数从“字符串数组”升级为带有动态类型的 \texttt{Param\_T}，让命令处理函数可以直接用 \texttt{INT\_PARAM}、\texttt{FLOAT\_PARAM} 和 \texttt{STR\_PARAM} 读取参数。完整代码位于 \texttt{Chapter-command-parser/字符串命令解析器/} 目录。
 
-\medskip \textbf{本章涉及到的实验内容：}
+\medskip 本章涉及到的实验内容：
 \begin{enumerate}
 \item 字符串比较命令分发；
 \item 空格或制表符参数切分（词法分析）；
@@ -31,16 +31,16 @@ if (strcmp(line, "led on") == 0) {
 这种写法在小规模演示中很直观，但存在三个问题：
 
 \begin{enumerate}
-\item \textbf{没有参数概念}：\texttt{"led on"} 与 \texttt{"led off"} 是两条完全独立的命令，命令一多就会成倍膨胀；
-\item \textbf{代码无法扩展}：新增一条命令必须修改主分发函数，违反“新增不改旧”的模块化原则；
-\item \textbf{性能线性}：命令数量达到几十条后，每次都要从头做字符串比较。
+\item 没有参数概念：\texttt{"led on"} 与 \texttt{"led off"} 是两条完全独立的命令，命令一多就会成倍膨胀；
+\item 代码无法扩展：新增一条命令必须修改主分发函数，违反“新增不改旧”的模块化原则；
+\item 性能线性：命令数量达到几十条后，每次都要从头做字符串比较。
 \end{enumerate}
 
 \begin{table}[htbp]
 \centering \caption{字符串命令解析的三种常用方式对比} \label{tab:cmd-method}
     \begin{tabular}{lllll}
         \toprule
-        \textbf{方法} & \textbf{参数切分} & \textbf{查找方式} & \textbf{新增命令} & \textbf{适合规模} \\
+        方法 & 参数切分 & 查找方式 & 新增命令 & 适合规模 \\
         \midrule
         if-else 字符串比较 & 无 & 顺序 strcmp & 修改主函数 & 少量固定命令 \\
         strcmp 命令表 & 无 & 线性遍历表 & 追加表项 & 中等规模 \\
@@ -105,7 +105,7 @@ static uint8_t Cmd_Tokenize(char *pLine, char *argv[], uint8_t maxArgs)
 }
 \end{lstlisting}
 
-切分后，\texttt{"led on"} 会变成 \texttt{argv[0] = "led"}、\texttt{argv[1] = "on"}。词法分析器的要点是：\textbf{边界检查比算法本身更重要}——行太长、参数太多、空命令都要在这一层拦截，避免处理函数访问越界。
+切分后，\texttt{"led on"} 会变成 \texttt{argv[0] = "led"}、\texttt{argv[1] = "on"}。词法分析器的要点是：边界检查比算法本身更重要——行太长、参数太多、空命令都要在这一层拦截，避免处理函数访问越界。
 
 \begin{figure}[htbp]
 \centering
@@ -132,7 +132,7 @@ static uint8_t Cmd_Tokenize(char *pLine, char *argv[], uint8_t maxArgs)
 % ---------------------------------------------------------------------
 \section{HASH 表的构建}
 
-当命令数量较多时，顺序查找 \texttt{"led"}、\texttt{"add"}、\texttt{"help"}……效率低。可以让命令名先经过一个哈希函数映射到数组下标，再在对应位置插入与查找。哈希冲突用\textbf{线性探测}解决：
+当命令数量较多时，顺序查找 \texttt{"led"}、\texttt{"add"}、\texttt{"help"}……效率低。可以让命令名先经过一个哈希函数映射到数组下标，再在对应位置插入与查找。哈希冲突用线性探测解决：
 
 \begin{lstlisting}[style=c]
 static uint8_t Cmd_CalcHash(const char *pName)
@@ -293,7 +293,7 @@ typedef struct __Param_T
 \centering \caption{动态类型识别规则示例} \label{tab:param-type}
     \begin{tabular}{llll}
         \toprule
-        \textbf{原始文本} & \textbf{type} & \textbf{INT\_PARAM} & \textbf{FLOAT\_PARAM} \\
+        原始文本 & type & INT\_PARAM & FLOAT\_PARAM \\
         \midrule
         \texttt{12}      & INT   & 12        & 12.0 \\
         \texttt{-3}      & INT   & -3        & -3.0 \\
@@ -385,7 +385,7 @@ Cmd_ParserRegister(&parser, "add",    Cmd_HandleAdd);      /* 2 个 int 参数 *
 \centering \caption{命令 -> 适配器 -> 业务函数} \label{tab:cmd-adapter}
     \begin{tabular}{llll}
         \toprule
-        \textbf{命令示例} & \textbf{适配器} & \textbf{业务函数} & \textbf{参数类型} \\
+        命令示例 & 适配器 & 业务函数 & 参数类型 \\
         \midrule
         \texttt{led on} & \texttt{Cmd\_HandleLed}   & \texttt{Led\_On()} & STRING \\
         \texttt{intcmd 7} & \texttt{Cmd\_HandleIntCmd} & \texttt{Led\_Cmd(int)} & INT \\
@@ -395,7 +395,7 @@ Cmd_ParserRegister(&parser, "add",    Cmd_HandleAdd);      /* 2 个 int 参数 *
     \end{tabular}
 \end{table}
 
-需要说明的是：\textbf{在理论上和部分工程实践中，确实存在两种“无适配器”的框架方案}，它们试图让命令解析器直接调用任意签名的业务函数，而无需手写适配器。
+需要说明的是：在理论上和部分工程实践中，确实存在两种“无适配器”的框架方案，它们试图让命令解析器直接调用任意签名的业务函数，而无需手写适配器。
 
 \subsection*{方案一：参数描述表 + 通用调度器（重型框架）}
 
@@ -429,12 +429,12 @@ static int8_t Cmd_DispatchGeneric(CmdDesc_T *desc, Param_T *args, uint8_t argc)
 }
 \end{lstlisting}
 
-但该方案在\textbf{裸机嵌入式环境}中有三个显著代价：
+但该方案在裸机嵌入式环境中有三个显著代价：
 
 \begin{enumerate}
-	\item \textbf{ROM 开销显著增加}：每个命令除了名字和处理函数指针外，还要存储参数个数、类型序列、可能的默认值等描述信息，命令越多，表的体积越大；
-	\item \textbf{运行时开销不可忽视}：通用调度器必须根据类型序列动态决定如何从 \texttt{Param\_T} 提取数据，并构造函数调用栈（或搬运参数到寄存器），每次调用的指令周期远多于手写适配器的几条赋值语句；
-	\item \textbf{调试复杂度飙升}：通用调度器内部充斥着类型分发、循环与强制转换，一旦参数数量或类型匹配错误，问题往往在运行时才暴露，排查难度远大于单步调试一个显式适配器函数。
+	\item ROM 开销显著增加：每个命令除了名字和处理函数指针外，还要存储参数个数、类型序列、可能的默认值等描述信息，命令越多，表的体积越大；
+	\item 运行时开销不可忽视：通用调度器必须根据类型序列动态决定如何从 \texttt{Param\_T} 提取数据，并构造函数调用栈（或搬运参数到寄存器），每次调用的指令周期远多于手写适配器的几条赋值语句；
+	\item 调试复杂度飙升：通用调度器内部充斥着类型分发、循环与强制转换，一旦参数数量或类型匹配错误，问题往往在运行时才暴露，排查难度远大于单步调试一个显式适配器函数。
 \end{enumerate}
 
 \subsection*{方案二：函数指针强制转换（利用 ABI 特性）}
@@ -453,21 +453,21 @@ int32_t a2 = *(int32_t*)&FLOAT_VAL(args[2]);
 p(a0, a1, a2);   /* 在 soft-float ABI 下能“蒙混过关” */
 \end{lstlisting}
 
-该方法在 \textbf{soft-float ABI 的 ARM 平台} 上能正常执行，因为浮点数和整数通过相同的通用寄存器传递，函数体内的机器码会正确解释这些位模式。
+该方法在 soft-float ABI 的 ARM 平台 上能正常执行，因为浮点数和整数通过相同的通用寄存器传递，函数体内的机器码会正确解释这些位模式。
 
 但是，这种做法存在严重缺陷：
 
 \begin{enumerate}
-	\item \textbf{平台依赖性极强}：一旦启用硬浮点 ABI（\texttt{-mfloat-abi=hard}），浮点数通过专用 FPU 寄存器传递，而整数通过通用寄存器，此时强制调用会传入垃圾值，程序立即崩溃；在 x86/x64 等平台更是完全不可行；
-	\item \textbf{C 语言未定义行为}：调用一个与函数指针类型不兼容的函数属于标准未定义行为，编译器优化（如严格别名、内联）可能产生完全意料之外的代码；
-	\item \textbf{可维护性极差}：阅读代码的人无法从函数指针类型得知实际调用签名，调试器无法正确显示参数值，且难以进行静态检查。
+	\item 平台依赖性极强：一旦启用硬浮点 ABI（\texttt{-mfloat-abi=hard}），浮点数通过专用 FPU 寄存器传递，而整数通过通用寄存器，此时强制调用会传入垃圾值，程序立即崩溃；在 x86/x64 等平台更是完全不可行；
+	\item C 语言未定义行为：调用一个与函数指针类型不兼容的函数属于标准未定义行为，编译器优化（如严格别名、内联）可能产生完全意料之外的代码；
+	\item 可维护性极差：阅读代码的人无法从函数指针类型得知实际调用签名，调试器无法正确显示参数值，且难以进行静态检查。
 \end{enumerate}
 
-因此，这种技巧仅在高度确定（软浮点、已知编译器）且对代码体积有极致要求的特殊场合偶有使用，\textbf{绝不能作为通用方案推荐}。
+因此，这种技巧仅在高度确定（软浮点、已知编译器）且对代码体积有极致要求的特殊场合偶有使用，绝不能作为通用方案推荐。
 
 \subsection*{本书的选择}
 
-鉴于此，本章面向资源受限且平台多样的裸机环境，\textbf{不引入任何“无适配器”框架}，而是坚持“每个命令一个显式适配器”的轻量级方案。对于 10~30 条命令的典型规模，适配器的额外代码量完全可控（每条约 5~10 行），且每个适配器就是一个普通函数，断点单步、参数边界检查都一目了然。新增业务函数时，照着既有模板复制粘贴并修改参数读取宏即可，无需引入复杂的元编程工具或依赖底层 ABI 细节。
+鉴于此，本章面向资源受限且平台多样的裸机环境，不引入任何“无适配器”框架，而是坚持“每个命令一个显式适配器”的轻量级方案。对于 10~30 条命令的典型规模，适配器的额外代码量完全可控（每条约 5~10 行），且每个适配器就是一个普通函数，断点单步、参数边界检查都一目了然。新增业务函数时，照着既有模板复制粘贴并修改参数读取宏即可，无需引入复杂的元编程工具或依赖底层 ABI 细节。
 
 用适配器作为“显式胶水”来换取代码可读性、可移植性与调试便利性，是嵌入式工程实践中务实的取舍。
 
@@ -559,7 +559,7 @@ argv[5] = led      type = STRING
 \label{tab:ch9-command-record}
 \begin{tabularx}{\textwidth}{p{4cm}p{4cm}X}
 \toprule
-\textbf{发送命令} & \textbf{预期检查项} & \textbf{实际结果} \\
+发送命令 & 预期检查项 & 实际结果 \\
 \midrule
 \texttt{intcmd 7} & 整数参数与适配器调用 & \LabFillLine[4cm] \\
 \texttt{car 1.5 2.5 0.8} & 三个浮点参数解析 & \LabFillLine[4cm] \\

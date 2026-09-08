@@ -4,7 +4,7 @@
 
 完整实现位于 \texttt{Chapter-script-engine/} 目录。本附录只解释现有实现，不另外设计一套解析框架。
 
-\medskip \textbf{本附录涉及到的内容：}
+\medskip 本附录涉及到的内容：
 \begin{enumerate}
 \item 文法文件的词法切分与结构化加载；
 \item First 集、Follow 集与 LL(1) 选择集；
@@ -101,7 +101,7 @@ atom := LPAREN expr RPAREN { $$ = $2; }
 \caption{文法加载器的内部模型} \label{tab:app-grammar-model}
 \begin{tabularx}{\textwidth}{llX}
 \toprule
-\textbf{字段} & \textbf{主要内容} & \textbf{用途} \\
+字段 & 主要内容 & 用途 \\
 \midrule
 \texttt{tokens} & 终结符名称列表 & 生成 Token 枚举并计算选择集 \\
 \texttt{grammar.start} & 起始非终结符 & 决定 \texttt{Parser\_Run} 首先调用哪个解析函数 \\
@@ -199,7 +199,7 @@ while (context.stackTop > 0u) {
 \caption{语义动作的主要转换规则} \label{tab:app-action-map}
 \begin{tabularx}{\textwidth}{llX}
 \toprule
-\textbf{动作写法} & \textbf{生成形式} & \textbf{说明} \\
+动作写法 & 生成形式 & 说明 \\
 \midrule
 \texttt{\$\$ = \$1 + \$3;} & \texttt{Var\_Add(...)} & 两侧为运行时对象时调用动态运算 \\
 \texttt{\$\$ = int32(3);} & \texttt{Var\_CreateInt(3)} & 类型构造器创建新对象 \\
@@ -320,7 +320,7 @@ while (context.stackTop > 0u) {
 \caption{不同阶段的错误及处理方式} \label{tab:app-parser-errors}
 \begin{tabularx}{\textwidth}{llX}
 \toprule
-\textbf{阶段} & \textbf{典型错误} & \textbf{处理方式} \\
+阶段 & 典型错误 & 处理方式 \\
 \midrule
 文法加载 & 未知字符、未定义符号、花括号不配对 & 抛出 \texttt{GrammarLoadError} 并停止生成 \\
 文法分析 & LL(1) 选择集冲突、只有左递归而没有基产生式 & 抛出 \texttt{ValueError} 并指出规则名称 \\
@@ -343,7 +343,7 @@ while (context.stackTop > 0u) {
 \caption{Param\_T 与 VarValue\_T 的职责对比} \label{tab:app-param-var-compare}
 \begin{tabularx}{\textwidth}{lllX}
 \toprule
-\textbf{对比项} & \textbf{Param\_T} & \textbf{VarValue\_T} & \textbf{说明} \\
+对比项 & Param\_T & VarValue\_T & 说明 \\
 \midrule
 主要用途 & 命令参数识别 & 语言语义值 & 前者重在输入转换，后者重在运行时计算 \\
 生命周期 & 通常随命令缓冲区结束 & 需要显式创建和释放 & 动态运行时具有完整所有权模型 \\

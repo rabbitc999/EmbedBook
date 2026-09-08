@@ -39,8 +39,8 @@
 	\item \texttt{volatile} 解决“编译器看不到值会变”的问题；但它不保证原子性。涉及入队、出队等读-改-写时必须关闭定时器中断。
 	\item 静态任务池在编译期分配，无碎片、无内存耗尽风险，失败模式确定；代价是任务数量上限固定。
 	\item FIFO 按入队顺序执行同一批到期任务，先到先服务，因此不会出现某个任务长期得不到执行的饿死问题。
-	\item \textbf{（新增）} 三种情况分别为：\texttt{StartIndex != EndIndex}、写入后 \texttt{EndIndex} 追上 \texttt{StartIndex} 的前一个槽位、以及写入区间跨过数组末尾后 \texttt{EndIndex} 回到头部附近。
-	\item \textbf{（新增）} 回绕后 \texttt{EndIndex - StartIndex} 可能为负；先加 \texttt{Size} 再取模可得到正确长度。
+	\item （新增） 三种情况分别为：\texttt{StartIndex != EndIndex}、写入后 \texttt{EndIndex} 追上 \texttt{StartIndex} 的前一个槽位、以及写入区间跨过数组末尾后 \texttt{EndIndex} 回到头部附近。
+	\item （新增） 回绕后 \texttt{EndIndex - StartIndex} 可能为负；先加 \texttt{Size} 再取模可得到正确长度。
 \end{enumerate}
 
 % ---------------------------------------------------------------------

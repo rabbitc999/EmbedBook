@@ -2,7 +2,7 @@
 
 “脚本”通常指不需要重新编译、只修改文本就能改变程序行为的机制。单片机上的脚本不要求像 Python 那样完整，最常见的需求是：用户通过串口写入一段表达式，设备能解析并计算出结果。本章从一个计算表达式的小解释器入手，介绍词法、语法、递归下降解析、错误处理与堆栈保护，再简单讨论 $LL(1)$ 文法与 Lua 框架。完整示例代码位于 \texttt{Chapter-script-engine/表达式脚本引擎/} 目录。
 
-\medskip \textbf{本章涉及到的实验内容：}
+\medskip 本章涉及到的实验内容：
 \begin{enumerate}
 \item 表达式词法分析（数字、变量和运算符）；
 \item 递归下降语法分析；
@@ -24,9 +24,9 @@
 它的价值在于：
 
 \begin{itemize}
-\item \textbf{参数可在线修改}：把“阈值、系数、限位”交给用户配置，不用为每个参数写一个特殊协议；
-\item \textbf{逻辑与代码分离}：公式可以放在配置区、Flash 或上位机下发，固件只维护一个解释器；
-\item \textbf{表达式比固定格式更灵活}：固定协议需要设计很多命令，表达式只需一条 \texttt{calc} 命令。
+\item 参数可在线修改：把“阈值、系数、限位”交给用户配置，不用为每个参数写一个特殊协议；
+\item 逻辑与代码分离：公式可以放在配置区、Flash 或上位机下发，固件只维护一个解释器；
+\item 表达式比固定格式更灵活：固定协议需要设计很多命令，表达式只需一条 \texttt{calc} 命令。
 \end{itemize}
 
 对应的运行时上下文只需要一个变量表：
@@ -56,10 +56,10 @@ typedef struct __ExprContext_T
 文法通常由四部分组成：
 
 \begin{itemize}
-\item \textbf{终结符（Terminal）}：不能再展开的最小单元，例如数字、变量名、 \texttt{+ - * / ( )}；
-\item \textbf{非终结符（Nonterminal）}：可以继续展开的语法成分，例如 \texttt{expr}、\texttt{term}、\texttt{factor}；
-\item \textbf{产生式（Production）}：描述“非终结符可以展开成什么”，例如 \texttt{expr ::= term ('+' term)*}；
-\item \textbf{开始符号（Start Symbol）}：整个语言从哪个非终结符开始推导。
+\item 终结符（Terminal）：不能再展开的最小单元，例如数字、变量名、 \texttt{+ - * / ( )}；
+\item 非终结符（Nonterminal）：可以继续展开的语法成分，例如 \texttt{expr}、\texttt{term}、\texttt{factor}；
+\item 产生式（Production）：描述“非终结符可以展开成什么”，例如 \texttt{expr ::= term ('+' term)*}；
+\item 开始符号（Start Symbol）：整个语言从哪个非终结符开始推导。
 \end{itemize}
 
 如果把文法比作“语法地图”，词法分析负责把字符拆成单词，语法分析则负责按这张地图判断单词的排列是否合法、结构是什么。
@@ -69,8 +69,8 @@ typedef struct __ExprContext_T
 语法分析要回答两个问题：
 
 \begin{enumerate}
-\item \textbf{输入是否符合文法}：表达式是否完整、括号是否匹配、运算符位置是否正确；
-\item \textbf{如果符合，结构是什么}：哪部分是加法、哪部分是乘法、哪部分要先算。
+\item 输入是否符合文法：表达式是否完整、括号是否匹配、运算符位置是否正确；
+\item 如果符合，结构是什么：哪部分是加法、哪部分是乘法、哪部分要先算。
 \end{enumerate}
 
 没有语法分析，程序只能收到“一串字符”，无法知道 \texttt{2 * (3 + x)} 是一个整体；有了语法分析，解析器才能按照优先级与结合性生成结构，再交给求值器、AST 和虚拟机执行。它同时是错误报告的第一道关口：语法错误应该在“结构层”被拦截，而不是等到运行时算出一个奇怪的结果。
@@ -115,9 +115,9 @@ factor := number | ident | '(' expr ')' | ('-' | '+') factor
 递归下降解析器的核心思想只有三条：
 
 \begin{enumerate}
-\item \textbf{一个非终结符对应一个函数}：文法的 \texttt{expr}、\texttt{term} 与 \texttt{factor} 分别对应 \texttt{Expr\_ParseExpr}、\texttt{Expr\_ParseTerm} 和 \texttt{Expr\_ParseFactor}；
-\item \textbf{用“当前 Lookahead Token”决定走哪个分支}：函数先看扫描器里的当前 Token，判断接下来该匹配数字、变量、括号还是运算符；
-\item \textbf{递归调用代替“压栈和弹栈”}：遇到括号里的表达式时， \texttt{Expr\_ParseFactor} 调用 \texttt{Expr\_ParseExpr}，新表达式的解析状态由新的函数调用栈保存，解析完括号再返回上一层继续。
+\item 一个非终结符对应一个函数：文法的 \texttt{expr}、\texttt{term} 与 \texttt{factor} 分别对应 \texttt{Expr\_ParseExpr}、\texttt{Expr\_ParseTerm} 和 \texttt{Expr\_ParseFactor}；
+\item 用“当前 Lookahead Token”决定走哪个分支：函数先看扫描器里的当前 Token，判断接下来该匹配数字、变量、括号还是运算符；
+\item 递归调用代替“压栈和弹栈”：遇到括号里的表达式时， \texttt{Expr\_ParseFactor} 调用 \texttt{Expr\_ParseExpr}，新表达式的解析状态由新的函数调用栈保存，解析完括号再返回上一层继续。
 \end{enumerate}
 
 优先级并不是由运算符优先级表实现的，而是靠文法分层实现的：
@@ -268,7 +268,7 @@ static int8_t Expr_ParseFactor(ExprContext_T *pCtx,
 \centering \caption{\texttt{10 + 2 * (3 + x)} 的递归下降运行流程} \label{tab:recursive-flow}
     \begin{tabular}{lll}
         \toprule
-        \textbf{步骤} & \textbf{动作} & \textbf{当前结果} \\
+        步骤 & 动作 & 当前结果 \\
         \midrule
         1 & expr -> term -> factor 读取 10 & 10 \\
         2 & 遇到 \texttt{'+'}，准备解析右项 & 10 \\
@@ -321,8 +321,8 @@ EXPR_ERR_VAR_FULL     变量表已满
 括号嵌套越深，\texttt{ParseFactor} 与 \texttt{ParseExpr} 的递归层数越多；如果脚本由上位机任意下发，攻击者或误操作可能让设备栈溢出。本章采用两层保护：
 
 \begin{enumerate}
-\item \textbf{递归深度限制}：扫描器中记录 \texttt{depth}，每进入一层 factor 就加 1，超过 \texttt{EXPR\_MAX\_PARSE\_DEPTH} 立即返回错误；
-\item \textbf{MCU 栈规划}：解析器所在的调用栈必须预留足够空间，不能放在只有几百字节的中断上下文里。
+\item 递归深度限制：扫描器中记录 \texttt{depth}，每进入一层 factor 就加 1，超过 \texttt{EXPR\_MAX\_PARSE\_DEPTH} 立即返回错误；
+\item MCU 栈规划：解析器所在的调用栈必须预留足够空间，不能放在只有几百字节的中断上下文里。
 \end{enumerate}
 
 \begin{lstlisting}[style=c]
@@ -381,7 +381,7 @@ factor-> '(' expr ')' | number
 \centering \caption{表达式文法的 First 与 Follow 集合} \label{tab:first-follow}
     \begin{tabular}{llll}
         \toprule
-        \textbf{非终结符} & \textbf{First} & \textbf{Follow} & \textbf{含义} \\
+        非终结符 & First & Follow & 含义 \\
         \midrule
         \texttt{expr}  & $\{number, (\}$ & $\{\$, )\}$ & 表达式可以从数字或括号开始 \\
         \texttt{expr'} & $\{+, \varepsilon\}$ & $\{\$, )\}$ & 加号后缀可空 \\
@@ -457,7 +457,7 @@ PC 上编译运行结果：
 	\label{tab:parser-choice}
 	\begin{tabular}{lll}
 		\toprule
-		\textbf{对比项} & \textbf{递归下降} & \textbf{$LALR(1)$ 表驱动} \\
+		对比项 & 递归下降 & $LALR(1)$ 表驱动 \\
 		\midrule
 		解析方向 & 自顶向下展开 & 自底向上归约 \\
 		推导方式 & 最左推导 & 最右推导的逆过程 \\
@@ -474,7 +474,7 @@ PC 上编译运行结果：
 	\end{tabular}
 \end{table}
 
-对于表达式这种小规模文法，递归下降足以胜任，且代码轻量、易读；而对于包含 if、while、函数调用等复杂结构的完整语言，$LALR(1)$ 生成器能减少大量手写工作量。但无论选哪一种，都需要清醒认识到：\textbf{编译原理的“能力”不等于“可用性”}，在实际 MCU 上，Flash 和 RAM 的限制往往比文法覆盖能力更关键。
+对于表达式这种小规模文法，递归下降足以胜任，且代码轻量、易读；而对于包含 if、while、函数调用等复杂结构的完整语言，$LALR(1)$ 生成器能减少大量手写工作量。但无论选哪一种，都需要清醒认识到：编译原理的“能力”不等于“可用性”，在实际 MCU 上，Flash 和 RAM 的限制往往比文法覆盖能力更关键。
 
 以下是一些需要留意的权衡点：
 \begin{enumerate}
@@ -487,9 +487,9 @@ PC 上编译运行结果：
 考虑到本章示例仅需解析简单表达式，且文法固定，手写递归下降比引入解析器生成器更节省 Flash，也能让读者直观地看到“每个函数对应一条文法规则”的结构，因此本章最终采用递归下降实现。关于 $\mathrm{First}$ 与 $\mathrm{Follow}$ 的构造算法以及更深入的编译器理论，可参考经典教材“龙书”：
 
 \begin{itemize}
-	\item \textbf{中文书名}：《编译原理》（“龙书”中文翻译版，机械工业出版社）
-	\item \textbf{英文原名}：\textit{Compilers: Principles, Techniques, and Tools}， Second Edition
-	\item \textbf{作者}：Alfred V. Aho、Monica S. Lam、Ravi Sethi、Jeffrey D. Ullman
+	\item 中文书名：《编译原理》（“龙书”中文翻译版，机械工业出版社）
+	\item 英文原名：\textit{Compilers: Principles, Techniques, and Tools}， Second Edition
+	\item 作者：Alfred V. Aho、Monica S. Lam、Ravi Sethi、Jeffrey D. Ullman
 \end{itemize}
 
 % ---------------------------------------------------------------------
@@ -498,12 +498,12 @@ PC 上编译运行结果：
 当脚本功能从“计算表达式”升级为“完整控制逻辑”时，不建议继续手写解释器，而应使用成熟的 Lua：
 
 \begin{itemize}
-\item \textbf{Lua 核心小}：完整 Lua 5.x 可以裁剪到几十 KB Flash，适合资源较多的 32 位 MCU；
-\item \textbf{C API 清晰}：固件通过 \texttt{lua\_register} 导出函数，脚本调用这些函数控制 LED、电机、传感器；
-\item \textbf{安全性}：Lua 自带语法错误、运行时错误与保护模式（\texttt{lua\_pcall}），不容易因为脚本异常导致裸机崩溃。
-\item \textbf{内置完整前端}：词法、文法、语法分析、字节码编译和虚拟机都是现成的，无需自己维护递归下降器；
-\item \textbf{协程支持}：Lua 原生协程适合“等待外设或定时器后继续执行”的脚本流程；
-\item \textbf{生态成熟}：错误信息、调试接口、内存统计等工具齐全，社区资料丰富。
+\item Lua 核心小：完整 Lua 5.x 可以裁剪到几十 KB Flash，适合资源较多的 32 位 MCU；
+\item C API 清晰：固件通过 \texttt{lua\_register} 导出函数，脚本调用这些函数控制 LED、电机、传感器；
+\item 安全性：Lua 自带语法错误、运行时错误与保护模式（\texttt{lua\_pcall}），不容易因为脚本异常导致裸机崩溃。
+\item 内置完整前端：词法、文法、语法分析、字节码编译和虚拟机都是现成的，无需自己维护递归下降器；
+\item 协程支持：Lua 原生协程适合“等待外设或定时器后继续执行”的脚本流程；
+\item 生态成熟：错误信息、调试接口、内存统计等工具齐全，社区资料丰富。
 \end{itemize}
 
 与“自己维护一个表达式解析器”相比，Lua 的优势可以概括为表~\ref{tab:lua-advantage}~。
@@ -512,7 +512,7 @@ PC 上编译运行结果：
 \centering \caption{自写表达式解释器与 Lua 的对比} \label{tab:lua-advantage}
     \begin{tabular}{lll}
         \toprule
-        \textbf{对比项} & \textbf{本章自写解释器} & \textbf{Lua} \\
+        对比项 & 本章自写解释器 & Lua \\
         \midrule
         语法能力 & 四则运算表达式 & 完整脚本语言 \\
         解析器 & 自己维护递归下降 & 官方 Lua 词法、语法与编译器 \\
@@ -783,7 +783,7 @@ python Chapter-script-engine/parser_gen.py --advanced -o parser_adv.c
 \label{tab:ch10-script-record}
 \begin{tabularx}{\textwidth}{p{4cm}p{4cm}p{3cm}X}
 \toprule
-\textbf{表达式} & \textbf{期望结果} & \textbf{实际结果} & \textbf{错误码} \\
+表达式 & 期望结果 & 实际结果 & 错误码 \\
 \midrule
 \texttt{10 + 2 * 3} & 16 & \LabFillLine[2.8cm] & \LabFillLine[2.4cm] \\
 浮点表达式 & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] & \LabFillLine[2.4cm] \\
@@ -826,7 +826,7 @@ python Chapter-script-engine/parser_gen.py --advanced -o parser_adv.c
 	\label{tab:parser-decision}
 	\begin{tabularx}{\textwidth}{l X l}   % X列自动换行
 		\toprule
-		\textbf{你的需求} & \textbf{推荐方案} & \textbf{理由} \\
+		你的需求 & 推荐方案 & 理由 \\
 		\midrule
 		只需要算四则运算 + 简单变量 & 用本章所讲述的Python的文法生成器生成 & 代码量小、无依赖、实时性可控 \\
 		需要完整脚本 & 直接使用 Lua 或 MicroPython & 自己写的虚拟机很难超过成熟 Lua \\
@@ -836,7 +836,7 @@ python Chapter-script-engine/parser_gen.py --advanced -o parser_adv.c
 \end{table}
 
 \begin{anybox}{那龙书是干什么用的？}
-龙书不是用来“照着实现”的，它是用来\textbf{查文法怎么写}的。当你写的文法出现左递归消除不掉、二义性搞不定时，翻龙书的第 4 章（LL）。它不是教材，它是字典。
+龙书不是用来“照着实现”的，它是用来查文法怎么写的。当你写的文法出现左递归消除不掉、二义性搞不定时，翻龙书的第 4 章（LL）。它不是教材，它是字典。
 \end{anybox}
 
 \begin{anybox}{那 Python 生成器是干什么用的？}
@@ -844,7 +844,7 @@ python Chapter-script-engine/parser_gen.py --advanced -o parser_adv.c
 \end{anybox}
 
 \begin{anybox}{为什么硬实时 DSL 不适合直接套用 Lua？}
-因为 G 代码的宏展开（例如 \texttt{\#1 = 10; G01 X[\#1 + 5]}）必须在\textbf{解析期}完成展开，然后把展开后的结果直接变成插补器的输入。Lua 的运行时变量查表会在每次插补周期引入不可预测的延迟，而生成器在编译期就把 \texttt{\#1} 变成 \texttt{axis\_pos[1]} 的直接数组访问——少了整整一个“解释执行”的开销层级。
+因为 G 代码的宏展开（例如 \texttt{\#1 = 10; G01 X[\#1 + 5]}）必须在解析期完成展开，然后把展开后的结果直接变成插补器的输入。Lua 的运行时变量查表会在每次插补周期引入不可预测的延迟，而生成器在编译期就把 \texttt{\#1} 变成 \texttt{axis\_pos[1]} 的直接数组访问——少了整整一个“解释执行”的开销层级。
 \end{anybox}
 
 仓库中 \texttt{Chapter-script-engine/parser\_gen.py} 的使用方式见 README。

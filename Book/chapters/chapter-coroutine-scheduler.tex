@@ -18,7 +18,7 @@ void SensorTask(void)
 
 本章的“增强版协程调度器”换了一种思路：让任务在任意位置真正暂停，把 CPU 交给其他任务，之后还能精确回到原来的暂停点继续执行。它的实现基础是 C 标准库的 \texttt{setjmp} 与 \texttt{longjmp}，配合为每个任务准备的独立栈（或共享栈备份），把一个普通 C 函数变成可以“挂起和恢复”的协程。
 
-\medskip \textbf{本章涉及到的实验内容：}
+\medskip 本章涉及到的实验内容：
 \begin{enumerate}
 \item setjmp 与 longjmp 上下文跳转实验；
 \item 独立栈协程任务创建与恢复实验；
@@ -101,8 +101,8 @@ int main(void)
 解决办法有两种：
 
 \begin{itemize}
-\item \textbf{每个任务拥有独立栈}：任务暂停后，它的栈原封不动地留在自己的内存区域，切换任务只需把栈指针切到另一个任务的栈顶即可；
-\item \textbf{共享栈 + 备份区}：多个任务共用同一个运行栈，任务暂停前把当前栈内容整体拷贝到自己的备份缓冲区，恢复时再拷贝回去。这种方法节省 RAM，但每次切换都要付出拷贝成本，且必须精确计算实际使用的栈大小。
+\item 每个任务拥有独立栈：任务暂停后，它的栈原封不动地留在自己的内存区域，切换任务只需把栈指针切到另一个任务的栈顶即可；
+\item 共享栈 + 备份区：多个任务共用同一个运行栈，任务暂停前把当前栈内容整体拷贝到自己的备份缓冲区，恢复时再拷贝回去。这种方法节省 RAM，但每次切换都要付出拷贝成本，且必须精确计算实际使用的栈大小。
 \end{itemize}
 
 本章的调度器两种模式都支持：\texttt{Task\_CreateWithStack} 创建独立栈任务， \texttt{Task\_Create} 创建共享栈任务。
@@ -173,9 +173,9 @@ static void Task_BackupSharedStack(TaskControlBlock_T *pTCB)
 调度器为每个任务维护一个任务控制块（TCB），本章的 \texttt{TaskControlBlock\_T} 比 \texttt{simple\_task} 的任务池多了两类关键信息：
 
 \begin{enumerate}
-\item \textbf{栈信息}：\texttt{stackTop}、\texttt{stackSize}、\texttt{stackType}，记录任务栈在哪里、有多大；
-\item \textbf{跳转现场}：\texttt{jmp\_buf env}，记录任务被挂起时的 CPU 现场；
-\item \textbf{唤醒条件}：\texttt{nextRunTime}（定时唤醒）和 \texttt{pWaitCondition}（条件唤醒）。
+\item 栈信息：\texttt{stackTop}、\texttt{stackSize}、\texttt{stackType}，记录任务栈在哪里、有多大；
+\item 跳转现场：\texttt{jmp\_buf env}，记录任务被挂起时的 CPU 现场；
+\item 唤醒条件：\texttt{nextRunTime}（定时唤醒）和 \texttt{pWaitCondition}（条件唤醒）。
 \end{enumerate}
 
 \begin{lstlisting}[style=c]
@@ -214,7 +214,7 @@ typedef struct __TaskControlBlock_T {
 \centering \caption{增强版协程调度器的任务状态} \label{tab:coro-state}
     \begin{tabular}{llp{8cm}}
         \toprule
-        \textbf{状态} & \textbf{含义} & \textbf{说明} \\
+        状态 & 含义 & 说明 \\
         \midrule
         \texttt{INIT}     & 初始态 & 任务刚创建，尚未进入入口函数 \\
         \texttt{READY}    & 就绪态 & 时间到或条件满足，等待被选中执行 \\
@@ -303,7 +303,7 @@ void Task_Wait(uint32_t timeMs)
 }
 \end{lstlisting}
 
-\texttt{Task\_ConditionWait} 的结构完全相同，只是唤醒条件从“时间到”换成“条件变量的标志被置位”。这两段代码共享同一个状态机模板：\textbf{置 SUSPEND → 保存现场 → 备份栈 → 让出 CPU → 恢复时继续}。
+\texttt{Task\_ConditionWait} 的结构完全相同，只是唤醒条件从“时间到”换成“条件变量的标志被置位”。这两段代码共享同一个状态机模板：置 SUSPEND → 保存现场 → 备份栈 → 让出 CPU → 恢复时继续。
 
 由于现场保存在 \texttt{jmp\_buf} 中，任务函数里不需要手动记录：
 
@@ -326,9 +326,9 @@ void TaskFunc1(int arg)
 负责选择任务的是 \texttt{Task\_JumpNext}，它的执行过程可以拆成三步：
 
 \begin{enumerate}
-\item \textbf{扫描唤醒条件}：遍历环形任务链表，把定时到点或条件满足的任务从 \texttt{SUSPEND} 置为 \texttt{READY}；
-\item \textbf{消费条件}：清除已被就绪任务“看到”的条件标志；
-\item \textbf{选择可运行任务}：从当前任务的下一个任务开始，找到第一个 \texttt{READY} 任务（或未启动的 \texttt{INIT} 任务），通过 \texttt{longjmp} 切换到它。
+\item 扫描唤醒条件：遍历环形任务链表，把定时到点或条件满足的任务从 \texttt{SUSPEND} 置为 \texttt{READY}；
+\item 消费条件：清除已被就绪任务“看到”的条件标志；
+\item 选择可运行任务：从当前任务的下一个任务开始，找到第一个 \texttt{READY} 任务（或未启动的 \texttt{INIT} 任务），通过 \texttt{longjmp} 切换到它。
 \end{enumerate}
 
 \begin{lstlisting}[style=c]
@@ -518,7 +518,7 @@ int main(void)
 	\label{tab:coro-vs-simple}
 	\begin{tabularx}{\textwidth}{l X X}   % 后两列自动换行
 		\toprule
-		\textbf{对比项} & \textbf{simple\_task} & \textbf{本章协程调度器} \\
+		对比项 & simple\_task & 本章协程调度器 \\
 		\midrule
 		状态集合 & WAIT、READY、RUN、DISABLE、ONCE & INIT、READY、RUNNING、SUSPEND、DELETED \\
 		任务能否中途挂起 & 不能，回调每次运行后返回 & 能，可在任意函数内暂停后恢复 \\
@@ -533,11 +533,11 @@ int main(void)
 	\end{tabularx}
 \end{table}
 
-从状态机角度看，两者都要回答同一个问题：\textbf{一个任务什么时候能跑、跑完把状态切成什么}。区别在于：
+从状态机角度看，两者都要回答同一个问题：一个任务什么时候能跑、跑完把状态切成什么。区别在于：
 
 \begin{enumerate}
-	\item \textbf{simple\_task 是“数据驱动的显式状态机”}：任务状态存在 \texttt{Task\_T.systemState} 中，定时器中断里的点滴函数 \texttt{Task\_Tick} 负责 WAIT→READY，主循环里的 \texttt{Task\_RunTask} 负责 READY→RUN→WAIT/DISABLE。用户看到的状态机是“可见”的；
-	\item \textbf{本章协程是“现场驱动的隐式状态机”}：任务暂停点就是状态机的一个分支，状态保存在 \texttt{jmp\_buf} 和任务栈中。用户看到的是顺序代码，切换细节被封装进 \texttt{Task\_Wait} 与 \texttt{Task\_ConditionWait}。
+	\item simple\_task 是“数据驱动的显式状态机”：任务状态存在 \texttt{Task\_T.systemState} 中，定时器中断里的点滴函数 \texttt{Task\_Tick} 负责 WAIT→READY，主循环里的 \texttt{Task\_RunTask} 负责 READY→RUN→WAIT/DISABLE。用户看到的状态机是“可见”的；
+	\item 本章协程是“现场驱动的隐式状态机”：任务暂停点就是状态机的一个分支，状态保存在 \texttt{jmp\_buf} 和任务栈中。用户看到的是顺序代码，切换细节被封装进 \texttt{Task\_Wait} 与 \texttt{Task\_ConditionWait}。
 \end{enumerate}
 
 在 \texttt{simple\_task} 中，一个按键长按+双击+重复的复杂流程，通常要拆成回调里的一堆用户状态；在本章协程中，可以直接写成：
@@ -570,7 +570,7 @@ int main(void)
 	\label{tab:coro-vs-rtos}
 	\begin{tabularx}{\textwidth}{l X X}
 		\toprule
-		\textbf{对比项} & \textbf{本章协程调度器} & \textbf{完整 RTOS（如 FreeRTOS）} \\
+		对比项 & 本章协程调度器 & 完整 RTOS（如 FreeRTOS） \\
 		\midrule
 		调度方式 & 协作式（任务主动让出 CPU） & 抢占式（支持时间片轮转与优先级抢占） \\
 		任务切换 & setjmp/longjmp，仅保存必要寄存器 &  PendSV 中断 + 硬件上下文切换，保存全部寄存器 \\
@@ -588,9 +588,9 @@ int main(void)
 从表中可以看到，RTOS 的核心优势在于：
 
 \begin{enumerate}
-	\item \textbf{抢占式调度}：高优先级任务不会被低优先级任务阻塞（除非使用互斥量导致的优先级反转）。对于需要严格实时响应的场景（如电机控制回路、通信协议栈的超时处理），抢占调度是不可或缺的；
-	\item \textbf{丰富的同步原语}：信号量、队列、互斥量等机制为标准组件，多任务协作时不必自己实现条件变量或消息缓冲；
-	\item \textbf{成熟的生态}：FreeRTOS 等有大量现成移植、驱动适配和调试工具（如 Tracealyzer、SystemView），能够降低大型项目的长期维护成本。
+	\item 抢占式调度：高优先级任务不会被低优先级任务阻塞（除非使用互斥量导致的优先级反转）。对于需要严格实时响应的场景（如电机控制回路、通信协议栈的超时处理），抢占调度是不可或缺的；
+	\item 丰富的同步原语：信号量、队列、互斥量等机制为标准组件，多任务协作时不必自己实现条件变量或消息缓冲；
+	\item 成熟的生态：FreeRTOS 等有大量现成移植、驱动适配和调试工具（如 Tracealyzer、SystemView），能够降低大型项目的长期维护成本。
 \end{enumerate}
 
 \begin{anybox}{工程观点：特斯勒定理与任务边界}
@@ -602,21 +602,21 @@ int main(void)
 而本章协程调度器相对于 RTOS 的“轻量”并非简单的功能裁剪，而是换了一种思路：
 
 \begin{enumerate}
-	\item \textbf{协作式调度的确定性}：任务只在显式调用 \texttt{Task\_Wait} 或返回时才切换，因此共享数据的临界区天然短小。而 RTOS 的抢占切换可能发生在任意指令边界，必须用信号量或关中断保护共享资源；
-	\item \textbf{无需修改硬件寄存器}：在 Cortex-M 等平台上，RTOS 必须实现 PendSV 中断和 \texttt{svc} 指令调用，涉及对 \texttt{CONTROL} 寄存器、PSP 指针的操作；而本章调度器只需提供 \texttt{TASK\_SET\_STACK} 宏，不涉及中断向量表或硬件特权级切换，移植量明显更小；
-	\item \textbf{内存占用可精确控制}：RTOS 的每个任务栈通常由 \texttt{pvPortMalloc} 从堆中分配，且栈大小需按最坏情况预分配；本章的独立栈使用静态数组，栈溢出检测也更容易和编译器配合；
-	\item \textbf{无内核对象管理开销}：RTOS 的信号量、队列等内核对象需要额外的 RAM 和初始化代码，任务数量增多时创建和删除的开销逐渐不可忽略；本章调度器的任务链表和条件变量均为静态结构，没有动态内存分配。
+	\item 协作式调度的确定性：任务只在显式调用 \texttt{Task\_Wait} 或返回时才切换，因此共享数据的临界区天然短小。而 RTOS 的抢占切换可能发生在任意指令边界，必须用信号量或关中断保护共享资源；
+	\item 无需修改硬件寄存器：在 Cortex-M 等平台上，RTOS 必须实现 PendSV 中断和 \texttt{svc} 指令调用，涉及对 \texttt{CONTROL} 寄存器、PSP 指针的操作；而本章调度器只需提供 \texttt{TASK\_SET\_STACK} 宏，不涉及中断向量表或硬件特权级切换，移植量明显更小；
+	\item 内存占用可精确控制：RTOS 的每个任务栈通常由 \texttt{pvPortMalloc} 从堆中分配，且栈大小需按最坏情况预分配；本章的独立栈使用静态数组，栈溢出检测也更容易和编译器配合；
+	\item 无内核对象管理开销：RTOS 的信号量、队列等内核对象需要额外的 RAM 和初始化代码，任务数量增多时创建和删除的开销逐渐不可忽略；本章调度器的任务链表和条件变量均为静态结构，没有动态内存分配。
 \end{enumerate}
 
 因此，是否使用 RTOS 取决于项目的具体需求：
 
 \begin{itemize}
-	\item \textbf{适合使用 RTOS 的场景}：系统包含多个优先级明确的任务（如 1kHz 控制循环、UI 刷新、通信协议栈共存），或需要标准化的任务间通信机制（队列、信号量），且 MCU 的 RAM/Flash 足够（通常要求 32KB+ RAM、128KB+ Flash）；
-	\item \textbf{适合使用本章协程调度器的场景}：系统主要为“等待事件→处理→继续等待”的流程型任务（如命令解析、传感器采集序列、人机交互流程），任务间仅有简单的通知关系，且 MCU 资源较紧张（RAM < 16KB）；
-	\item \textbf{兼顾两者的混合方案}：也可以在 RTOS 的一个任务里运行本章协程调度器——把协程作为 RTOS 线程内部的“子任务”，既利用 RTOS 的抢占和通信能力，又在单个线程内部用协程简化多个顺序子流程的编写。
+	\item 适合使用 RTOS 的场景：系统包含多个优先级明确的任务（如 1kHz 控制循环、UI 刷新、通信协议栈共存），或需要标准化的任务间通信机制（队列、信号量），且 MCU 的 RAM/Flash 足够（通常要求 32KB+ RAM、128KB+ Flash）；
+	\item 适合使用本章协程调度器的场景：系统主要为“等待事件→处理→继续等待”的流程型任务（如命令解析、传感器采集序列、人机交互流程），任务间仅有简单的通知关系，且 MCU 资源较紧张（RAM < 16KB）；
+	\item 兼顾两者的混合方案：也可以在 RTOS 的一个任务里运行本章协程调度器——把协程作为 RTOS 线程内部的“子任务”，既利用 RTOS 的抢占和通信能力，又在单个线程内部用协程简化多个顺序子流程的编写。
 \end{itemize}
 
-对于单片机开发而言，\textbf{选择调度器不是技术崇拜，而是资源与需求的精确匹配}。本章的目的不是造一个“迷你 RTOS”，而是在“裸机状态机”和“完整 RTOS”之间提供一个中间选项——它比状态机更适合表达复杂流程，又比 RTOS 更轻量、更可控。读者应结合自己项目的 RAM 预算、任务结构和实时性要求，在三种方案之间做出理性的选择。
+对于单片机开发而言，选择调度器不是技术崇拜，而是资源与需求的精确匹配。本章的目的不是造一个“迷你 RTOS”，而是在“裸机状态机”和“完整 RTOS”之间提供一个中间选项——它比状态机更适合表达复杂流程，又比 RTOS 更轻量、更可控。读者应结合自己项目的 RAM 预算、任务结构和实时性要求，在三种方案之间做出理性的选择。
 
 % ---------------------------------------------------------------------
 \section{移植要点与限制}
@@ -640,43 +640,79 @@ int main(void)
 \end{itemize}
 
 % ---------------------------------------------------------------------
-\section{单片机实验报告：协程调度器移植}
+\section{实验报告：协程调度器移植与验证}
+
+\subsection{实验基本信息}
+
+MCU 型号：\LabFillLine[3.5cm] \quad 工作主频：\LabFillLine[3.5cm]
+
+毫秒计时源：\LabFillLine[3.5cm] \quad 栈对齐方式：\LabFillLine[3.5cm]
+
+独立栈任务数：\LabFillLine[3.5cm] \quad 共享栈任务数：\LabFillLine[3.5cm]
 
 \subsection{实验目的}
 \begin{enumerate}
-\item 在 Cortex-M 上实现时间源、中断开关和栈切换；
-\item 验证独立栈与共享栈任务的挂起、恢复过程；
-\item 观察任务运行日志及栈空间占用。
+\item 在 Cortex-M 上实现毫秒时间源、中断临界区宏和栈指针切换宏；
+\item 验证独立栈与共享栈任务的创建、挂起（Task\_Wait）和恢复过程；
+\item 观察任务运行日志，测量并分析两种栈模式的 RAM 占用与切换开销。
 \end{enumerate}
 
 \subsection{实验原理}
-调度器通过 setjmp/longjmp 保存执行现场，独立栈任务切换栈指针，共享栈任务在挂起时备份栈内容。
+调度器使用 \texttt{setjmp}/\texttt{longjmp} 保存和恢复任务执行现场（寄存器、栈指针、程序计数器）。独立栈任务切换时仅需修改栈指针；共享栈任务在挂起时将当前运行栈的内容备份到私有缓冲区，恢复时再拷贝回去。调度器通过环形任务链表轮询唤醒条件，选择就绪任务并跳转执行。
+
+\subsection{硬件连接}
+
+\LabPasteBox{协程调度器硬件连接}{粘贴开发板、调试串口（或 LED）的连接图片，标注电源、调试接口和指示灯。}{fig:ch9-coro-hardware}
+
+\subsection{关键代码}
+
+\LabPasteBox{时间源、栈切换宏与任务创建代码}{粘贴 \texttt{GetTimerMs}、\texttt{TASK\_SET\_STACK} 宏实现，以及独立栈与共享栈任务的创建代码，并标注栈大小和对齐检查。}{fig:ch9-coro-code}
 
 \subsection{实验步骤}
 \begin{enumerate}
-\item 提供毫秒计时函数并实现中断临界区宏。
-\item 配置两个独立栈任务，分别控制 LED 和输出串口日志。
-\item 创建共享栈任务，调用 \texttt{Task\_Wait} 多次后比较局部变量。
-\item 统计两种任务模式的 RAM 占用并记录异常信息。
+\item 提供毫秒级计时函数（如 SysTick 中断计数），并实现 \texttt{TASK\_DISABLE\_IRQ} 与 \texttt{TASK\_ENABLE\_IRQ} 临界区宏。
+\item 根据目标架构实现 \texttt{TASK\_SET\_STACK} 宏（Cortex-M 可修改 PSP，x86 可修改 RSP），并确保栈指针 16 字节对齐。
+\item 配置 \texttt{task\_scheduler\_config.h}，设定任务数量、共享栈备份区大小等参数。
+\item 创建两个独立栈任务：任务 A 每 1 秒翻转 LED，任务 B 每 2 秒通过串口打印日志。
+\item 创建一个共享栈任务，循环调用 \texttt{Task\_Wait} 多次，观察局部变量是否在恢复后保持不变。
+\item 通过串口输出任务运行时间戳和状态切换日志，记录各任务实际最大栈用量（可通过栈水印检测）。
+\item 依次注释掉独立栈和共享栈任务，对比两种模式下的 RAM 占用（查看 MAP 文件）。
 \end{enumerate}
 
-\subsection{关键代码（粘贴处）}
-\fbox{\rule{0pt}{4cm}\rule{0.8\linewidth}{0pt}}
+\subsection{实验现象与数据记录}
 
-\subsection{图片（粘贴处）}
-\fbox{\rule{0pt}{5cm}\rule{0.8\linewidth}{0pt}}
+\begin{table}[htbp]
+\centering
+\caption{协程任务运行记录}
+\label{tab:ch9-coro-record}
+\begin{tabularx}{\textwidth}{p{2.6cm}p{2.8cm}p{2.6cm}X}
+\toprule
+任务名 & 栈模式 & 周期（ms） & 运行日志/状态 \\
+\midrule
+\LabFillLine[2.2cm] & \LabFillLine[2.2cm] & \LabFillLine[2.2cm] & \LabFillLine[2.2cm] \\
+\LabFillLine[2.2cm] & \LabFillLine[2.2cm] & \LabFillLine[2.2cm] & \LabFillLine[2.2cm] \\
+\LabFillLine[2.2cm] & \LabFillLine[2.2cm] & \LabFillLine[2.2cm] & \LabFillLine[2.2cm] \\
+\bottomrule
+\end{tabularx}
+\end{table}
 
-\subsection{实际结果}
-\noindent LED 与串口周期记录：\rule{0.72\linewidth}{0.4pt}\\[0.8em]
-\noindent 栈占用及恢复结果：\rule{0.76\linewidth}{0.4pt}\\[0.8em]
-\noindent 异常情况：\rule{0.86\linewidth}{0.4pt}
+\LabPasteBox{协程调度器运行结果}{粘贴串口打印的任务切换日志、LED 翻转波形截图或逻辑分析仪捕获的时序图。}{fig:ch9-coro-result}
 
-\subsection{问题分析}
-\noindent 移植中遇到的问题及解决方法：\rule{0.62\linewidth}{0.4pt}\\[0.8em]
-\rule{0.95\linewidth}{0.4pt}
+\subsection{结果分析}
 
-\subsection{实验结论}
-\noindent 结论：\rule{0.88\linewidth}{0.4pt}
+独立栈任务实际最大栈用量（字节）：\LabFillLine[6cm]
+
+共享栈任务备份区最大使用量（字节）：\LabFillLine[6cm]
+
+切换耗时对比（独立栈 vs. 共享栈）：\LabFillLine[6cm]
+
+移植过程中遇到的对齐或栈溢出异常：\LabFillLine[6cm]
+
+\subsection{实验总结}
+
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]
 
 % ---------------------------------------------------------------------
 \section{小结}
@@ -684,9 +720,9 @@ int main(void)
 本章涉及的栈切换、现场保存、中断与任务上下文，都依赖于对 CPU 内核的理解。如果希望深入掌握 Cortex-M 体系结构与嵌入式 C 的底层细节，以下书目值得一读：
 
 \begin{itemize}
-	\item \textbf{《ARM Cortex-M3 与 Cortex-M4 权威指南》（第 3 版）} —— Joseph Yiu 著，清华大学出版社。Cortex-M 内核的“圣经”，从处理器模型、异常处理、内存映射到浮点单元，覆盖了协程调度器移植所需的所有硬件知识（MSP/PSP、PendSV、堆栈对齐等）。
-	\item \textbf{《C 嵌入式编程设计模式》（英文名 \textit{Design Patterns for Embedded Systems in C}）} —— Bruce Powel Douglass 著，机械工业出版社。以状态机、任务调度、并发模式等实用视角讲解嵌入式 C 的设计取舍，可与本章的调度器实现互相印证。
-	\item \textbf{《嵌入式系统设计：CPS 与物联网物理世界》} —— 陈海波、夏虞斌等编著，高等教育出版社。从系统软件层面讲解中断、异常、实时调度和虚拟化，适合希望从“裸机”迈向“系统软件”视角的读者。
+	\item 《ARM Cortex-M3 与 Cortex-M4 权威指南》（第 3 版） —— Joseph Yiu 著，清华大学出版社。Cortex-M 内核的“圣经”，从处理器模型、异常处理、内存映射到浮点单元，覆盖了协程调度器移植所需的所有硬件知识（MSP/PSP、PendSV、堆栈对齐等）。
+	\item 《C 嵌入式编程设计模式》（英文名 \textit{Design Patterns for Embedded Systems in C}） —— Bruce Powel Douglass 著，机械工业出版社。以状态机、任务调度、并发模式等实用视角讲解嵌入式 C 的设计取舍，可与本章的调度器实现互相印证。
+	\item 《嵌入式系统设计：CPS 与物联网物理世界》 —— 陈海波、夏虞斌等编著，高等教育出版社。从系统软件层面讲解中断、异常、实时调度和虚拟化，适合希望从“裸机”迈向“系统软件”视角的读者。
 \end{itemize}
 
 这些书不需要通读，建议在遇到本章移植疑惑（如“为什么TASK\_SET\_STACK要改PSP”、“setjmp在ARM上需要保存哪些寄存器”）时，按需查阅对应章节。
@@ -694,9 +730,9 @@ int main(void)
 本章用 \texttt{setjmp} 与 \texttt{longjmp} 实现了一个有栈协程调度器，核心收获有三点：
 
 \begin{enumerate}
-	\item \textbf{setjmp 与 longjmp 是“现场保存和恢复”原语}：它把一个普通 C 函数变成可以挂起、恢复的协程；
-	\item \textbf{栈是任务暂停时的“记忆”}：自动变量和调用链都存放在栈上，所以任务需要独立栈，或用备份区把共享栈内容保存下来；
-	\item \textbf{状态机可以被“藏”进上下文切换}：\texttt{simple\_task} 用枚举+循环显式表达状态，本章调度器用 \texttt{jmp\_buf} 隐式记住执行位置。两者不是替代关系，而是 “轻量周期任务”与“复杂阻塞流程”两种场景下的不同工具。
+	\item setjmp 与 longjmp 是“现场保存和恢复”原语：它把一个普通 C 函数变成可以挂起、恢复的协程；
+	\item 栈是任务暂停时的“记忆”：自动变量和调用链都存放在栈上，所以任务需要独立栈，或用备份区把共享栈内容保存下来；
+	\item 状态机可以被“藏”进上下文切换：\texttt{simple\_task} 用枚举+循环显式表达状态，本章调度器用 \texttt{jmp\_buf} 隐式记住执行位置。两者不是替代关系，而是 “轻量周期任务”与“复杂阻塞流程”两种场景下的不同工具。
 \end{enumerate}
 
 如果读者需要在资源更受限的 51 或 STM8 上实现类似效果，可以只保留“独立栈+状态机”的子集，把汇编级栈切换换成纯状态机；如果追求代码最接近顺序思维，则可以在此基础上继续引入 Protothreads、协程宏或完整 RTOS 的线程模型。

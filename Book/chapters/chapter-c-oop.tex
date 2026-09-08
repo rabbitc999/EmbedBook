@@ -4,7 +4,7 @@
 
 随着嵌入式项目规模增大，我们希望代码具备面向对象语言那样的封装性、可复用性和可扩展性，但很多单片机项目只使用 C 语言，也不适合引入 C++ 复杂的运行时机制。好在 C 语言本身提供了足够的基础设施——结构体、函数指针、联合体——完全可以实现面向对象的三大核心特性：封装、继承与多态。本章介绍这些特性的 C 语言实现方法，为第~\ref{ch:menu-system}~章菜单系统的“类”设计打下理论基础。完整可运行代码位于 \texttt{Chapter-c-oop/C语言面向对象设备对象/}。
 
-\medskip \textbf{本章涉及到的实验内容：}
+\medskip 本章涉及到的实验内容：
 \begin{enumerate}
 \item 结构体封装实验（模块化设备驱动）；
 \item 函数指针多态实验（虚函数表）；
@@ -21,7 +21,7 @@
 \centering \caption{面向对象特性与 C 语言实现手段的对应} \label{tab:oop-map}
 	\begin{tabular}{lll}
 		\toprule
-		\textbf{OO 特性} & \textbf{要解决的问题} & \textbf{C 语言实现手段} \\
+		OO 特性 & 要解决的问题 & C 语言实现手段 \\
 		\midrule
 		封装    & 数据与操作的内聚、信息隐藏 & 结构体 + 模块化函数 \\
 		继承    & 在已有类型上扩展新功能 & 结构体嵌套（组合） \\
@@ -370,7 +370,7 @@ C 语言没有继承语法，但可以利用“结构体嵌套”实现等价的
 \label{tab:c-oop-record}
 \begin{tabularx}{\textwidth}{p{3cm}p{3.2cm}Xp{3.5cm}}
 \toprule
-\textbf{对象} & \textbf{调用接口} & \textbf{预期行为} & \textbf{实际结果} \\
+对象 & 调用接口 & 预期行为 & 实际结果 \\
 \midrule
 设备对象一 & \LabFillLine[2.5cm] & 执行对象一绑定的设备操作 & \LabFillLine[3cm] \\
 设备对象二 & \LabFillLine[2.5cm] & 执行对象二绑定的设备操作 & \LabFillLine[3cm] \\

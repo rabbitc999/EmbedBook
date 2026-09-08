@@ -2,7 +2,7 @@
 
 随着嵌入式系统功能的日益复杂，将所有程序逻辑都堆砌在单一的 \texttt{while(1)} 循环中，会使代码变得臃肿、难以维护，且无法有效处理并发任务。实时操作系统（RTOS）是解决复杂并发问题的强大工具，但它也带来了额外的资源开销、任务间同步的复杂性以及陡峭的学习曲线。对于许多资源受限的微控制器或功能需求中等的系统而言，RTOS 往往显得过于臃肿。因此，在 \texttt{while(1)} 循环和完整的 RTOS 之间，存在一个广阔的中间地带：构建一个轻量级的、非阻塞的任务调度器。本章将探讨构建此类调度器的核心思想与基础模型。
 
-\medskip \textbf{本章涉及到的实验内容：}
+\medskip 本章涉及到的实验内容：
 \begin{enumerate}
 \item 任务调度器实现（基础实现，禁用状态，用户状态和单次运行，动态任务实现）；
 \item 按键状态机实现；
@@ -105,7 +105,7 @@ void TIM6_IRQHandle(void) { // 1ms中断
 \centering \caption{三种定时器调度方法对比} \label{tab:sched-compare}
     \begin{tabular}{lccc}
         \toprule
-        \textbf{对比维度} & \textbf{阻塞式延时} & \textbf{标志位法} & \textbf{时间戳法} \\
+        对比维度 & 阻塞式延时 & 标志位法 & 时间戳法 \\
         \midrule
         CPU 利用率    & 极低（阻塞等待）   & 较高（非阻塞）     & 较高（非阻塞） \\
         实时性         & 差               & 良好              & 良好 \\
@@ -262,9 +262,9 @@ void TIM6_IRQHandler(void) {
 通过这种封装，我们获得了一个强大而灵活的调度器：
 
 \begin{enumerate}
-\item \textbf{代码清晰}：主循环和中断函数变得非常简洁，意图明确。
-\item \textbf{高度可重用}：只需修改 \texttt{Tasks} 数组即可轻松增删或修改任务，无需改动调度器核心代码。
-\item \textbf{易于维护}：所有任务相关的逻辑都被封装在 \texttt{Task\_H} 结构体和其操作函数中，模块化程度高。
+\item 代码清晰：主循环和中断函数变得非常简洁，意图明确。
+\item 高度可重用：只需修改 \texttt{Tasks} 数组即可轻松增删或修改任务，无需改动调度器核心代码。
+\item 易于维护：所有任务相关的逻辑都被封装在 \texttt{Task\_H} 结构体和其操作函数中，模块化程度高。
 \end{enumerate}
 
 这个基于结构体的标志位法调度器，是标志位思想的一次升华，它在保持简单高效的同时，极大地提升了代码的组织性和可扩展性，是构建中小型嵌入式应用的绝佳选择。
@@ -811,9 +811,9 @@ case KEY_STATE_CLICK:
 按下状态是一个决策状态，根据按键的后续行为分为三个分支：
 
 \begin{enumerate}
-\item \textbf{长按}：如果按下时间超过 \texttt{KEY\_LONG\_PRESS\_TIME}，则进入长按状态。
-\item \textbf{准备双击}：如果按键被释放，且启用了双击功能，则进入双击等待状态，开始计时等待第二次按下。
-\item \textbf{单击完成}：如果按键被释放且未启用双击，则直接返回等待状态。此时 \texttt{KEY\_EV\_CLICK} 事件已保留，等待应用层读取。
+\item 长按：如果按下时间超过 \texttt{KEY\_LONG\_PRESS\_TIME}，则进入长按状态。
+\item 准备双击：如果按键被释放，且启用了双击功能，则进入双击等待状态，开始计时等待第二次按下。
+\item 单击完成：如果按键被释放且未启用双击，则直接返回等待状态。此时 \texttt{KEY\_EV\_CLICK} 事件已保留，等待应用层读取。
 \end{enumerate}
 
 % ---------------------------------------------------------------------
@@ -842,8 +842,8 @@ case KEY_STATE_LONG_PRESS:
 进入长按状态后，状态机做两件事：
 
 \begin{enumerate}
-\item \textbf{重复触发}：如果按键持续按下，并且启用了重复功能，则每隔 \texttt{KEY\_REPEAT\_TIME} 就会产生一个 \texttt{KEY\_EV\_REPEAT} 事件。
-\item \textbf{长按结束}：一旦检测到按键释放，状态机就返回初始等待状态。
+\item 重复触发：如果按键持续按下，并且启用了重复功能，则每隔 \texttt{KEY\_REPEAT\_TIME} 就会产生一个 \texttt{KEY\_EV\_REPEAT} 事件。
+\item 长按结束：一旦检测到按键释放，状态机就返回初始等待状态。
 \end{enumerate}
 
 % ---------------------------------------------------------------------
@@ -873,8 +873,8 @@ case KEY_STATE_DOUBLE_CLICK:
 双击等待状态用于判断双击：
 
 \begin{enumerate}
-\item \textbf{双击成功}：如果在 \texttt{KEY\_DOUBLE\_TICK\_TIME} 时间内检测到第二次按下，则判定为双击，并置位 \texttt{KEY\_EV\_DOUBLE\_CLICK} 和 \texttt{KEY\_EV\_CLICK} 事件。
-\item \textbf{双击超时}：如果超过了规定时间仍未检测到第二次按下，则判定为单击，状态机返回等待状态。之前在 \texttt{KEY\_STATE\_CLICK} 中置位的 \texttt{KEY\_EV\_CLICK} 事件仍然有效。
+\item 双击成功：如果在 \texttt{KEY\_DOUBLE\_TICK\_TIME} 时间内检测到第二次按下，则判定为双击，并置位 \texttt{KEY\_EV\_DOUBLE\_CLICK} 和 \texttt{KEY\_EV\_CLICK} 事件。
+\item 双击超时：如果超过了规定时间仍未检测到第二次按下，则判定为单击，状态机返回等待状态。之前在 \texttt{KEY\_STATE\_CLICK} 中置位的 \texttt{KEY\_EV\_CLICK} 事件仍然有效。
 \end{enumerate}
 
 % ---------------------------------------------------------------------
@@ -951,6 +951,84 @@ int main(void) {
 \end{lstlisting}
 
 % ---------------------------------------------------------------------
+\section{实验报告：任务调度与状态机编程验证}
+
+\subsection{实验基本信息}
+
+MCU 型号：\LabFillLine[3.5cm] \quad 工作主频：\LabFillLine[3.5cm]
+
+系统节拍周期：\LabFillLine[3.5cm] \quad 最大任务数：\LabFillLine[3.5cm]
+
+按键数量：\LabFillLine[3.5cm] \quad 状态机类型：\LabFillLine[3.5cm]
+
+\subsection{实验目的}
+\begin{enumerate}
+\item 掌握基于时间戳的非阻塞任务调度器的设计与实现方法；
+\item 理解任务控制块（TCB）的结构设计，以及任务状态（WAIT/RUN/DISABLE/ONCE）的转换逻辑；
+\item 掌握按键状态机的设计方法，能够实现单击、双击、长按和重复触发等事件检测；
+\item 学会将复杂任务拆解为状态机，提高代码的可维护性和可读性。
+\end{enumerate}
+
+\subsection{实验原理}
+调度器采用时间触发、协作运行模式：1ms 定时器中断更新所有任务的计数器，当计数器达到周期值时将任务置为就绪状态；主循环遍历任务池，执行就绪任务并处理回调返回值。任务通过返回值中的 \texttt{UserState} 字段维护自身状态，实现状态机逻辑。按键状态机通过检测电平跳变沿和计时器，将物理按键输入转化为稳定的单击、双击、长按和重复事件。
+
+\subsection{硬件连接}
+
+\LabPasteBox{任务调度与状态机硬件连接}{粘贴开发板与按键、LED、LCD（或串口）的连接图片，标注按键输入引脚、LED 输出和调试接口。}{fig:ch2-sched-hardware}
+
+\subsection{关键代码}
+
+\LabPasteBox{调度器核心与按键状态机代码}{粘贴任务控制块定义、\texttt{Task\_Tick}/\texttt{Task\_Loop} 实现、按键状态机主循环以及任务回调函数的核心代码片段。}{fig:ch2-sched-code}
+
+\subsection{实验步骤}
+\begin{enumerate}
+\item 将调度器核心文件（\texttt{tasks.c} 和 \texttt{tasks.h}）加入工程，配置 \texttt{MAX\_TASK\_COUNT} 和默认周期参数。
+\item 编写三个任务：① LED1 状态机任务（4 种状态循环，不同周期）；② LED2 周期闪烁任务；③ 按键扫描任务（周期 20ms）。
+\item 配置 1ms 定时器中断，在中断中调用 \texttt{Task\_Tick()}，在主循环中调用 \texttt{Task\_Loop()}。
+\item 在按键任务中调用 \texttt{Task\_RunOnce(TASK\_LED2)}，验证单次执行功能（按键触发 LED2 状态改变）。
+\item 在 LED1 任务中实现状态机：通过返回值的 \texttt{UserState} 记录当前状态，切换状态并改变延时周期。
+\item 使用按键状态机检测单击、双击和长按事件，通过 LCD 或串口显示当前触发的事件类型。
+\item 修改任务周期为动态值，观察任务在运行过程中改变周期后的行为。
+\item 通过串口输出任务状态信息，验证异常状态的自修复功能。
+\end{enumerate}
+
+\subsection{实验现象与数据记录}
+
+\begin{table}[htbp]
+\centering
+\caption{任务调度与状态机运行记录}
+\label{tab:ch2-sched-record}
+\begin{tabularx}{\textwidth}{p{2.4cm}p{2.2cm}p{2.2cm}p{2.2cm}X}
+\toprule
+任务名称 & 当前状态 & 用户状态值 & 当前周期(ms) & 运行现象 \\
+\midrule
+\LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+\LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+\LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\LabPasteBox{调度与状态机运行结果}{粘贴 LCD 显示的事件类型截图、串口输出的任务状态信息以及 LED 闪烁的波形截图。}{fig:ch2-sched-result}
+
+\subsection{结果分析}
+
+LED1 状态机任务在 4 种状态下的周期分别是多少（实测值 vs 设定值）：\LabFillLine[6cm]
+
+按键状态机对单击、双击、长按的识别是否准确（测试次数 vs 正确次数）：\LabFillLine[6cm]
+
+\texttt{Task\_RunOnce} 触发后，LED2 任务的状态变化是否符合预期：\LabFillLine[6cm]
+
+异常状态自修复功能是否生效（如何触发异常状态）：\LabFillLine[6cm]
+
+\subsection{实验总结}
+
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]
+
+% ---------------------------------------------------------------------
+
 \begin{problemset}
 \item 本章的任务调度器中，定时器中断与主循环各负责什么？为什么“任务函数不能放在中断里执行”？
 \item 任务控制块（TCB）中至少需要保存哪些信息？如果增加“任务优先级”，你会把它放在 TCB 的什么位置？

@@ -2,7 +2,7 @@
 
 串口（UART）是单片机与上位机、传感器、无线模块通信最常用的接口。串口接收的难点不在硬件配置，而在“如何高效、可靠地接收不定长的数据”：是阻塞等待？是中断逐字节接收？还是配合 FIFO 缓冲区批量处理？本章从最简单的阻塞式收发讲起，逐步过渡到中断状态机与串口空闲中断，再用第~\ref{ch:simple-task}~章介绍的循环队列（FIFO）缓冲区解决数据缓冲问题，最后给出完整的 HEX 数据包协议设计与表驱动命令处理方法。完整可运行代码位于 \texttt{Chapter-serial-fifo/串口FIFO与HEX协议/}。
 
-\medskip \textbf{本章涉及到的实验内容：}
+\medskip 本章涉及到的实验内容：
 \begin{enumerate}
 \item 串口中断状态机接收实现（固定包长数据包）；
 \item 串口空闲中断实现（不定长数据接收）；
@@ -102,8 +102,8 @@ void USART1_IRQHandler(void)
 这种“把解析逻辑全部放在中断里”的做法有两个明显缺点：
 
 \begin{enumerate}
-\item \textbf{缺乏实时性}：中断服务函数执行时间过长，会影响其他中断的响应；
-\item \textbf{数据包处理不及时}：在高负载程序中，主循环可能来不及取走 \texttt{Serial\_RxFlag} 对应的数据，下一个数据包到达时就会互相干扰，甚至丢包。
+\item 缺乏实时性：中断服务函数执行时间过长，会影响其他中断的响应；
+\item 数据包处理不及时：在高负载程序中，主循环可能来不及取走 \texttt{Serial\_RxFlag} 对应的数据，下一个数据包到达时就会互相干扰，甚至丢包。
 \end{enumerate}
 
 解决办法是：中断只负责“把数据放进缓冲区”，解析与处理交给主循环。这就是 FIFO 缓冲区方案，也是本章后半部分的重点。
@@ -269,12 +269,12 @@ void Serial_SendArray(SerialPort_T COMx, uint8_t *Array, uint16_t Size);
 
 各字段含义：
 \begin{enumerate}
-	\item \textbf{包头（0x55 0xAA）}：两字节帧头。\texttt{0x55 = 0101 0101B}、\texttt{0xAA = 1010 1010B}，是标准方波，用示波器调试时可以快速定位帧头位置；同时规律的跳变也便于实现自动波特率识别（测量连续跳变的时间间隔即可反推波特率）；
-	\item \textbf{命令 ID}：表示这一帧要做什么。例如命令 ID 为 0x01 点亮 LED1，0x02 点亮 LED2，不同的命令 ID 对应不同的处理动作；
-	\item \textbf{长度}：数据字段的字节数。例如配置 5 个参数时长度为 5；
-	\item \textbf{数据}：具体载荷，长度由“长度”字段决定；
-	\item \textbf{校验码}：对“命令 ID + 长度 + 数据”求和（和校验），接收端重新计算并比对，一致则认为这一帧数据完整且正确；
-	\item \textbf{包尾（0xFF 0xFE）}：帧结束标志。
+	\item 包头（0x55 0xAA）：两字节帧头。\texttt{0x55 = 0101 0101B}、\texttt{0xAA = 1010 1010B}，是标准方波，用示波器调试时可以快速定位帧头位置；同时规律的跳变也便于实现自动波特率识别（测量连续跳变的时间间隔即可反推波特率）；
+	\item 命令 ID：表示这一帧要做什么。例如命令 ID 为 0x01 点亮 LED1，0x02 点亮 LED2，不同的命令 ID 对应不同的处理动作；
+	\item 长度：数据字段的字节数。例如配置 5 个参数时长度为 5；
+	\item 数据：具体载荷，长度由“长度”字段决定；
+	\item 校验码：对“命令 ID + 长度 + 数据”求和（和校验），接收端重新计算并比对，一致则认为这一帧数据完整且正确；
+	\item 包尾（0xFF 0xFE）：帧结束标志。
 \end{enumerate}
 
 \begin{anybox}{功能ID与CRC校验码}
@@ -415,10 +415,10 @@ CmdHexTable_T g_CmdHexTable = {
 通过串口发送不同类型的数据时，需要约定统一的格式：
 
 \begin{itemize}
-\item \textbf{整数}：直接按整数对应的二进制发送；
-\item \textbf{浮点数}：按 IEEE 754 的浮点数格式发送（见第~\ref{ch:embedded-c}~章）；
-\item \textbf{字符串}：先发送长度，再发送字符串内容；
-\item \textbf{字节序}：发送多字节数据时注意上位机与单片机的数据排布方式，明确使用大端还是小端（见第~\ref{ch:embedded-c}~章大小端一节）。
+\item 整数：直接按整数对应的二进制发送；
+\item 浮点数：按 IEEE 754 的浮点数格式发送（见第~\ref{ch:embedded-c}~章）；
+\item 字符串：先发送长度，再发送字符串内容；
+\item 字节序：发送多字节数据时注意上位机与单片机的数据排布方式，明确使用大端还是小端（见第~\ref{ch:embedded-c}~章大小端一节）。
 \end{itemize}
 
 对于多种参数，可以规定固定格式，例如“第 1$\sim$4 字节为 Kp（float，小端），第 5$\sim$8 字节为 Ki（float，小端）……”，保证双方按同一规则解析。
@@ -429,9 +429,9 @@ CmdHexTable_T g_CmdHexTable = {
 接收方处理完一帧命令后，通常需要回复应答，一般分三类：
 
 \begin{enumerate}
-\item \textbf{成功应答}：命令执行成功；
-\item \textbf{失败应答}：命令格式不正确、校验码错误、命令执行错误等（应答中携带错误码）；
-\item \textbf{数据应答}：把查询到的数据作为载荷回发给请求方。
+\item 成功应答：命令执行成功；
+\item 失败应答：命令格式不正确、校验码错误、命令执行错误等（应答中携带错误码）；
+\item 数据应答：把查询到的数据作为载荷回发给请求方。
 \end{enumerate}
 
 \begin{lstlisting}[style=c]
@@ -445,13 +445,83 @@ void Cmd_SendHexData(uint16_t COMx, uint8_t CommandID, uint8_t *Data, uint16_t D
 
 
 % ---------------------------------------------------------------------
-\section{单片机代码移植实现}
+\section{实验报告：串口 FIFO 与 HEX 协议移植验证}
 
-\begin{figure}[htbp]
+\subsection{实验基本信息}
+
+MCU 型号：\LabFillLine[3.5cm] \quad 工作主频：\LabFillLine[3.5cm]
+
+串口号：\LabFillLine[3.5cm] \quad 波特率：\LabFillLine[3.5cm]
+
+帧格式（数据位/校验位/停止位）：\LabFillLine[3.5cm]
+
+FIFO 缓冲区大小（Rx/Tx）：\LabFillLine[3.5cm] \quad HEX 命令表项数：\LabFillLine[3.5cm]
+
+\subsection{实验目的}
+\begin{enumerate}
+\item 掌握串口 FIFO 缓冲区的设计与移植方法，理解“中断生产、主循环消费”的模型；
+\item 掌握 HEX 数据包协议的帧格式定义、状态机解析和校验码验证；
+\item 掌握表驱动法（命令表 + 函数指针）处理多命令的架构设计；
+\item 实现完整的串口数据收发、命令解析与应答响应流程。
+\end{enumerate}
+
+\subsection{实验原理}
+串口 FIFO 缓冲区采用循环队列（Ring Buffer）结构，接收中断将数据写入 RxFifo，主循环从中批量读取并解析。HEX 协议定义固定帧格式（包头、命令 ID、长度、数据、校验码、包尾），接收状态机逐字节解析，校验通过后查命令表调用对应处理函数。发送侧同样通过 TxFifo 缓存数据，实现“发送不阻塞应用”的效果。
+
+\subsection{硬件连接}
+
+\LabPasteBox{串口 FIFO 与 HEX 协议硬件连接}{粘贴开发板与 USB 转串口模块（或上位机）的连接图片，标注 TX/RX 交叉连接、电源和公共地。}{fig:ch4-serial-hardware}
+
+\subsection{关键代码}
+
+\LabPasteBox{FIFO 缓冲区、HEX 状态机与命令表代码}{粘贴 FIFO 的读写函数、HEX 接收状态机、命令表定义以及串口中断服务函数的核心代码片段。}{fig:ch4-serial-code}
+
+\subsection{实验步骤}
+\begin{enumerate}
+\item 将文件 \texttt{serial\_fifo.c}、\texttt{serial\_fifo.h}、\texttt{hex\_protocol.c} 和 \texttt{hex\_protocol.h} 加入工程，配置 \texttt{serial\_config.h} 中的缓冲区大小和串口参数。
+\item 编写串口硬件初始化函数（GPIO、USART、中断优先级），在接收中断中调用 \texttt{Serial\_FifoWrite} 将数据写入 RxFifo。
+\item 在主循环（或低优先级任务）中调用 \texttt{Serial\_RxLoop}，从 RxFifo 读取数据并驱动 HEX 状态机解析。
+\item 定义命令表：至少包含 3 条命令（如 LED 控制、读取传感器、系统复位），为每条命令编写对应的回调函数。
+\item 编写发送函数 \texttt{Serial\_SendArray}，将数据写入 TxFifo；在发送完成中断或主循环中调用 \texttt{Serial\_TxLoop} 逐字节发送。
+\item 使用串口调试助手（如 SSCOM、Putty）发送 HEX 帧，观察命令执行结果和应答帧是否正确返回。
+\item 分别测试三种场景：① 正确帧（校验通过、命令执行成功）；② 校验错误帧（应返回失败应答）；③ 不定长数据（验证空闲中断或状态机对变长帧的处理）。
+\item 连续发送 1000 帧数据，观察 FIFO 是否出现溢出丢包，记录最大缓冲区使用量。
+\end{enumerate}
+
+\subsection{实验现象与数据记录}
+
+\begin{table}[htbp]
 \centering
-    \fbox{\rule{0pt}{5cm}\rule{0.8\linewidth}{0pt}}
-\caption{串口 FIFO 与 HEX 实验图片（粘贴处）} \label{fig:ch4-placeholder}
-\end{figure}
+\caption{串口 HEX 协议收发实验记录}
+\label{tab:ch4-serial-record}
+\begin{tabularx}{\textwidth}{p{2.2cm}p{2.4cm}p{2.4cm}p{2.2cm}X}
+\toprule
+测试场景 & 发送帧内容 & 期望应答 & 实际应答 & 命令执行结果 \\
+\midrule
+正确帧 & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] \\
+校验错误 & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] \\
+不定长数据 & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\LabPasteBox{串口收发调试截图}{粘贴串口调试助手截图，显示发送的 HEX 帧和 MCU 返回的应答帧。}{fig:ch4-serial-result}
+
+\subsection{结果分析}
+
+RxFIFO 在连续 1000 帧测试中的最大使用量（字节）：\LabFillLine[6cm]
+
+HEX 状态机解析一帧的平均耗时（微秒，可通过 GPIO 翻转测量）：\LabFillLine[6cm]
+
+命令表查表分发与 if-else 链相比，代码量和可维护性的差异：\LabFillLine[6cm]
+
+移植过程中遇到的字节序或校验码问题：\LabFillLine[6cm]
+
+\subsection{实验总结}
+
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]
 
 % ---------------------------------------------------------------------
 \begin{problemset}
@@ -463,16 +533,16 @@ void Cmd_SendHexData(uint16_t COMx, uint8_t CommandID, uint8_t *Data, uint16_t D
 \item 图~\ref{fig:hex-frame-test} 给出了一种包含时间戳和CRC16校验的HEX数据包格式，该格式可用于STM32等MCU与ROS2机器人系统之间的串口通信。请结合ROS2机器人开发实践，完成以下任务：
 
 \begin{enumerate}
-	\item \textbf{协议选型分析}：在ROS2生态中，MCU与上位机通信主要有两条技术路径——\textbf{micro-ROS}和\textbf{自定义串口协议 + ROS2串口节点}。请查阅资料，对比两种方案的优缺点（考虑MCU资源占用、开发复杂度、实时性、协议灵活性等），并说明什么场景下适合使用自定义协议方案。
+	\item 协议选型分析：在ROS2生态中，MCU与上位机通信主要有两条技术路径——micro-ROS和自定义串口协议 + ROS2串口节点。请查阅资料，对比两种方案的优缺点（考虑MCU资源占用、开发复杂度、实时性、协议灵活性等），并说明什么场景下适合使用自定义协议方案。
 	
-	\item \textbf{帧格式设计}：图~\ref{fig:hex-frame-test} 中的帧格式包含“包头、时间戳、命令ID、功能ID、长度、数据、校验码、包尾”。若将该协议用于ROS2机器人，请回答：
+	\item 帧格式设计：图~\ref{fig:hex-frame-test} 中的帧格式包含“包头、时间戳、命令ID、功能ID、长度、数据、校验码、包尾”。若将该协议用于ROS2机器人，请回答：
 	\begin{enumerate}
 		\item 时间戳字段（6字节）在ROS2中有什么作用，时间戳为什么选择48位的？MCU如何生成可供ROS2使用的时间戳？
 		\item 若长度字段为2字节（大端表示），数据字段长度为N字节，则整个帧的总字节数是多少？
 		\item CRC16校验码的覆盖范围是从哪个字节开始到哪个字节结束，接收端如何验证数据完整性？
 	\end{enumerate}
 	
-	\item \textbf{命令下发与应答机制}：ROS2上位机需要向MCU下发控制指令（如电机速度、舵机角度等），MCU执行后返回应答。请设计：
+	\item 命令下发与应答机制：ROS2上位机需要向MCU下发控制指令（如电机速度、舵机角度等），MCU执行后返回应答。请设计：
 	\begin{enumerate}
 		\item 如何利用图~\ref{fig:hex-frame-test} 中的“命令ID”和“功能ID”字段区分不同的控制指令？
 		\item 应答帧应包含哪些字段？如何判断命令执行成功或失败？

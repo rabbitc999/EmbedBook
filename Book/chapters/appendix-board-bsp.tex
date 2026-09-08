@@ -4,7 +4,7 @@
 
 说明：后续例程会逐步统一到 HAL（Hardware Abstraction Layer）风格。HAL 本身可以由 STM32CubeMX 自动生成初始化代码，也可以由开发者手动编写，本附录展示的是“手动整理后的 HAL BSP”写法。
 
-\medskip \textbf{本附录涉及到的实验内容：}
+\medskip 本附录涉及到的实验内容：
 \begin{enumerate}
 \item 开发板资源认识与 HAL GPIO 实验；
 \item LED、KEY、BEEP 基础驱动；
@@ -31,7 +31,7 @@
 \centering \caption{战舰开发板常用资源} \label{tab:board-resource}
     \begin{tabular}{lll}
         \toprule
-        \textbf{资源} & \textbf{常用引脚} & \textbf{说明} \\
+        资源 & 常用引脚 & 说明 \\
         \midrule
         LED0 与 LED1 & GPIO 输出脚 & HAL\_GPIO\_WritePin 控制 \\
         KEY0、KEY1 与 KEY2 & GPIO 输入脚 & HAL\_GPIO\_ReadPin 读取 \\

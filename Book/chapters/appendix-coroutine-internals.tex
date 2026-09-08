@@ -4,7 +4,7 @@
 
 本实现是教学用协作式调度器，不是可直接替代 RTOS 的通用内核。它主动暴露栈切换和现场恢复过程，适合学习底层机制，也意味着使用者必须理解编译器 ABI、栈方向、中断状态和 C 运行库限制。
 
-\medskip \textbf{本附录涉及到的内容：}
+\medskip 本附录涉及到的内容：
 \begin{enumerate}
 \item 调度器对象、任务控制块和静态资源池；
 \item 任务创建、首次启动、主动挂起和恢复；
@@ -60,7 +60,7 @@
 \caption{TaskControlBlock\_T 成员职责} \label{tab:app-coro-tcb}
 \begin{tabularx}{\textwidth}{llX}
 \toprule
-\textbf{职责} & \textbf{成员} & \textbf{含义} \\
+职责 & 成员 & 含义 \\
 \midrule
 身份 & \texttt{name}、\texttt{pid} & 调试名称与任务编号 \\
 调度状态 & \texttt{state}、\texttt{nextRunTime} & 当前状态与延时唤醒时刻 \\
@@ -134,7 +134,7 @@
 \caption{envMain 的返回码含义} \label{tab:app-coro-main-code}
 \begin{tabular}{lll}
 \toprule
-\textbf{返回码} & \textbf{宏} & \textbf{下一步动作} \\
+返回码 & 宏 & 下一步动作 \\
 \midrule
 0 & \texttt{TASK\_MAIN\_INIT} & 选定表头任务 \\
 1 & \texttt{TASK\_MAIN\_EXIT} & 所有任务结束，返回调用者 \\
@@ -391,7 +391,7 @@ ARM EABI 要求公共调用边界满足栈对齐。创建独立栈时不能只�
 \caption{Cortex-M 移植检查表} \label{tab:app-coro-cortex-check}
 \begin{tabularx}{\textwidth}{lXX}
 \toprule
-\textbf{检查项} & \textbf{需要确认的内容} & \textbf{失败表现} \\
+检查项 & 需要确认的内容 & 失败表现 \\
 \midrule
 栈指针 & 线程模式使用 MSP 还是 PSP & 首次启动立即 HardFault \\
 寄存器现场 & \texttt{jmp\_buf} 的实际布局 & 恢复后变量或返回地址错误 \\
@@ -424,7 +424,7 @@ ARM EABI 要求公共调用边界满足栈对齐。创建独立栈时不能只�
 \caption{典型故障现象与优先检查位置} \label{tab:app-coro-faults}
 \begin{tabularx}{\textwidth}{lXX}
 \toprule
-\textbf{现象} & \textbf{优先检查} & \textbf{可能原因} \\
+现象 & 优先检查 & 可能原因 \\
 \midrule
 首次启动即异常 & 栈指针与对齐 & 架构宏错误，栈顶地址错误 \\
 第一次等待后异常 & 任务 \texttt{env} & 现场未保存，局部栈帧已失效 \\

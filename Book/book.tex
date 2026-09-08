@@ -69,19 +69,15 @@
 \ifrelease
 % 正式版：跳过16章的所有介绍
 \else
+\input{chapters/chapter-linux}
 \input{chapters/chapter-deadline-ai}
+\input{chapters/chapter-about-author}
 \fi
 
 \appendix
 \input{chapters/appendix-board-bsp}
 \input{chapters/appendix-parser-generator-runtime}
 \input{chapters/appendix-coroutine-internals}
-\ifrelease
-% 正式版
-\else
-\input{chapters/appendix-linux}
-\input{chapters/appendix-about-author}
-\fi
 \input{chapters/appendix-code-source}
 \input{chapters/appendix-answers}
 

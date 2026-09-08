@@ -4,7 +4,7 @@
 
 本章介绍的菜单系统采用“纯 C + 静态创建 + 缓冲区分配”的方案解决上述痛点，并通过函数指针在 C 语言中模拟“类与继承”，实现了跳转、退出、函数、数值修改、单选、多选等 6 类菜单项。项目同时在 PC 上使用 Win32 API（GDI）做了仿真，可以在电脑上先调试菜单逻辑，再移植到单片机。
 
-\medskip \textbf{本章涉及到的实验内容：}
+\medskip 本章涉及到的实验内容：
 \begin{enumerate}
 \item 菜单系统基础实验（菜单与菜单项的静态创建）；
 \item 六类菜单项实验（跳转、退出、函数、数值、单选和多选）；
@@ -48,10 +48,10 @@
 各文件职责：
 
 \begin{itemize}
-\item \textbf{menu\_port}：定义菜单系统与硬件的接口（清屏、显示字符串、按键扫描等），移植时只需要修改这个文件；
-\item \textbf{menu}：菜单系统的核心，负责菜单项的创建、菜单栈管理、按键分发与界面刷新；
-\item \textbf{menu\_user}：用户代码，通过菜单 API 构建自己的菜单树，并编写主界面与功能界面；
-\item \textbf{win32\_sim.cpp 与 win\_main.c}：PC 仿真层，用 Win32 API 窗口模拟 LCD，用键盘模拟按键，让菜单逻辑先在电脑上跑通。
+\item menu\_port：定义菜单系统与硬件的接口（清屏、显示字符串、按键扫描等），移植时只需要修改这个文件；
+\item menu：菜单系统的核心，负责菜单项的创建、菜单栈管理、按键分发与界面刷新；
+\item menu\_user：用户代码，通过菜单 API 构建自己的菜单树，并编写主界面与功能界面；
+\item win32\_sim.cpp 与 win\_main.c：PC 仿真层，用 Win32 API 窗口模拟 LCD，用键盘模拟按键，让菜单逻辑先在电脑上跑通。
 \end{itemize}
 
 % ---------------------------------------------------------------------
@@ -175,7 +175,7 @@ struct _UI_Driver                    // UI驱动器
 \centering \caption{菜单按键定义} \label{tab:menu-key}
     \begin{tabular}{cll}
         \toprule
-        \textbf{宏} & \textbf{键值} & \textbf{功能} \\
+        宏 & 键值 & 功能 \\
         \midrule
         \texttt{UI\_KEY\_ENTER}    & Q & 进入或确认 \\
         \texttt{UI\_KEY\_EXIT}     & A & 退出或返回 \\
@@ -246,7 +246,7 @@ void UI_MenuAddJumpItem(UI_Menu* pMenu, const char* itemTitle, UI_Menu* jumpMenu
 \centering \caption{菜单项类型一览} \label{tab:menu-item}
     \begin{tabular}{lll}
         \toprule
-        \textbf{类型} & \textbf{创建函数} & \textbf{行为} \\
+        类型 & 创建函数 & 行为 \\
         \midrule
         跳转项 & \texttt{UI\_MenuAddJumpItem}  & 进入后跳转到指定子菜单 \\
         退出项 & \texttt{UI\_MenuAddExitItem}  & 返回上一级菜单（或主界面） \\
@@ -303,7 +303,7 @@ void UI_ValueItemChange(UI_MenuItem* pthis, int16_t delta)
 \centering \caption{数值修改单位与步进值} \label{tab:menu-unit}
     \begin{tabular}{llll}
         \toprule
-        \textbf{单位} & \textbf{显示} & \textbf{步进值} & \textbf{适用类型} \\
+        单位 & 显示 & 步进值 & 适用类型 \\
         \midrule
         \texttt{UI\_UNIT\_MA} & \texttt{<01.00F} & 1.00  & int 与 float \\
         \texttt{UI\_UNIT\_MB} & \texttt{<10.00F} & 10.00 & int 与 float \\
@@ -478,7 +478,7 @@ static void UI_ShowItems(UI_Driver* pDirver)
 \centering \caption{菜单系统移植接口} \label{tab:menu-port}
     \begin{tabular}{lll}
         \toprule
-        \textbf{接口} & \textbf{功能} & \textbf{说明} \\
+        接口 & 功能 & 说明 \\
         \midrule
         \texttt{UI\_HardwareInit()} & 硬件初始化 & 初始化 LCD、按键等 \\
         \texttt{UI\_Clear()}        & 清屏 & 调用 LCD 清屏函数 \\
@@ -610,7 +610,7 @@ void UI_Init(void)
 % ---------------------------------------------------------------------
 \section{页面跳转框架}
 
-菜单系统里的“菜单栈”能管理父子界面，但栈会带来“返回路径不可变”的限制：一个页面只能沿进入顺序原路返回。对于主页、菜单页、曲线页这类平级页面，更简单的做法是\textbf{不用栈，用显式跳转}：谁想进入下一个页面，就由谁直接调用跳转函数。
+菜单系统里的“菜单栈”能管理父子界面，但栈会带来“返回路径不可变”的限制：一个页面只能沿进入顺序原路返回。对于主页、菜单页、曲线页这类平级页面，更简单的做法是不用栈，用显式跳转：谁想进入下一个页面，就由谁直接调用跳转函数。
 
 \begin{figure}[htbp]
 	\centering
@@ -714,7 +714,7 @@ void GUI_CurvePage(void *param)
 \centering \caption{菜单栈式导航与显式页面跳转的对比} \label{tab:nav-stack-vs-explicit}
     \begin{tabular}{lll}
         \toprule
-        \textbf{对比项} & \textbf{菜单栈导航} & \textbf{显式页面跳转} \\
+        对比项 & 菜单栈导航 & 显式页面跳转 \\
         \midrule
         返回方式 & 只能按入栈顺序返回 & 可在任意页面指定目标 \\
         页面关系 & 父子层级固定 & 平级页面自由跳转 \\
@@ -725,7 +725,7 @@ void GUI_CurvePage(void *param)
     \end{tabular}
 \end{table}
 
-一句话总结：\textbf{页面是状态，跳转是有向边。}把页面看成节点，显式跳转就是在状态图上沿着“有向边”移动；相比维护一个“只能往回走”的栈，显式跳转更适合菜单与自定义页面、曲线页面之间的自由切换。
+一句话总结：页面是状态，跳转是有向边。把页面看成节点，显式跳转就是在状态图上沿着“有向边”移动；相比维护一个“只能往回走”的栈，显式跳转更适合菜单与自定义页面、曲线页面之间的自由切换。
 
 % ---------------------------------------------------------------------
 \section{PC 仿真实现}
@@ -733,12 +733,12 @@ void GUI_CurvePage(void *param)
 为了让菜单逻辑不依赖真实硬件即可调试，项目用 Win32 API（GDI）在 PC 上做了仿真：
 
 \begin{itemize}
-\item \textbf{win32\_sim.cpp}：用 \texttt{CreateWindow} 创建一个 240$\times$300 的窗口模拟 LCD，把 \texttt{LCD\_Init}、\texttt{LCD\_Clear} 与 \texttt{LCD\_ShowString} 映射为 Win32 GDI 绘图函数；
-\item \textbf{按键映射}：用 \texttt{GetKeyState} 检测键盘上的 Q、A、W、S、E 和 D，映射为 6 个菜单按键；
-\item \textbf{主循环}：创建窗口并进入消息循环，以 10ms 为周期调用 \texttt{UI\_While()}。
+\item win32\_sim.cpp：用 \texttt{CreateWindow} 创建一个 240$\times$300 的窗口模拟 LCD，把 \texttt{LCD\_Init}、\texttt{LCD\_Clear} 与 \texttt{LCD\_ShowString} 映射为 Win32 GDI 绘图函数；
+\item 按键映射：用 \texttt{GetKeyState} 检测键盘上的 Q、A、W、S、E 和 D，映射为 6 个菜单按键；
+\item 主循环：创建窗口并进入消息循环，以 10ms 为周期调用 \texttt{UI\_While()}。
 \end{itemize}
 
-页面跳转框架的\textbf{独立 PC 仿真}位于 \texttt{Chapter-ui-system/页面跳转PC仿真/}，它在独立窗口中演示主页、菜单页和曲线页跳转，并额外提供 \texttt{LCD\_DrawPoint} 与 \texttt{LCD\_ShowRGB565Image} 绘制接口。
+页面跳转框架的独立 PC 仿真位于 \texttt{Chapter-ui-system/页面跳转PC仿真/}，它在独立窗口中演示主页、菜单页和曲线页跳转，并额外提供 \texttt{LCD\_DrawPoint} 与 \texttt{LCD\_ShowRGB565Image} 绘制接口。
 
 \begin{lstlisting}[style=c]
 // win32_sim.cpp：LCD 接口的 Win32 API 实现（对接 hardware.h）
@@ -797,7 +797,7 @@ LVGL 是目前嵌入式领域最流行的开源 GUI 库之一，支持按钮、�
 	\label{tab:menu-vs-lvgl}
 	\begin{tabularx}{\textwidth}{l X X}
 		\toprule
-		\textbf{对比项} & \textbf{本章菜单系统} & \textbf{LVGL（v8/v9）} \\
+		对比项 & 本章菜单系统 & LVGL（v8/v9） \\
 		\midrule
 		设计定位 & 轻量级按键式菜单框架 & 完整的嵌入式 GUI 图形库 \\
 		UI 控件类型 & 6 类菜单项（跳转/退出/函数/数值/单选/多选） & 30+ 控件（按钮、滑块、图表、开关等） \\
@@ -821,17 +821,17 @@ LVGL 是目前嵌入式领域最流行的开源 GUI 库之一，支持按钮、�
 从表中可以提炼出三条核心差异：
 
 \begin{enumerate}
-	\item \textbf{抽象层次不同}：LVGL 提供的是“控件”级别的抽象——开发者创建按钮、滑块、列表，并设置它们的样式和事件回调；本章菜单系统的抽象层次是“菜单项”——每一行要么是跳转、要么是数值修改、要么是函数执行。前者适用于图形化触摸界面，后者适用于物理按键 + 字符屏的文本菜单。
+	\item 抽象层次不同：LVGL 提供的是“控件”级别的抽象——开发者创建按钮、滑块、列表，并设置它们的样式和事件回调；本章菜单系统的抽象层次是“菜单项”——每一行要么是跳转、要么是数值修改、要么是函数执行。前者适用于图形化触摸界面，后者适用于物理按键 + 字符屏的文本菜单。
 	
-	\item \textbf{资源开销的鸿沟}：一个最小的 LVGL 工程（仅核心库 + 帧缓冲）通常需要 32KB RAM 和 128KB Flash，驱动 320x240 分辨率的屏幕时帧缓冲本身就要 150KB 以上。如果再加上字体、控件和样式，RAM 占用很容易突破 256KB。而本章菜单系统在相同屏幕下只需数 KB RAM 和约 10--20KB Flash，可以运行在 STM32F103C8T6（20KB RAM/64KB Flash）等入门级 MCU 上。
+	\item 资源开销的鸿沟：一个最小的 LVGL 工程（仅核心库 + 帧缓冲）通常需要 32KB RAM 和 128KB Flash，驱动 320x240 分辨率的屏幕时帧缓冲本身就要 150KB 以上。如果再加上字体、控件和样式，RAM 占用很容易突破 256KB。而本章菜单系统在相同屏幕下只需数 KB RAM 和约 10--20KB Flash，可以运行在 STM32F103C8T6（20KB RAM/64KB Flash）等入门级 MCU 上。
 	
-	\item \textbf{开发范式的取舍}：LVGL 的控件 + 样式 + 事件模型提供了极高的 UI 表现力，但开发者需要理解对象树的生命周期管理、样式继承链、动画和定时器机制，入门门槛较高；本章菜单系统的“创建菜单树 + 绑定函数指针”范式更接近嵌入式工程师熟悉的“表驱动”风格，代码平铺直叙，不依赖框架的运行时规则。
+	\item 开发范式的取舍：LVGL 的控件 + 样式 + 事件模型提供了极高的 UI 表现力，但开发者需要理解对象树的生命周期管理、样式继承链、动画和定时器机制，入门门槛较高；本章菜单系统的“创建菜单树 + 绑定函数指针”范式更接近嵌入式工程师熟悉的“表驱动”风格，代码平铺直叙，不依赖框架的运行时规则。
 \end{enumerate}
 
 那么如何选择？以下原则可作为参考：
 
 \begin{itemize}
-	\item \textbf{使用 LVGL 的典型场景}：
+	\item 使用 LVGL 的典型场景：
 	\begin{itemize}
 		\item 硬件配备触摸屏，或需要滑动、拖动等手势交互；
 		\item UI 需要包含图表、滑块、下拉列表等复杂控件；
@@ -840,7 +840,7 @@ LVGL 是目前嵌入式领域最流行的开源 GUI 库之一，支持按钮、�
 		\item 团队有精力投入图形界面设计，并愿意使用 SquareLine Studio 等辅助工具。
 	\end{itemize}
 	
-	\item \textbf{使用本章菜单系统的典型场景}：
+	\item 使用本章菜单系统的典型场景：
 	\begin{itemize}
 		\item 硬件只有物理按键（如编码器、五向键、独立按键），无触摸屏；
 		\item 屏幕以字符显示为主（如 128x64 OLED、1602 LCD），或仅有少量图形绘制；
@@ -850,7 +850,7 @@ LVGL 是目前嵌入式领域最流行的开源 GUI 库之一，支持按钮、�
 	\end{itemize}
 \end{itemize}
 
-最后需要强调一点：\textbf{LVGL 和本菜单系统不是二选一的互斥关系}。一个实际产品中，完全可以在 LVGL 的某个界面中嵌入一个“参数列表”风格的菜单页，或在菜单系统的某个函数项中调用 LVGL 绘制的曲线画面。两者既可以共存，也可以分层：LVGL 负责展示层（仪表盘、曲线、状态图标），本菜单系统负责参数配置与设备控制的逻辑流程。读者应把二者视为工具链上的不同选项，而非“谁替代谁”的竞争关系。
+最后需要强调一点：LVGL 和本菜单系统不是二选一的互斥关系。一个实际产品中，完全可以在 LVGL 的某个界面中嵌入一个“参数列表”风格的菜单页，或在菜单系统的某个函数项中调用 LVGL 绘制的曲线画面。两者既可以共存，也可以分层：LVGL 负责展示层（仪表盘、曲线、状态图标），本菜单系统负责参数配置与设备控制的逻辑流程。读者应把二者视为工具链上的不同选项，而非“谁替代谁”的竞争关系。
 
 % ---------------------------------------------------------------------
 % 本实验区块统一采用九段式实验报告结构，便于记录菜单移植过程与实测数据。
@@ -905,7 +905,7 @@ LVGL 是目前嵌入式领域最流行的开源 GUI 库之一，支持按钮、�
 \label{tab:ch8-menu-record}
 \begin{tabularx}{\textwidth}{p{3.1cm}p{3.4cm}p{3.1cm}X}
 \toprule
-\textbf{操作} & \textbf{目标页面或项目} & \textbf{显示结果} & \textbf{实际结果} \\
+操作 & 目标页面或项目 & 显示结果 & 实际结果 \\
 \midrule
 页面进入 & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] \\
 页面返回 & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] \\

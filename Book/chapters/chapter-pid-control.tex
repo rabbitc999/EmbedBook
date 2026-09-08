@@ -2,7 +2,7 @@
 
 很多单片机程序都要回答同一个问题：测量值偏离目标以后，执行器应该输出多大的控制量？温度控制、电机调速与云台角度控制看起来各不相同，但它们都可以抽象成“测量偏差，再根据偏差修正输出”的闭环系统。本章从反馈控制的基本结构入手，依次介绍比例、积分与微分三种作用，再实现带积分限幅、输出限幅和微分滤波的 PID 控制器。完整示例代码位于 \texttt{Chapter-pid-control/PID控制/} 目录。
 
-\medskip \textbf{本章涉及到的实验内容：}
+\medskip 本章涉及到的实验内容：
 \begin{enumerate}
 \item 闭环控制系统与误差的定义；
 \item 位置式 PID 与增量式 PID；
@@ -212,7 +212,7 @@ $\alpha$ 越小，微分输出越平滑，但相位延迟也会增加。噪声�
 \caption{PID 示例的 PC 运行结果} \label{tab:pid-pc-result}
 \begin{tabular}{llll}
 \toprule
-\textbf{迭代序号} & \textbf{设定值} & \textbf{对象输出} & \textbf{控制输出} \\
+迭代序号 & 设定值 & 对象输出 & 控制输出 \\
 \midrule
 199 & 50.000 & 41.492 & 44.819 \\
 \bottomrule
@@ -224,93 +224,84 @@ $\alpha$ 越小，微分输出越平滑，但相位延迟也会增加。噪声�
 除示例程序外，还使用独立断言验证了纯比例位置式 PID、纯比例增量式 PID、非法控制周期和空指针处理，断言均正常通过。
 
 % ---------------------------------------------------------------------
-\section{单片机移植实验}
+\section{实验报告：PID 控制器移植与整定}
 
-本节预留 PID 控制器在 STM32 开发板上的移植与实测内容。算法层不依赖具体芯片，板级程序只需要提供固定周期、反馈采样和执行器输出三个接口。
+\subsection{实验基本信息}
 
-\subsection{硬件接口预留}
+MCU 型号：\LabFillLine[3.5cm] \quad 工作主频：\LabFillLine[3.5cm]
+
+控制周期：\LabFillLine[3.5cm] \quad 被控对象类型：\LabFillLine[3.5cm]
+
+比例系数 $K_p$：\LabFillLine[3.5cm] \quad 积分系数 $K_i$：\LabFillLine[3.5cm]
+
+微分系数 $K_d$：\LabFillLine[3.5cm] \quad 输出限幅范围：\LabFillLine[3.5cm]
+
+\subsection{实验目的}
+\begin{enumerate}
+\item 掌握位置式 PID 与增量式 PID 在单片机上的移植与参数配置方法；
+\item 理解比例、积分、微分三种控制作用对系统响应速度、稳态误差和超调量的影响；
+\item 学会通过阶跃响应曲线整定 PID 参数，能够根据实测波形判断参数调整方向；
+\item 掌握积分限幅、输出限幅和微分滤波等工程保护措施的作用与配置方法。
+\end{enumerate}
+
+\subsection{实验原理}
+PID 控制器根据设定值与反馈值的偏差 $e[k]$ 计算控制量。位置式 PID 直接输出当前控制量：$u[k] = K_p e[k] + I[k] + D[k]$，其中积分项 $I[k] = I[k-1] + K_i T_s e[k]$，微分项 $D[k] = K_d (e[k]-e[k-1])/T_s$。工程中需对积分项和输出进行限幅，并对微分项进行低通滤波以抑制噪声放大。增量式 PID 则计算输出变化量 $\Delta u[k]$，适合执行器需要增量控制的场景。参数整定通常从比例开始，再逐步引入积分和微分。
+
+\subsection{硬件连接}
+
+\LabPasteBox{PID 控制硬件连接}{粘贴开发板与执行器（如电机驱动或加热器）、传感器（编码器、ADC）以及调试串口的连接图片，标注电源、PWM 输出、反馈信号和公共地。}{fig:ch13-pid-hardware}
+
+\subsection{关键代码}
+
+\LabPasteBox{PID 控制器初始化、更新与参数整定代码}{粘贴 PID 结构体定义、参数设置函数、控制周期定时任务和 \texttt{PID\_Calculate} 调用代码，并标注积分限幅和输出限幅的配置。}{fig:ch13-pid-code}
+
+\subsection{实验步骤}
+\begin{enumerate}
+\item 将 `pid\_control.c` 与 `pid\_control.h` 加入单片机工程，确认控制周期定时器已正确配置（如 10ms）。
+\item 连接传感器和执行器，编写反馈读取函数和执行器输出函数，将原始 ADC 值或编码器计数值换算为具有实际物理单位的反馈值。
+\item 从纯比例控制开始：将 $K_i$ 和 $K_d$ 设为 0，逐步增大 $K_p$，观察阶跃响应，直到响应速度合适且未出现持续振荡。
+\item 加入积分项：缓慢增大 $K_i$，观察稳态误差是否逐渐消除，注意积分限幅是否触发。
+\item 加入微分项：少量增加 $K_d$，观察超调量是否减小，若反馈噪声较大则启用微分滤波并调整滤波系数。
+\item 通过串口以固定周期输出设定值、反馈值和控制量，使用上位机绘图工具（如 SerialPlot、Python）绘制响应曲线。
+\item 依次测试三种场景：① 阶跃响应（设定值突变）；② 负载扰动（施加外部干扰）；③ 设定值切换（多级目标变化），记录各场景下的响应指标。
+\item 测试输出限幅和积分限幅的保护效果：将输出限幅设为一个较小值，观察控制量是否被正确截断且积分项未过度累积。
+\end{enumerate}
+
+\subsection{实验现象与数据记录}
 
 \begin{table}[htbp]
 \centering
-\caption{PID 单片机移植接口记录表} \label{tab:pid-mcu-interface}
-\begin{tabularx}{\textwidth}{lllX}
+\caption{PID 控制器阶跃响应与扰动实验记录}
+\label{tab:ch13-pid-record}
+\begin{tabularx}{\textwidth}{p{2.4cm}p{2.2cm}p{2.0cm}p{2.0cm}p{2.0cm}X}
 \toprule
-\textbf{项目} & \textbf{计划接口} & \textbf{当前配置} & \textbf{实测备注} \\
+测试场景 & $K_p$ / $K_i$ / $K_d$ & 上升时间(ms) & 超调量(\%) & 稳态误差 & 备注 \\
 \midrule
-反馈采样 & ADC 或编码器 & 待选择 & 记录量程、方向和零点 \\
-执行器输出 & PWM 或 DAC & 待选择 & 记录限幅与安全状态 \\
-控制周期 & 定时器中断 & $10\,\mathrm{ms}$ & 记录实测周期抖动 \\
-调试输出 & 串口 & 待选择 & 输出设定值、反馈值和控制量 \\
+纯比例 & \LabFillLine[1.8cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+比例+积分 & \LabFillLine[1.8cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+比例+积分+微分 & \LabFillLine[1.8cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+负载扰动恢复 & \LabFillLine[1.8cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-\subsection{移植步骤}
+\LabPasteBox{PID 阶跃响应与扰动波形}{粘贴串口绘图工具绘制的设定值、反馈值和控制量曲线截图，标注上升时间、超调量和稳态误差。}{fig:ch13-pid-result}
 
-\begin{enumerate}
-\item 把 \texttt{pid\_control.c} 与 \texttt{pid\_control.h} 加入单片机工程；
-\item 使用硬件定时器建立固定控制周期，不在普通延时循环中调用控制器；
-\item 把 ADC、电机编码器或其他传感器结果换算为具有实际单位的反馈值；
-\item 调用 \texttt{PID\_Calculate} 得到控制量，并根据执行器能力完成 PWM 或 DAC 输出；
-\item 在过流、过温和传感器异常时停止执行器，并调用 \texttt{PID\_Reset} 清空历史状态；
-\item 通过串口连续记录设定值、反馈值与控制量，再根据实测曲线整定参数。
-\end{enumerate}
+\subsection{结果分析}
 
-控制任务可以按下面的结构接入现有调度器：
+纯比例控制下是否存在稳态误差及其大小：\LabFillLine[6cm]
 
-\begin{lstlisting}[style=c]
-/**
-  * @brief  在固定周期任务中完成一次闭环控制。
-  * @param  无。
-  * @retval 无。
-  * @note   反馈读取和执行器输出函数由具体开发板提供。
-  */
-void PID_AppTaskRun(void)
-{
-    float feedback;
-    float controlOutput;
+加入积分项后稳态误差的变化：\LabFillLine[6cm]
 
-    /* 读取真实反馈，再把控制结果交给执行器接口 */
-    feedback = Sensor_ReadFeedback();
-    controlOutput = PID_Calculate(&controller, setpoint, feedback);
-    Actuator_SetOutput(controlOutput);
-}
-\end{lstlisting}
+加入微分项后超调量和上升时间的变化：\LabFillLine[6cm]
 
-\subsection{实测记录预留}
+输出限幅触发时，积分项是否继续累积（积分饱和现象）：\LabFillLine[6cm]
 
-\begin{table}[htbp]
-\centering
-\caption{PID 单片机实测结果记录表} \label{tab:pid-mcu-result}
-\begin{tabular}{lllll}
-\toprule
-\textbf{测试项目} & $K_p$ & $K_i$ & $K_d$ & \textbf{实测结果} \\
-\midrule
-阶跃响应 & 待记录 & 待记录 & 待记录 & 待记录 \\
-负载扰动 & 待记录 & 待记录 & 待记录 & 待记录 \\
-设定值切换 & 待记录 & 待记录 & 待记录 & 待记录 \\
-\bottomrule
-\end{tabular}
-\end{table}
+\subsection{实验总结}
 
-\begin{figure}[htbp]
-\centering
-\fbox{\parbox[c][4.0cm][c]{0.82\textwidth}{\centering 此处预留开发板连接照片与 PID 实测响应曲线}}
-\caption{PID 单片机移植实验记录预留} \label{fig:pid-mcu-result}
-\end{figure}
-
-% ---------------------------------------------------------------------
-\section{完整示例代码}
-
-完整示例位于 \texttt{Chapter-pid-control/PID控制/}：
-
-\begin{itemize}
-\item \texttt{pid\_control.h}：PID 模式、控制器结构体与公共函数；
-\item \texttt{pid\_control.c}：位置式、增量式、限幅与微分滤波实现；
-\item \texttt{main.c}：一阶惯性对象的闭环控制演示。
-\end{itemize}
-
-移植到 STM32 时，只需要把示例中的一阶对象替换成真实传感器反馈，再把 \texttt{controlOutput} 写入 PWM、DAC 或其他执行器接口。控制算法本身不依赖具体芯片外设。
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]
 
 % ---------------------------------------------------------------------
 \section{本章小结}

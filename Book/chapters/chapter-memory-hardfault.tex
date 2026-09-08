@@ -7,12 +7,12 @@
 Cortex-M 处理器发生不可恢复的异常时，会进入 HardFault。常见触发原因：
 
 \begin{itemize}
-\item \textbf{空指针或野指针解引用}：读取或写入 0x00000000 附近；
-\item \textbf{数组越界}：把数据写到数组之外的 SRAM，可能破坏其他变量甚至栈；
-\item \textbf{非对齐访问}：在未启用非对齐访问允许位时访问非对齐地址；
-\item \textbf{栈溢出}：栈指针越过栈底，写入不可访问区域；
-\item \textbf{总线错误}：访问不存在的地址或未使能的外设；
-\item \textbf{执行非法指令或除零}：代码区被破坏或执行了不支持的操作。
+\item 空指针或野指针解引用：读取或写入 0x00000000 附近；
+\item 数组越界：把数据写到数组之外的 SRAM，可能破坏其他变量甚至栈；
+\item 非对齐访问：在未启用非对齐访问允许位时访问非对齐地址；
+\item 栈溢出：栈指针越过栈底，写入不可访问区域；
+\item 总线错误：访问不存在的地址或未使能的外设；
+\item 执行非法指令或除零：代码区被破坏或执行了不支持的操作。
 \end{itemize}
 
 % ---------------------------------------------------------------------
@@ -21,10 +21,10 @@ Cortex-M 处理器发生不可恢复的异常时，会进入 HardFault。常见�
 HardFault 处理的第一步不是“复位重启”，而是尽量记录现场。Cortex-M3 与 M4 提供一组可读寄存器：
 
 \begin{itemize}
-\item \textbf{CFSR}（\texttt{SCB->CFSR}）：进一步细分为 UsageFault、BusFault、MemManage；
-\item \textbf{HFSR}（\texttt{SCB->HFSR}）：HardFault 状态，FORCED 位表示其他 fault 升级而来；
-\item \textbf{MMFAR 与 BFAR}：MemManage 与 BusFault 的出错地址；
-\item \textbf{PC、LR 与 SP}：发生异常时正在执行的程序位置。
+\item CFSR（\texttt{SCB->CFSR}）：进一步细分为 UsageFault、BusFault、MemManage；
+\item HFSR（\texttt{SCB->HFSR}）：HardFault 状态，FORCED 位表示其他 fault 升级而来；
+\item MMFAR 与 BFAR：MemManage 与 BusFault 的出错地址；
+\item PC、LR 与 SP：发生异常时正在执行的程序位置。
 \end{itemize}
 
 一个简单的处理函数可以只读寄存器并停住等待调试器：
@@ -56,7 +56,7 @@ void HardFault_Handler(void)
 \centering \caption{Cortex-M 常见故障位（节选）} \label{tab:hardfault-bit}
     \begin{tabular}{lll}
         \toprule
-        \textbf{寄存器和位} & \textbf{含义} & \textbf{常见原因} \\
+        寄存器和位 & 含义 & 常见原因 \\
         \midrule
         CFSR.UNALIGNED & 非对齐访问 & 强制转换后直接解引用非对齐指针 \\
         CFSR.IBUSERR & 指令总线错误 & 跳转到非法或不存在的地址 \\
@@ -74,10 +74,10 @@ void HardFault_Handler(void)
 拿到出错地址后，可以使用以下手段定位：
 
 \begin{enumerate}
-\item \textbf{查看 \texttt{.map} 文件}：把 PC 地址对应到函数名；
-\item \textbf{查看反汇编}：Keil 的 Disassembly 或 \texttt{arm-none-eabi-objdump -d}；
-\item \textbf{查看调用栈}：在 HardFault 现场读取栈帧中的 LR，可恢复调用链；
-\item \textbf{串口打印故障信息}：把 CFSR、HFSR 和出错地址发送到上位机，方便长时间运行后离线分析。
+\item 查看 \texttt{.map} 文件：把 PC 地址对应到函数名；
+\item 查看反汇编：Keil 的 Disassembly 或 \texttt{arm-none-eabi-objdump -d}；
+\item 查看调用栈：在 HardFault 现场读取栈帧中的 LR，可恢复调用链；
+\item 串口打印故障信息：把 CFSR、HFSR 和出错地址发送到上位机，方便长时间运行后离线分析。
 \end{enumerate}
 
 更可靠的做法是在设计阶段就减少 HardFault 概率：所有指针初始化后判空、数组长度做边界检查、栈区预留余量、外设指针使用 CMSIS 提供的 \texttt{volatile} 类型、涉及硬件寄存器时不要直接 \texttt{memcpy} 与 \texttt{memset}。
@@ -114,7 +114,7 @@ BFAR = 0xA0000000
 \centering \caption{SEGGER 工具中三类常见 HardFault 的判读} \label{tab:segger-fault}
     \begin{tabular}{lll}
         \toprule
-        \textbf{故障} & \textbf{典型寄存器表现} & \textbf{含义} \\
+        故障 & 典型寄存器表现 & 含义 \\
         \midrule
         调用非法函数指针 & PC 异常，HFSR.FORCED & 函数指针被指向不可执行地址 \\
         非对齐内存访问 & UFSR.UNALIGNED，PC 指向 LDR 与 STR & 访问了未按对齐的地址 \\
@@ -173,14 +173,14 @@ HardFault_Handler
 Cortex-M 主要使用 Thumb 与 Thumb-2 指令，常用的数据寻址模式如下：
 
 \begin{itemize}
-\item \textbf{立即数寻址}：\texttt{mov R0, \#0x10}；
-\item \textbf{寄存器直接寻址}：\texttt{mov R1, R2}；
-\item \textbf{寄存器间接寻址}：\texttt{ldr R0, [R1]}，从 R1 指向的地址读数据；
-\item \textbf{寄存器+立即偏移}：\texttt{ldr R0, [R1, \#4]}；
-\item \textbf{寄存器+寄存器偏移}：\texttt{str R0, [R1, R2]}；
-\item \textbf{前变址（写回）}：\texttt{ldr R0, [R1, \#4]!}，先更新 R1 再访问；
-\item \textbf{后变址}：\texttt{ldr R0, [R1], \#4}，访问后再更新 R1；
-\item \textbf{PC 相对寻址}：\texttt{ldr R0, =label} 在代码中加载常量地址。
+\item 立即数寻址：\texttt{mov R0, \#0x10}；
+\item 寄存器直接寻址：\texttt{mov R1, R2}；
+\item 寄存器间接寻址：\texttt{ldr R0, [R1]}，从 R1 指向的地址读数据；
+\item 寄存器+立即偏移：\texttt{ldr R0, [R1, \#4]}；
+\item 寄存器+寄存器偏移：\texttt{str R0, [R1, R2]}；
+\item 前变址（写回）：\texttt{ldr R0, [R1, \#4]!}，先更新 R1 再访问；
+\item 后变址：\texttt{ldr R0, [R1], \#4}，访问后再更新 R1；
+\item PC 相对寻址：\texttt{ldr R0, =label} 在代码中加载常量地址。
 \end{itemize}
 
 \subsection{常用指令格式}
@@ -205,43 +205,78 @@ Thumb 指令的一般形式可以概括为：
 阅读 HardFaultHandler.S 只需要掌握上面这几条；真正的现场分析仍在 C 层完成，汇编只负责把正确的栈指针交给 C。
 
 % ---------------------------------------------------------------------
-\section{单片机实验报告：HardFault 定位}
+\section{实验报告：HardFault 分析与定位}
+
+\subsection{实验基本信息}
+
+MCU 型号：\LabFillLine[3.5cm] \quad 调试器：\LabFillLine[3.5cm]
+
+开发环境：\LabFillLine[3.5cm] \quad 故障注入方式：\LabFillLine[3.5cm]
 
 \subsection{实验目的}
 \begin{enumerate}
-\item 触发并记录典型 HardFault 异常；
-\item 读取 CFSR、HFSR、BFAR 与故障现场寄存器；
-\item 使用映射文件定位出错代码。
+\item 掌握 Cortex-M HardFault 的常见触发原因及其对应的故障状态寄存器特征；
+\item 学会在 HardFault 处理函数中保存关键现场信息（CFSR、HFSR、BFAR、MMFAR、PC、LR）；
+\item 能够根据故障寄存器和 PC 地址，结合 \texttt{.map} 文件和反汇编定位出错代码行；
+\item 理解 SEGGER HardFault 分析工具的工作原理及其在调试中的使用方法。
 \end{enumerate}
 
 \subsection{实验原理}
-异常入口自动保存 R0--R3、R12、LR、PC、PSR，处理函数依据 CFSR 与 BFAR 判断故障类型。
+Cortex-M 处理器发生不可恢复异常时进入 HardFault，硬件自动将 R0--R3、R12、LR、PC、PSR 压入当前栈。处理函数通过检查 EXC\_RETURN 的 bit2 判断压栈时使用的是 MSP 还是 PSP，进而获取栈指针。配合系统控制块中的 CFSR、HFSR、BFAR、MMFAR 等寄存器，可以区分非对齐访问、总线错误、非法指令等故障类型，再结合编译生成的 \texttt{.map} 文件和反汇编输出，即可精确定位到出错源代码位置。
+
+\subsection{硬件连接}
+
+\LabPasteBox{HardFault 调试硬件连接}{粘贴开发板与调试器（如 J-Link、ST-Link）以及串口转 USB 模块的连接图片，标注 SWD 接口、串口 TX/RX 和电源。}{fig:ch12-hardfault-hardware}
+
+\subsection{关键代码}
+
+\LabPasteBox{HardFault 处理函数与故障注入测试代码}{粘贴 \texttt{HardFault\_Handler} 中保存 CFSR、HFSR、BFAR、MMFAR 的代码，以及三个典型故障注入函数（非法函数指针、非对齐访问、非法地址指针）的调用片段。}{fig:ch12-hardfault-code}
 
 \subsection{实验步骤}
 \begin{enumerate}
-\item 编写对齐和非对齐访问示例，分别运行并记录现象。
-\item 在 \texttt{HardFault\_Handler} 中保存栈指针和故障状态寄存器。
-\item 根据 PC 值查询 .map 文件及反汇编输出，确定故障指令。
-\item 修复非法访问后重新下载，确认程序能够持续运行。
+\item 将 SEGGER HardFault 分析文件（\texttt{HardFaultHandler.S} 与 \texttt{SEGGER\_HardFaultHandler.c}）加入工程，或自行编写简易故障捕获函数。
+\item 编写三个测试用例：① 调用非法函数指针（\texttt{pBad = (void*)0xDEADBEEF; pBad();}）；② 非对齐访问（\texttt{uint32\_t *p = (uint32\_t*)(buffer+1); *p = 0x1234;}）；③ 非法地址指针（\texttt{volatile uint32\_t *p = (uint32\_t*)0xA0000000; *p = 0x5678;}）。
+\item 依次使能每个测试用例（每次仅启用一个），编译并下载到开发板，进入调试模式运行。
+\item 触发 HardFault 后，在调试器中读取 CFSR、HFSR、BFAR、MMFAR，并记录栈中保存的 PC 和 LR 值。
+\item 查看工程的 \texttt{.map} 文件，将 PC 地址映射到对应的函数名；查看反汇编（Keil 的 Disassembly 或 \texttt{objdump}），定位到具体指令行。
+\item 根据故障信息修改代码（如增加对齐、检查指针有效性），重新编译运行，确认故障不再发生。
+\item 启用串口输出，将故障寄存器信息通过串口打印到上位机，模拟离线分析流程。
 \end{enumerate}
 
-\subsection{关键代码（粘贴处）}
-\fbox{\rule{0pt}{4cm}\rule{0.8\linewidth}{0pt}}
+\subsection{实验现象与数据记录}
 
-\subsection{图片（粘贴处）}
-\fbox{\rule{0pt}{5cm}\rule{0.8\linewidth}{0pt}}
+\begin{table}[htbp]
+\centering
+\caption{三种典型 HardFault 的寄存器记录与定位结果}
+\label{tab:ch12-hardfault-record}
+\begin{tabularx}{\textwidth}{p{2.6cm}p{2.4cm}p{2.4cm}p{2.4cm}X}
+\toprule
+故障类型 & CFSR 关键位 & HFSR & BFAR/MMFAR & PC 地址对应函数 \\
+\midrule
+非法函数指针 & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] \\
+非对齐访问 & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] \\
+非法地址指针 & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] \\
+\bottomrule
+\end{tabularx}
+\end{table}
 
-\subsection{实际结果}
-\noindent 故障寄存器记录：\rule{0.82\linewidth}{0.4pt}\\[0.8em]
-\noindent 故障地址与定位结果：\rule{0.72\linewidth}{0.4pt}\\[0.8em]
-\noindent 修复后运行现象：\rule{0.78\linewidth}{0.4pt}
+\LabPasteBox{HardFault 调试输出截图}{粘贴调试器中 Registers 窗口的 CFSR/HFSR/BFAR 截图、串口打印的故障信息，以及 \texttt{.map} 文件中定位到的函数片段。}{fig:ch12-hardfault-result}
 
-\subsection{问题分析}
-\noindent 触发原因及改进措施：\rule{0.72\linewidth}{0.4pt}\\[0.8em]
-\rule{0.95\linewidth}{0.4pt}
+\subsection{结果分析}
 
-\subsection{实验结论}
-\noindent 结论：\rule{0.88\linewidth}{0.4pt}
+非法函数指针故障中，PC 寄存器的值（十六进制）：\LabFillLine[6cm]
+
+非对齐访问故障中，CFSR 的 UNALIGNED 位是否置位：\LabFillLine[6cm]
+
+非法地址指针故障中，BFAR 给出的出错地址：\LabFillLine[6cm]
+
+通过本次实验，最能帮助你快速定位故障的寄存器是哪一个：\LabFillLine[6cm]
+
+\subsection{实验总结}
+
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]
 
 % ---------------------------------------------------------------------
 \begin{problemset}

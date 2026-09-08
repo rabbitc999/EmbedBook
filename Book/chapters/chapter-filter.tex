@@ -2,7 +2,7 @@
 
 传感器输出很少是一条完全平滑的曲线。ADC 量化误差、电源纹波、机械振动和通信干扰都会叠加到真实信号上。如果直接把带噪测量值送给显示界面或控制器，轻则数字跳动，重则控制输出振荡。本章从容易理解的滑动平均开始，依次实现一阶低通、中值和一维卡尔曼滤波，并比较它们各自适合处理的噪声类型。完整示例代码位于 \texttt{Chapter-filter/数字滤波器/} 目录。
 
-\medskip \textbf{本章涉及到的实验内容：}
+\medskip 本章涉及到的实验内容：
 \begin{enumerate}
 \item 滑动平均滤波；
 \item 一阶低通滤波；
@@ -185,7 +185,7 @@ filter->errorCovariance = (1.0f - kalmanGain) * predictedCovariance;
 \caption{尖峰输入时的 PC 滤波结果} \label{tab:filter-pc-result}
 \begin{tabular}{lllll}
 \toprule
-\textbf{原始值} & \textbf{滑动平均} & \textbf{一阶低通} & \textbf{中值} & \textbf{卡尔曼} \\
+原始值 & 滑动平均 & 一阶低通 & 中值 & 卡尔曼 \\
 \midrule
 24.000 & 13.550 & 13.519 & 10.200 & 13.691 \\
 \bottomrule
@@ -197,82 +197,87 @@ filter->errorCovariance = (1.0f - kalmanGain) * predictedCovariance;
 独立断言还验证了滑动平均的启动阶段、一阶低通的递推结果、中值窗口排序、一维卡尔曼增益和非法初始化参数，断言均正常通过。
 
 % ---------------------------------------------------------------------
-\section{单片机移植实验}
+\section{实验报告：数字滤波器移植与验证}
 
-本节预留四种滤波器在 STM32 开发板上的移植与实测内容。移植实验应让原始数据和滤波数据使用同一采样时刻，避免把任务调度误差误认为滤波误差。
+\subsection{实验基本信息}
 
-\subsection{硬件接口预留}
+MCU 型号：\LabFillLine[3.5cm] \quad 工作主频：\LabFillLine[3.5cm]
+
+采样周期：\LabFillLine[3.5cm] \quad 信号类型：\LabFillLine[3.5cm]
+
+滑动平均窗口长度：\LabFillLine[3.5cm] \quad 一阶低通系数 $\alpha$：\LabFillLine[3.5cm]
+
+中值滤波窗口大小：\LabFillLine[3.5cm] \quad 卡尔曼 $Q$ / $R$：\LabFillLine[3.5cm]
+
+\subsection{实验目的}
+\begin{enumerate}
+\item 掌握四种数字滤波器（滑动平均、一阶低通、中值、一维卡尔曼）在单片机上的移植与配置方法；
+\item 理解不同滤波器的适用场景，能够根据噪声类型和响应要求选择合适的算法；
+\item 对比实测数据，观察各滤波器对随机噪声、脉冲尖峰和阶跃变化的抑制效果与响应延迟。
+\end{enumerate}
+
+\subsection{实验原理}
+数字滤波器在采样时刻对输入序列进行运算，输出平滑后的估计值。滑动平均利用窗口内数据的算术平均值削弱随机噪声；一阶低通通过反馈系数 $\alpha$ 控制新旧数据的权重；中值滤波通过排序取中值有效抑制孤立脉冲；卡尔曼滤波基于状态模型和噪声统计特性，动态调整增益，在平滑性与跟随性之间取得最优平衡。四种滤波器的选择取决于信号的动态特性和噪声分布。
+
+\subsection{硬件连接}
+
+\LabPasteBox{数字滤波器硬件连接}{粘贴传感器与开发板连接的图片，标注信号源、ADC 输入引脚和公共地。}{fig:ch11-filter-hardware}
+
+\subsection{关键代码}
+
+\LabPasteBox{四种滤波器的初始化、更新与比较代码}{粘贴滤波器状态结构体定义、各滤波器的更新函数调用、以及同时输出原始值与滤波值的完整代码片段。}{fig:ch11-filter-code}
+
+\subsection{实验步骤}
+\begin{enumerate}
+\item 将传感器（或信号发生器）接入开发板 ADC 输入，确认量程和直流偏置，设置采样周期（如 10ms）。
+\item 将 `digital\_filter.c` 与 `digital\_filter.h` 加入工程，分别创建四种滤波器的状态结构体实例。
+\item 编写采样任务，在每次 ADC 转换完成后依次调用四种滤波器的更新函数，确保所有滤波器使用同一个原始采样值。
+\item 通过串口同时输出原始值、滑动平均值、一阶低通值、中值和卡尔曼值，记录约 100 个采样点的数据。
+\item 分别测试三种典型信号场景：① 平稳信号叠加随机噪声；② 平稳信号叠加偶发尖峰；③ 阶跃变化（如信号突变）。
+\item 调整各滤波器参数（窗口长度、$\alpha$、中值窗口大小、卡尔曼 $Q$ 和 $R$），观察输出曲线变化，记录参数调整对平滑性和响应延迟的影响。
+\item 统计各滤波器结构的 RAM 占用，评估在资源受限 MCU 上的可行性。
+\end{enumerate}
+
+\subsection{实验现象与数据记录}
 
 \begin{table}[htbp]
 \centering
-\caption{数字滤波器单片机移植接口记录表} \label{tab:filter-mcu-interface}
-\begin{tabularx}{\textwidth}{lllX}
+\caption{四种滤波器在不同信号场景下的实测结果}
+\label{tab:ch11-filter-record}
+\begin{tabularx}{\textwidth}{p{2.2cm}p{2.0cm}p{2.2cm}p{2.2cm}X}
 \toprule
-\textbf{项目} & \textbf{计划接口} & \textbf{当前配置} & \textbf{实测备注} \\
+信号场景 & 滤波器类型 & 输出均方差 & 阶跃响应时间(ms) & 尖峰残留幅值 \\
 \midrule
-信号来源 & ADC 或数字传感器 & 待选择 & 记录量程与噪声范围 \\
-采样周期 & 定时器 & 待选择 & 记录实际采样频率 \\
-数据输出 & 串口 & 待选择 & 同步输出原始值与滤波值 \\
-滤波对象 & 温度、压力或距离 & 待选择 & 记录真实变化速度 \\
+\multirow{4}{*}{随机噪声} & 滑动平均 & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+ & 一阶低通 & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+ & 中值滤波 & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+ & 卡尔曼滤波 & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+\midrule
+\multirow{4}{*}{脉冲尖峰} & 滑动平均 & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+ & 一阶低通 & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+ & 中值滤波 & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+ & 卡尔曼滤波 & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
 \bottomrule
 \end{tabularx}
 \end{table}
 
-\subsection{移植步骤}
+\LabPasteBox{滤波器实测波形对比}{粘贴串口绘图工具（如 SerialPlot、Python）绘制的原始值与四种滤波输出曲线截图。}{fig:ch11-filter-result}
 
-\begin{enumerate}
-\item 把 \texttt{digital\_filter.c} 与 \texttt{digital\_filter.h} 加入单片机工程；
-\item 根据传感器变化速度确定采样周期，并使用定时器或数据就绪中断触发采样；
-\item 分别创建四种滤波器状态，禁止多个信号通道共用同一个状态结构体；
-\item 同时输出原始值与滤波值，观察尖峰抑制、随机噪声和响应延迟；
-\item 根据实测噪声调整窗口长度、低通系数、过程噪声和测量噪声；
-\item 统计结构体数量与数组容量，确认静态 RAM 占用没有超过芯片限制。
-\end{enumerate}
+\subsection{结果分析}
 
-采样任务可以按下面的结构接入现有工程：
+针对随机噪声，抑制效果最好的滤波器及参数：\LabFillLine[6cm]
 
-\begin{lstlisting}[style=c]
-/**
-  * @brief  采集传感器数据并更新四种滤波结果。
-  * @param  无。
-  * @retval 无。
-  * @note   串口发送应放在低优先级任务，避免阻塞采样。
-  */
-void Filter_AppTaskRun(void)
-{
-    float rawValue;
+针对脉冲尖峰，抑制效果最好的滤波器及参数：\LabFillLine[6cm]
 
-    /* 所有滤波器处理同一个采样值，便于比较结果 */
-    rawValue = Sensor_ReadValue();
-    movingAverageValue = Filter_MovingAverageUpdate(&movingAverage, rawValue);
-    lowPassValue = Filter_LowPassUpdate(&lowPass, rawValue);
-    medianValue = Filter_MedianUpdate(&median, rawValue);
-    kalmanValue = Filter_KalmanUpdate(&kalman, rawValue);
-}
-\end{lstlisting}
+阶跃响应最快的滤波器及其延迟时间：\LabFillLine[6cm]
 
-\subsection{实测记录预留}
+各滤波器 RAM 占用总和（字节）：\LabFillLine[6cm]
 
-\begin{table}[htbp]
-\centering
-\caption{数字滤波器单片机实测结果记录表} \label{tab:filter-mcu-result}
-\begin{tabular}{llll}
-\toprule
-\textbf{滤波方法} & \textbf{参数} & \textbf{噪声范围} & \textbf{响应延迟} \\
-\midrule
-滑动平均 & 待记录 & 待记录 & 待记录 \\
-一阶低通 & 待记录 & 待记录 & 待记录 \\
-中值滤波 & 待记录 & 待记录 & 待记录 \\
-卡尔曼滤波 & 待记录 & 待记录 & 待记录 \\
-\bottomrule
-\end{tabular}
-\end{table}
+\subsection{实验总结}
 
-\begin{figure}[htbp]
-\centering
-\fbox{\parbox[c][4.0cm][c]{0.82\textwidth}{\centering 此处预留开发板连接照片与原始数据、滤波数据实测曲线}}
-\caption{数字滤波器单片机移植实验记录预留} \label{fig:filter-mcu-result}
-\end{figure}
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]
 
 % ---------------------------------------------------------------------
 \section{完整示例代码}

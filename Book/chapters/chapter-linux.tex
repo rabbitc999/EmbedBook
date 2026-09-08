@@ -1,0 +1,944 @@
+\chapter{Linux简单查询手册与转行建议} \label{ch:linux}
+
+嵌入式开发并不只有单片机。K230、RK3588、树莓派等平台都要运行 Linux，现代工具链（GCC、 CMake、Git、串口与网络调试）也大量依赖 Linux 环境。对只会 Keil 和 Windows 的开发者来说， Linux 第一次接触可能很陌生，但只要掌握文件、文本、进程、网络四类命令，再学会 GCC 与 CMake，就能立刻开始做嵌入式 Linux 开发。
+
+\medskip 本章涉及到的实验内容：
+\begin{enumerate}
+\item Linux 虚拟机安装与基本命令；
+\item GCC 单文件与多文件编译；
+\item Makefile 自动构建；
+\item CMake 工程构建；
+\item 测试环节（由读者自行完成）。
+\end{enumerate}
+
+% ---------------------------------------------------------------------
+% 以下为 Linux 命令全参数详解
+本章下面将 Linux 常用命令参数进行全方位详解，涵盖文件操作、文本处理、进程管理、网络工具及 Shell 编程语法。所有示例均可在 Ubuntu 或 CentOS 下验证。
+
+\section{文件与目录操作}
+
+\subsection{\texttt{ls} —— 列出目录内容} 语法：\texttt{ls [选项] [路径]}
+
+高频参数：
+\begin{itemize}
+\item \texttt{-l}：长格式（权限、链接数、所有者、组、大小、时间、文件名）。
+\item \texttt{-a}：显示所有文件（含 \texttt{.} 开头的隐藏文件）。
+\item \texttt{-A}：显示所有文件，但不显示 \texttt{.} 和 \texttt{..}。
+\item \texttt{-h}：人类可读大小（1K、234M、2G）。
+\item \texttt{-t}：按修改时间从新到旧排序。
+\item \texttt{-r}：反转排序。
+\item \texttt{-S}：按文件大小从大到小排序。
+\item \texttt{-R}：递归子目录。
+\item \texttt{-i}：显示 inode 号。
+\item \texttt{-d}：仅列出目录本身（与 \texttt{-l} 联用）。
+\item \texttt{-F}：在文件名后添加标识（\texttt{/} 目录，\texttt{*} 可执行，\texttt{@} 符号链接）。
+\item \texttt{-1}：每行一个文件。
+\item \texttt{--color=auto}：颜色区分文件类型。
+\end{itemize}
+
+技巧：
+\begin{itemize}
+\item \texttt{ls -lath}：按时间倒序、显示所有、人类可读、长格式。
+\item \texttt{ls -ldh */}：查看当前目录下所有目录的大小。
+\item \texttt{ls -lSrh}：按大小倒序，配合 \texttt{head} 找最大文件。
+\end{itemize}
+
+示例：
+\begin{lstlisting}[language=bash]
+	ls -lht /etc/*.conf
+	ls -ld $(find . -maxdepth 1 -type d)
+	ls -lt | head -11
+\end{lstlisting}
+
+注意：文件名含空格时建议使用 \texttt{--quoting-style=shell}。
+
+\subsection{\texttt{cd} —— 切换目录} 语法：\texttt{cd [目标路径]}
+
+特殊符号：
+\begin{itemize}
+\item \texttt{\string~}：家目录。
+\item \texttt{-}：上一次所在目录（非常实用）。
+\item \texttt{..}：上级目录。
+\item \texttt{.}：当前目录。
+\item \texttt{/}：根目录。
+\end{itemize}
+
+环境变量：\texttt{CDPATH} 可设置查找目录列表。
+
+示例：
+\begin{lstlisting}[language=bash]
+	cd /var/log
+	cd ../tmp
+	cd -        # 回到 /var/log
+	cd ~
+\end{lstlisting}
+
+注意：\texttt{cd} 是 shell 内建，用 \texttt{help cd} 查看帮助；目录以 \texttt{-} 开头时用 \texttt{cd ./-dirname}。
+
+\subsection{\texttt{cp} —— 复制文件或目录} 语法：\texttt{cp [选项] 源 目标}
+
+高频参数：
+\begin{itemize}
+\item \texttt{-r} / \texttt{-R}：递归复制目录（必需）。
+\item \texttt{-p}：保留属性（时间戳、权限、所有者）。
+\item \texttt{-i}：覆盖前提示。
+\item \texttt{-f}：强制覆盖（危险）。
+\item \texttt{-u}：增量复制（源更新或目标不存在）。
+\item \texttt{-a}：归档模式（\texttt{-dpR}），适合备份。
+\item \texttt{-s}：创建符号链接。
+\item \texttt{-l}：创建硬链接。
+\item \texttt{-v}：显示过程。
+\item \texttt{-b}：覆盖前备份（加 \texttt{\string~}）。
+\item \texttt{-n}：不覆盖已有文件。
+\end{itemize}
+
+进阶：
+\begin{itemize}
+\item \texttt{cp -au}：增量备份。
+\item \texttt{cp -al}：快速创建硬链接副本（节省空间，但修改会同步）。
+\item \texttt{cp --parents}：保留目录结构。
+\end{itemize}
+
+示例：
+\begin{lstlisting}[language=bash]
+	cp -a /data/backup /mnt/backup
+	cp -i *.conf /etc/
+	cp -ru ./src/* ./dst/
+	cp -al /var/www /var/www_snapshot
+\end{lstlisting}
+
+注意：目标已存在目录时，\texttt{cp -r src dest} 会在 \texttt{dest} 下创建 \texttt{src} 子目录；若想合并内容，用 \texttt{cp -r src/. dest/}。
+
+\subsection{\texttt{mv} —— 移动或重命名} 语法：\texttt{mv [选项] 源 目标}
+
+常用参数：\texttt{-i}（提示）、\texttt{-f}（强制）、\texttt{-u}（仅更新）、\texttt{-v}、\texttt{-b}（备份）、\texttt{-n}、\texttt{-t}（指定目标目录）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	mv -i report.txt final_report.txt
+	mv -v *.log /var/log/archive/
+	mv -b existing.conf new.conf
+	mv -t /backup/ *.log
+\end{lstlisting}
+
+注意：同一文件系统内移动只是改目录项，跨文件系统则复制再删除。
+
+\subsection{\texttt{rm} —— 删除文件或目录（极度危险）} 语法：\texttt{rm [选项] 目标}
+
+参数：\texttt{-r}（递归）、\texttt{-f}（强制）、\texttt{-i}（询问）、\texttt{-v}、\texttt{-d}（删空目录）、\texttt{--one-file-system}（防误删挂载点）。
+
+安全实践：
+\begin{itemize}
+\item 设置别名 \texttt{alias rm='rm -i'}。
+\item 使用 \texttt{rm -rf} 前再三确认路径。
+\item 脚本中删除变量路径前务必判断非空。
+\end{itemize}
+
+示例：
+\begin{lstlisting}[language=bash]
+	rm -ri ./temp_folder/
+	rm -f *.log
+	rm -d empty_dir
+\end{lstlisting}
+
+\subsection{\texttt{mkdir} —— 创建目录} 参数：\texttt{-p}（递归创建父目录）、\texttt{-v}、\texttt{-m}（设置权限，如 \texttt{-m 755}）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	mkdir -p /data/project/{src,bin,log,conf}
+	mkdir -p dir{1..10}
+	mkdir -m 700 secret
+\end{lstlisting}
+
+\subsection{\texttt{touch} —— 创建空文件或更新时间戳} 参数：\texttt{-a}（仅访问时间）、\texttt{-m}（仅修改时间）、\texttt{-c}（不创建文件）、\texttt{-t}（指定时间，格式 \texttt{[[CC]YY]MMDDhhmm[.ss]}）、\texttt{-d}（日期字符串）、\texttt{-r}（参考文件）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	touch main.go util.go
+	touch -m *.c
+	touch -t 202308011200.00 file.txt
+	touch -c existing.txt
+\end{lstlisting}
+
+\subsection{\texttt{ln} —— 创建链接} 参数：\texttt{-s}（软链接）、\texttt{-f}（覆盖）、\texttt{-i}、\texttt{-v}、\texttt{-n}（将链接名视为普通文件）、\texttt{-r}（相对路径软链接）。
+
+软硬链接区别：软链接可跨文件系统、可指向目录，删除源失效；硬链接不可跨文件系统、不可指向目录，删除任意链接不影响数据。
+
+示例：
+\begin{lstlisting}[language=bash]
+	ln -s /opt/app/bin/start.sh /usr/local/bin/start
+	ln /data/file.txt /backup/file.txt
+	ln -sr ./config/app.yml ./app.yml
+\end{lstlisting}
+
+注意：删除软链接用 \texttt{rm linkname}，勿加 \texttt{-r}。
+
+\section{文本查看与内容处理}
+
+\subsection{\texttt{cat} —— 连接并输出（小文件查看和拼接）} 参数：\texttt{-n}（编号）、\texttt{-b}（非空行编号）、\texttt{-s}（压缩空行）、\texttt{-E}（行尾显示 \texttt{\$}）、\texttt{-T}（Tab 显示为 \texttt{\^I}）、\texttt{-A}（显示所有控制字符）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	cat -n nginx.conf
+	cat access.log.* > all_access.log
+	cat -A data.txt
+\end{lstlisting}
+
+注意：大文件用 \texttt{less}。
+
+\subsection{\texttt{less} —— 分页查看（大文件必用）} 参数：\texttt{-N}（行号）、\texttt{-S}（截断长行）、\texttt{-g}（高亮当前匹配）、\texttt{-i}（忽略大小写）、\texttt{-F}（内容少于一屏时自动退出）、\texttt{-R}（解释 ANSI 颜色）、\texttt{-X}（退出不清屏）。
+
+快捷键：
+\begin{itemize}
+\item \texttt{空格/f}：下翻一页；\texttt{b}：上翻一页；\texttt{d/u}：半页。
+\item \texttt{/pattern}：向下搜索；\texttt{?pattern}：向上搜索；\texttt{n/N}：下一个或上一个。
+\item \texttt{g/G}：开头或末尾；\texttt{q}：退出；\texttt{F}：实时追踪（类似 \texttt{tail -f}）。
+\end{itemize}
+
+示例：
+\begin{lstlisting}[language=bash]
+	less -Ng application.log
+	less -R docker.log
+	less +F /var/log/syslog
+\end{lstlisting}
+
+\subsection{\texttt{head} —— 显示文件开头} 参数：\texttt{-n N}（前 N 行）、\texttt{-c N}（前 N 字节）、\texttt{-q}（多文件不显示文件名）、\texttt{-v}（显示文件名）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	head -n 20 access.log
+	head -c 100 binary.bin
+	head -v file1.txt file2.txt
+\end{lstlisting}
+
+\subsection{\texttt{tail} —— 显示文件末尾（看日志神器）} 参数：\texttt{-n N}（末尾 N 行）、\texttt{-f}（实时追踪）、\texttt{-F}（按文件名追踪，文件轮转也能继续）、\texttt{-c N}、\texttt{--pid=PID}（进程结束自动退出）、\texttt{--retry}。
+
+示例：
+\begin{lstlisting}[language=bash]
+	tail -f /var/log/syslog
+	tail -n 100 -F app.log
+	tail -f /var/log/nginx/*.log
+	tail -f app.log | grep --line-buffered ERROR
+\end{lstlisting}
+
+\subsection{\texttt{grep} —— 全局正则搜索（文本过滤之王）} 语法：\texttt{grep [选项] '正则模式' 文件}
+
+关键参数：
+\begin{itemize}
+\item \texttt{-i}：忽略大小写；\texttt{-v}：反向匹配；\texttt{-w}：匹配整个单词。
+\item \texttt{-E}：扩展正则（推荐）；\texttt{-P}：Perl 正则；\texttt{-F}：固定字符串。
+\item \texttt{-r}：递归；\texttt{-l}：只列出文件名；\texttt{-o}：只输出匹配部分；\texttt{-n}：行号；\texttt{-c}：计数。
+\item \texttt{-A/-B/-C}：上下文行。
+\item \texttt{--include}/\texttt{--exclude}：文件过滤。
+\item \texttt{--color=auto}：高亮。
+\end{itemize}
+
+示例：
+\begin{lstlisting}[language=bash]
+	grep -rni --include='*.conf' 'timeout' /etc/
+	grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' access.log | sort | uniq -c
+	grep -C 3 'FATAL' app.log
+\end{lstlisting}
+
+性能提示：大文件用 \texttt{-F} 或 \texttt{-m} 限制输出。
+
+\subsection{\texttt{awk} —— 文本分析与格式化（切列神器）} 语法：\texttt{awk [选项] '模式{动作}' 文件}
+
+常用选项：\texttt{-F}（字段分隔符）、\texttt{-v}（变量赋值）、\texttt{-f}（脚本文件）。
+
+内置变量：\texttt{\$0}（整行）、\texttt{\$1...\$NF}（列）、\texttt{NR}（行号）、\texttt{NF}（列数）、\texttt{FS/OFS}（输入与输出分隔符）、\texttt{RS/ORS}（记录分隔符）、\texttt{FILENAME}。
+
+常见用法：
+\begin{itemize}
+\item 打印列：\texttt{awk '\{print \$1, \$3\}'}
+\item 条件过滤：\texttt{awk '\$3 > 100'}
+\item 求和：\texttt{awk '\{sum += \$1\} END \{print sum\}'}
+\item 统计：\texttt{awk '\{count[\$1]++\} END \{for (i in count) print i, count[i]\}'}
+\end{itemize}
+
+示例：
+\begin{lstlisting}[language=bash]
+	ps aux | awk '{print $2, $11}'
+	awk -F: '{print $1, $6}' /etc/passwd
+	awk '{sum += $10} END {print "Total:", sum}' access.log
+	awk '{ip[$1]++} END {for (i in ip) print i, ip[i]}' access.log
+	awk 'length($0) > 80' file.txt
+\end{lstlisting}
+
+\subsection{\texttt{sed} —— 流编辑器（替换、插入和删除）} 语法：\texttt{sed [选项] '动作' 文件}
+
+选项：\texttt{-i}（直接修改，建议加备份后缀）、\texttt{-n}（安静模式）、\texttt{-e}（多点编辑）、\texttt{-E}（扩展正则）、\texttt{-f}（脚本文件）。
+
+动作：
+\begin{itemize}
+\item \texttt{s/旧/新/g}：替换（\texttt{g} 全局，数字指定第几个，\texttt{p} 打印）。
+\item \texttt{d}：删除匹配行；\texttt{p}：打印（配合 \texttt{-n}）。
+\item \texttt{a\textbackslash}：行后追加；\texttt{i\textbackslash}：行前插入；\texttt{c\textbackslash}：替换整行。
+\item \texttt{=}：打印行号；\texttt{y/源/目标/}：字符转换。
+\end{itemize}
+
+地址范围：\texttt{N}（第 N 行）、\texttt{N,M}、\texttt{/pattern/}、\texttt{/start/,/end/}、\texttt{\$}（最后一行）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	sed 's/8080/9090/g' config.yml
+	sed -i.bak 's/localhost/127.0.0.1/g' /etc/hosts
+	sed -i '/^#/d; /^$/d' nginx.conf
+	sed -n '/ERROR/p' app.log
+	sed '3a Hello World' file.txt
+	sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}/DATE/g' file.txt
+\end{lstlisting}
+
+\subsection{\texttt{sort} —— 排序} 参数：\texttt{-n}（数值排序）、\texttt{-r}（反向）、\texttt{-k}（指定列）、\texttt{-t}（分隔符）、\texttt{-u}（去重）、\texttt{-h}（人类可读数字排序）、\texttt{-m}（合并已排序文件）、\texttt{-o}（输出文件）、\texttt{-c}（检查是否已排序）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	sort -t: -k3 -n /etc/passwd
+	ls -lh | sort -hrk 5
+	sort -u file.txt
+	sort -rnk 2 data.txt
+\end{lstlisting}
+
+\subsection{\texttt{uniq} —— 去重与统计（必须先排序）} 参数：\texttt{-c}（计数）、\texttt{-d}（仅重复行）、\texttt{-u}（仅唯一行）、\texttt{-f}（跳过字段）、\texttt{-s}（跳过字符）、\texttt{-w}（比较前 N 字符）、\texttt{-i}（忽略大小写）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	cat access.log | awk '{print $1}' | sort | uniq -c | sort -rn
+	sort file.txt | uniq -d
+	sort file.txt | uniq -u
+\end{lstlisting}
+
+\subsection{\texttt{wc} —— 统计行、词和字符} 参数：\texttt{-l}（行数）、\texttt{-w}（单词数）、\texttt{-c}（字节数）、\texttt{-m}（字符数，多字节）、\texttt{-L}（最长行长度）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	wc -l app.log
+	wc -l *.py
+	wc -w report.txt
+\end{lstlisting}
+
+\subsection{\texttt{cut} —— 按列或字符切割} 参数：\texttt{-d}（分隔符，默认 Tab）、\texttt{-f}（字段列表，如 \texttt{-f1,3}）、\texttt{-c}（字符范围，如 \texttt{-c1-5}）、\texttt{--complement}（取补集）、\texttt{-s}（不输出无分隔符的行）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	cut -d: -f1,6 /etc/passwd
+	cut -c1-5 file.txt
+	cut -d' ' -f2- file.txt
+	cut -d: --complement -f3 /etc/passwd
+\end{lstlisting}
+
+\subsection{\texttt{tr} —— 字符转换、压缩、删除} 参数：\texttt{-d}（删除指定字符）、\texttt{-s}（压缩连续重复字符）、\texttt{-c}（取补集）、\texttt{-t}（截断）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	cat file.txt | tr 'a-z' 'A-Z'
+	echo "abc123def" | tr -d '0-9'
+	echo "a    b   c" | tr -s ' '
+	cat file.txt | tr '\n' ' '
+	tr '[:lower:]' '[:upper:]' < file.txt
+\end{lstlisting}
+
+\subsection{\texttt{xargs} —— 将标准输入转为命令行参数} 参数：\texttt{-I}（替换符，如 \texttt{-I \{\}}）、\texttt{-n}（每次传递 N 个参数）、\texttt{-p}（提示确认）、\texttt{-0}（NUL 分隔，配合 \texttt{find -print0}）、\texttt{-P}（并行进程数）、\texttt{-L}（每次 N 行）、\texttt{-t}（打印命令）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	find . -name "*.log" -print0 | xargs -0 rm -f
+	ls *.txt | xargs -I {} mv {} {}.bak
+	cat urls.txt | xargs -n 1 -P 10 wget -c
+	echo "file1 file2" | xargs -n 1 touch
+\end{lstlisting}
+
+\section{查找与定位}
+
+\subsection{\texttt{find} —— 文件系统最强搜索器} 语法：\texttt{find [路径] [表达式]}
+
+常用测试：
+\begin{itemize}
+\item \texttt{-name}/\texttt{-iname}：文件名匹配。
+\item \texttt{-type f/d/l}：类型。
+\item \texttt{-size +100M}：大小。
+\item \texttt{-mtime}/\texttt{-mmin}：修改时间。
+\item \texttt{-user}/\texttt{-group}/\texttt{-perm}：用户、组和权限。
+\item \texttt{-empty}：空文件或空目录。
+\end{itemize}
+
+常用操作：\texttt{-print}、\texttt{-print0}、\texttt{-exec command \{\} \textbackslash;}（或 \texttt{+}）、\texttt{-delete}、\texttt{-ls}。
+
+逻辑组合：\texttt{-a}（与）、\texttt{-o}（或）、\texttt{!}（非）、括号。
+
+示例：
+\begin{lstlisting}[language=bash]
+	find / -xdev -type f -size +1G -exec ls -lh {} \; 2>/dev/null
+	find . -name '*.tmp' -delete
+	find . -path ./node_modules -prune -o -name '*.js' -print
+\end{lstlisting}
+
+性能提示：使用 \texttt{-maxdepth}、\texttt{-prune} 缩小范围。
+
+\section{进程、系统与网络}
+
+\subsection{\texttt{ps} —— 显示进程快照} 常用组合：
+\begin{itemize}
+\item \texttt{ps aux}：BSD 风格，显示所有进程。
+\item \texttt{ps -ef}：System V 风格。
+\item \texttt{ps -e --forest}：进程树。
+\item \texttt{ps -o pid,ppid,cmd}：自定义列。
+\item \texttt{ps -C nginx}：按命令名查找。
+\item \texttt{--sort=-\%mem}：按内存降序。
+\end{itemize}
+
+输出列（aux）：USER、PID、\%CPU、\%MEM、VSZ、RSS、TTY、STAT、START、TIME、COMMAND。
+
+示例：
+\begin{lstlisting}[language=bash]
+	ps aux | grep nginx
+	ps -ef --forest
+	ps aux --sort=-%mem | head -6
+	ps -u mysql
+	ps -fp 1234
+\end{lstlisting}
+
+\subsection{\texttt{top} 与 \texttt{htop} —— 实时进程监控} 参数：\texttt{-p PID}、\texttt{-u 用户}、\texttt{-b}（批处理）、\texttt{-n 次数}、\texttt{-d 秒}、\texttt{-H}（显示线程）。
+
+交互快捷键：\texttt{P}（CPU排序）、\texttt{M}（内存）、\texttt{N}（PID）、\texttt{T}（时间）、\texttt{k}（杀进程）、\texttt{r}（调整优先级）、\texttt{q}（退出）、\texttt{c}（完整命令）、\texttt{1}（各CPU核心）、\texttt{z}（彩色）、\texttt{f}（选择字段）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	top -u mysql
+	top -b -n 1 > top_output.txt
+\end{lstlisting}
+
+\subsection{\texttt{kill} —— 终止进程} 常用信号：
+\begin{itemize}
+\item \texttt{-15} (SIGTERM)：优雅终止（默认）。
+\item \texttt{-9} (SIGKILL)：强制杀死。
+\item \texttt{-1} (SIGHUP)：重新加载配置。
+\item \texttt{-2} (SIGINT)：类似 Ctrl+C。
+\item \texttt{-19} (SIGSTOP)：暂停；\texttt{-18} (SIGCONT)：继续。
+\end{itemize}
+
+示例：
+\begin{lstlisting}[language=bash]
+	kill -15 12345
+	kill -9 12345
+	ps aux | grep java | awk '{print $2}' | xargs kill -15
+	kill -1 $(cat /var/run/nginx.pid)
+\end{lstlisting}
+
+\subsection{\texttt{df} —— 查看磁盘分区空间} 参数：\texttt{-h}（人类可读）、\texttt{-H}（1000进制）、\texttt{-T}（文件系统类型）、\texttt{-i}（inode使用情况）、\texttt{--total}、\texttt{-a}（所有）、\texttt{-x}（排除类型）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	df -hT
+	df -i
+	df -h /var/log
+\end{lstlisting}
+
+\subsection{\texttt{du} —— 查看文件和目录的磁盘占用} 参数：\texttt{-s}（汇总）、\texttt{-h}、\texttt{-a}（显示所有文件）、\texttt{-c}（显示总和）、\texttt{-d}（递归深度）、\texttt{-b/-k/-m}（单位）、\texttt{--exclude}。
+
+示例：
+\begin{lstlisting}[language=bash]
+	du -sh * | sort -rh
+	du -h / | sort -rh | head -10
+	du -sh .
+	du -h -d 2 /var
+\end{lstlisting}
+
+\subsection{\texttt{free} —— 查看内存使用} 参数：\texttt{-h}、\texttt{-m/-g}、\texttt{-s}（刷新间隔）、\texttt{-t}（总计行）。
+
+列说明：total、used、free、shared、buff/cache、available（真正可用）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	free -h
+	free -hs 2
+\end{lstlisting}
+
+\subsection{\texttt{ss} —— 查看网络端口与连接（推荐）} 参数：\texttt{-t}（TCP）、\texttt{-u}（UDP）、\texttt{-l}（仅监听）、\texttt{-n}（数字显示）、\texttt{-p}（显示进程）、\texttt{-a}（所有）、\texttt{-r}（解析主机名）、\texttt{-s}（统计摘要）、\texttt{-4/-6}、\texttt{-o}（计时器）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	ss -tlnp
+	ss -tan | awk '{print $1}' | sort | uniq -c
+	ss -tlnp | grep :8080
+\end{lstlisting}
+
+（兼容 \texttt{netstat -tunlp}）
+
+\subsection{\texttt{curl} —— 发送 HTTP/HTTPS 请求（接口测试）} 常用参数：
+\begin{itemize}
+\item \texttt{-I}：仅响应头（HEAD）。
+\item \texttt{-o/-O}：保存文件。
+\item \texttt{-L}：跟随重定向。
+\item \texttt{-v}：详细过程。
+\item \texttt{-H}：自定义请求头。
+\item \texttt{-d}：POST 数据（默认 \texttt{application/x-www-form-urlencoded}）。
+\item \texttt{-X}：指定方法。
+\item \texttt{-F}：表单上传文件。
+\item \texttt{-u}：基本认证。
+\item \texttt{-x}：代理。
+\item \texttt{--limit-rate}：限速。
+\item \texttt{--connect-timeout}/\texttt{--max-time}：超时。
+\item \texttt{-s}（静默）、\texttt{-S}（显示错误）、\texttt{-k}（忽略 SSL）、\texttt{-e}（Referer）、\texttt{-A}（User-Agent）。
+\end{itemize}
+
+示例：
+\begin{lstlisting}[language=bash]
+	curl -I https://example.com
+	curl -X POST -H "Content-Type: application/json" -d '{"name":"test"}' http://localhost:8080/api
+	curl -L -o ubuntu.iso https://releases.ubuntu.com/22.04/ubuntu-22.04-desktop-amd64.iso
+	curl -F "file=@/tmp/test.txt" http://localhost/upload
+	curl -u admin:secret https://api.example.com/data
+	curl -v https://example.com
+\end{lstlisting}
+
+\subsection{\texttt{wget} —— 下载文件} 参数：\texttt{-c}（断点续传）、\texttt{-O}（输出文件名）、\texttt{-P}（目录）、\texttt{-q}（安静）、\texttt{-t}（重试次数）、\texttt{-i}（批量下载列表）、\texttt{--limit-rate}、\texttt{--user-agent}、\texttt{--post-data}、\texttt{-r}（递归）、\texttt{-np}（不进入上层）、\texttt{-A}（后缀过滤）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	wget -c https://example.com/bigfile.zip
+	wget -i urls.txt
+	wget --limit-rate=200k https://example.com/file.iso
+\end{lstlisting}
+
+\section{权限与打包}
+
+\subsection{\texttt{chmod} —— 修改权限} 数字法：4=读，2=写，1=执行，组合如 755、644。 符号法：\texttt{u/g/o/a}、\texttt{+/-/=}、\texttt{r/w/x}。
+
+参数：\texttt{-R}（递归）、\texttt{-c/-v}（显示变化）、\texttt{--reference}（参考文件）。
+
+特殊位：SUID (4)、SGID (2)、粘滞位 (1)。
+
+示例：
+\begin{lstlisting}[language=bash]
+	chmod +x deploy.sh
+	chmod 644 file.txt
+	find . -type d -exec chmod 755 {} \;
+	find . -type f -exec chmod 644 {} \;
+	chmod u+s /usr/bin/passwd
+\end{lstlisting}
+
+\subsection{\texttt{chown} —— 修改所有者和组} 参数：\texttt{-R}、\texttt{--from}（条件修改）、\texttt{-v/-c}。
+
+示例：
+\begin{lstlisting}[language=bash]
+	chown www-data:www-data index.html
+	chown :root file.txt
+	chown -R user:admin /home/user/project
+	chown --from=old new file.txt
+\end{lstlisting}
+
+\subsection{\texttt{tar} —— 打包与解包（最常用压缩工具）} 主操作：\texttt{-c}（创建）、\texttt{-x}（解包）、\texttt{-t}（列出）、\texttt{-r}（追加）、\texttt{-u}（更新）、\texttt{-d}（比较）。
+
+辅助选项：\texttt{-v}、\texttt{-f}（归档名，必须紧跟）、\texttt{-z}（gzip）、\texttt{-j}（bzip2）、\texttt{-J}（xz）、\texttt{-C}（解压目录）、\texttt{-p}（保留权限）、\texttt{--exclude}、\texttt{--exclude-vcs}、\texttt{--strip-components}、\texttt{-P}（绝对路径，不推荐）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	tar -czvf project.tar.gz ./project/
+	tar -xzvf project.tar.gz -C /tmp/deploy/
+	tar -tzvf project.tar.gz
+	tar -czvf project.tar.gz ./project --exclude='.git' --exclude='node_modules'
+	tar -xzf archive.tar.gz --strip-components=1 -C /opt/
+\end{lstlisting}
+
+\section{Shell 编程核心语法（Bash）}
+
+\subsection{变量与特殊变量}
+\begin{itemize}
+\item 定义：\texttt{name="Linux"}（等号两边无空格）。
+\item 使用：\texttt{\$name} 或 \texttt{\$\{name\}}（推荐）。
+\item 只读：\texttt{readonly name}；删除：\texttt{unset name}。
+\item 特殊变量：
+\end{itemize}
+
+\begin{center}
+	\begin{tabular}{ll}
+		\toprule
+		变量 & 含义 \\
+		\midrule
+		\texttt{\$0} & 脚本名称 \\
+		\texttt{\$1-\$9} & 位置参数 \\
+		\texttt{\$\#} & 参数个数 \\
+		\texttt{\$*} & 所有参数（字符串） \\
+		\texttt{\$@} & 所有参数（独立） \\
+		\texttt{\$?} & 上一条命令退出状态 \\
+		\texttt{\$\$} & 当前 shell PID \\
+		\texttt{\$!} & 后台最后进程 PID \\
+		\texttt{\$-} & 当前 shell 选项 \\
+		\bottomrule
+	\end{tabular}
+\end{center}
+
+
+示例：
+\begin{lstlisting}[language=bash]
+	#!/bin/bash
+	echo "脚本名: $0"
+	echo "第一个参数: $1"
+	echo "参数个数: $#"
+	shift
+	echo "shift 后第一个参数: $1"
+\end{lstlisting}
+
+\subsection{条件测试} 推荐使用 \texttt{[[ 条件 ]]}。
+
+文件测试：\texttt{-f}（普通文件）、\texttt{-d}（目录）、\texttt{-e}（存在）、\texttt{-r/-w/-x}、\texttt{-s}（非空）、\texttt{-L}（符号链接）、\texttt{-nt/-ot}（新旧比较）。
+
+字符串测试：\texttt{-z}（空）、\texttt{-n}（非空）、\texttt{==}/\texttt{!=}、\texttt{<}/\texttt{>}（字典序）。
+
+数值比较：\texttt{-eq}、\texttt{-ne}、\texttt{-gt}、\texttt{-lt}、\texttt{-ge}、\texttt{-le}。
+
+逻辑：\texttt{!}、\texttt{-a/-o}（在 \texttt{[ ]} 中）、\texttt{\&\&}/\texttt{||}（在 \texttt{[[ ]] }中）。
+
+示例：
+\begin{lstlisting}[language=bash]
+	if [[ -f "/etc/passwd" && -r "/etc/passwd" ]]; then
+	echo "文件存在且可读"
+	fi
+	str="hello"
+	if [[ -n $str && $str == "hello" ]]; then
+	echo "匹配"
+	fi
+	num=10
+	if (( num > 5 )); then
+	echo "大于5"
+	fi
+\end{lstlisting}
+
+\subsection{流程控制} if 语句：
+\begin{lstlisting}[language=bash]
+	if 条件; then
+	命令
+	elif 条件; then
+	命令
+	else
+	命令
+	fi
+\end{lstlisting}
+
+for 循环：
+\begin{lstlisting}[language=bash]
+	for i in 1 2 3 4 5; do echo $i; done
+	for i in {1..10}; do echo $i; done
+	for ((i=1; i<=10; i++)); do echo $i; done
+	for file in *.txt; do echo "Processing $file"; done
+\end{lstlisting}
+
+while 与 until：
+\begin{lstlisting}[language=bash]
+	while 条件; do 命令; done
+	until 条件; do 命令; done
+\end{lstlisting}
+
+case 分支：
+\begin{lstlisting}[language=bash]
+	case $1 in
+	start) echo "启动..." ;;
+	stop)  echo "停止..." ;;
+	*)     echo "Usage: $0 {start|stop}"; exit 1 ;;
+	esac
+\end{lstlisting}
+
+循环控制：\texttt{break}、\texttt{continue}。
+
+\subsection{函数与算术运算} 函数：
+\begin{lstlisting}[language=bash]
+	function add() {
+		local a=$1
+		local b=$2
+		echo $((a + b))
+		return 0
+	}
+	result=$(add 3 5)
+	echo "结果: $result"
+\end{lstlisting}
+
+算术运算：\texttt{\$((表达式))}、\texttt{let}、\texttt{expr}。
+\begin{lstlisting}[language=bash]
+	a=10; b=20
+	sum=$((a + b))
+	((a++))
+	let "b+=5"
+	c=$(expr $a + $b)
+\end{lstlisting}
+
+\subsection{数组}
+\begin{lstlisting}[language=bash]
+	arr=(apple banana cherry)
+	echo ${arr[0]}
+	echo ${arr[@]}
+	echo ${#arr[@]}
+	arr[3]="date"
+	unset arr[1]
+\end{lstlisting}
+
+\subsection{调试技巧} 在脚本开头添加：
+\begin{lstlisting}[language=bash]
+	set -euxo pipefail
+\end{lstlisting}
+含义：\texttt{-e}（出错退出）、\texttt{-u}（未定义变量报错）、\texttt{-x}（打印命令）、\texttt{-o pipefail}（管道失败即失败）。
+
+也可使用 \texttt{trap} 捕获信号。
+
+\section{高级黄金组合拳（拿来即用）}
+\begin{itemize}
+\item 批量杀死 Java 进程：\\ \texttt{ps aux | grep 'java' | awk '\{print \$2\}' | xargs kill -9}
+\item 查看某端口占用并杀进程：\\ \texttt{kill -9 \$(lsof -t -i:8080)} \\ \texttt{ss -tlnp | grep :8080 | awk '\{print \$7\}' | cut -d/ -f1 | xargs kill -9}
+\item 统计日志中状态码分布：\\ \texttt{cat access.log | awk '\{print \$9\}' | sort | uniq -c | sort -rn}
+\item 清理 7 天前大于 100M 的日志：\\ \texttt{find /var/log -name "*.log" -mtime +7 -size +100M -exec rm -f \{\} \textbackslash;}
+\item 实时监控日志错误数：\\ \texttt{tail -f app.log | grep --line-buffered ERROR | wc -l}
+\item 不落地传输整个文件夹到远程：\\ \texttt{tar -czvf - ./folder | ssh user@ip "tar -xzvf - -C /target"}
+\item 提取所有 IP 并去重：\\ \texttt{grep -oE '[0-9]\{1,3\}\textbackslash.[0-9]\{1,3\}\textbackslash.[0-9]\{1,3\}\textbackslash.[0-9]\{1,3\}' access.log | sort | uniq}
+\item 查找当前目录下最大的 5 个文件：\\ \texttt{find . -type f -exec ls -s \{\} \textbackslash; | sort -rn | head -5 | awk '\{print \$2\}'} \\ \texttt{du -sh * | sort -rh | head -5}
+\end{itemize}
+
+\section{GCC 使用简介}
+
+GCC 是 GNU C 编译器。以 \texttt{main.c} 为例，编译过程可以分为四步：
+
+\begin{itemize}
+\item \texttt{gcc -E main.c}：预处理，展开头文件与宏；
+\item \texttt{gcc -S main.c}：生成汇编 \texttt{main.s}；
+\item \texttt{gcc -c main.c}：汇编并生成目标文件 \texttt{main.o}；
+\item \texttt{gcc main.o -o app}：链接生成可执行文件 \texttt{app}。
+\end{itemize}
+
+常用选项：
+
+\begin{table}[htbp]
+\centering \small \caption{GCC 常用选项} \label{tab:gcc-option}
+    \begin{tabular}{lll}
+        \toprule
+        选项 & 示例 & 作用 \\
+        \midrule
+        \texttt{-o} & \texttt{gcc main.c -o app} & 指定输出文件名 \\
+        \texttt{-Wall -Wextra} & 常与 \texttt{-g} 同用 & 打开警告 \\
+        \texttt{-g} & \texttt{-g} & 生成调试信息 \\
+        \texttt{-O0/-O2/-Os} & \texttt{-O2} & 优化等级 \\
+        \texttt{-I} & \texttt{-I./inc} & 添加头文件搜索路径 \\
+        \texttt{-L/-l} & \texttt{-L./lib -lm} & 库路径与链接库 \\
+        \texttt{-D} & \texttt{-DDEBUG=1} & 定义宏 \\
+        \texttt{-std} & \texttt{-std=c11} & 指定 C 标准 \\
+        \texttt{-c} & \texttt{gcc -c a.c} & 只生成目标文件 \\
+        \bottomrule
+    \end{tabular}
+\end{table}
+
+多文件编译：
+
+\begin{lstlisting}
+gcc -Wall -Wextra -g main.c uart.c pid.c -o app
+\end{lstlisting}
+
+交叉编译时把 \texttt{gcc} 换成目标工具链，例如：
+
+\begin{lstlisting}
+arm-none-eabi-gcc -mcpu=cortex-m4 -mthumb main.c -o app.elf
+aarch64-linux-gnu-gcc main.c -o app_arm64
+\end{lstlisting}
+
+% ---------------------------------------------------------------------
+\section{Makefile 使用简介}
+
+手动输入 GCC 命令容易漏文件，Makefile 用“目标、依赖和命令”描述构建规则：
+
+\begin{lstlisting}
+CC      = gcc
+CFLAGS  = -Wall -Wextra -g
+TARGET  = app
+SRCS    = main.c uart.c pid.c
+OBJS    = $(SRCS:.c=.o)
+
+$(TARGET): $(OBJS)
+	$(CC) $(CFLAGS) $^ -o $@
+
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -f $(OBJS) $(TARGET)
+
+.PHONY: clean
+\end{lstlisting}
+
+\begin{itemize}
+\item \texttt{\$@}：目标名；
+\item \texttt{\$<}：第一个依赖；
+\item \texttt{\${\string^}}：全部依赖；
+\item \texttt{.PHONY}：告诉 make \texttt{clean} 不是真实文件。
+\end{itemize}
+
+使用时只需 \texttt{make} 构建、\texttt{make clean} 清理。Makefile 适合中小工程；工程文件变多、需要跨平台时更推荐 CMake。
+
+% ---------------------------------------------------------------------
+\section{CMake 使用简介}
+
+CMake 先生成构建系统，再调用 GCC、Make 或 Ninja。最小工程：
+
+\begin{lstlisting}
+cmake_minimum_required(VERSION 3.16)
+project(demo C)
+
+set(CMAKE_C_STANDARD 11)
+set(CMAKE_C_STANDARD_REQUIRED ON)
+
+add_executable(app
+    main.c
+    uart.c
+    pid.c
+)
+
+target_include_directories(app PRIVATE inc)
+target_compile_options(app PRIVATE -Wall -Wextra)
+\end{lstlisting}
+
+使用方式：
+
+\begin{lstlisting}
+cmake -S . -B build
+cmake --build build
+./build/app
+\end{lstlisting}
+
+\begin{itemize}
+\item \texttt{cmake -S . -B build}：指定源码目录与构建目录；
+\item \texttt{add\_executable}：生成可执行文件；
+\item \texttt{add\_library}：生成静态库和动态库；
+\item \texttt{target\_include\_directories}：添加头文件路径；
+\item 交叉编译时通过工具链文件设置编译器前缀。
+\end{itemize}
+
+CMake 的价值是“一处写 CMakeLists.txt，Windows、Linux 与单片机交叉编译都能复用”。
+
+% ---------------------------------------------------------------------
+\section{后续转行——Linux 驱动与应用开发}
+
+对从单片机转过来的开发者，最自然的第一步不是看内核源码，而是先把 RK3588 与 K230 开发板跑起来，写一个“用户空间点亮 LED”的程序，再逐步下沉到驱动层。本章的目标是“快速上手”，但 Linux 体系庞大，单靠一章命令速查远远不够。以下书目按学习路径分层整理，供读者根据自身阶段选读。
+
+\subsection*{第一阶段：命令行与系统基础}
+\begin{itemize}
+	\item 《鸟哥的 Linux 私房菜》（基础学习篇） —— 鸟哥著，人民邮电出版社。Linux 入门经典，从系统安装、文件系统到 Shell 脚本，讲解细致，适合零基础读者建立系统管理直觉。
+	\item 《Linux 命令行与 Shell 脚本编程大全》（第 3 版） —— Richard Blum 等著，人民邮电出版社。命令参考与脚本编程并重，适合作为案头工具书随时查阅。
+	\item 《Linux 就该这么学》 —— 刘遄著，人民邮电出版社。以 RHEL/CentOS 为蓝本，结合大量实例讲解常见服务配置，适合动手型读者。
+\end{itemize}
+
+\subsection*{第二阶段：Linux 应用层与网络编程}
+\begin{itemize}
+	\item 《UNIX 环境高级编程》（第 3 版，APUE） —— W. Richard Stevens 著，人民邮电出版社。系统编程的“圣经”，涵盖文件 I/O、进程控制、信号、线程、进程间通信等，C 语言开发者必读。
+	\item 《Linux C 与 C++ 一线开发实践》 —— 朱文伟等著，清华大学出版社。贴近企业一线开发实践，涵盖 Linux 文件编程、多进程、进程间通信及 Web 编程，适合从单片机转向 Linux 应用开发的读者。
+	\item 《Linux 网络编程》 —— 宋敬彬编著，清华大学出版社（“Linux 典藏大系”）。全面覆盖套接字编程、高级 I/O 函数、服务器模型等，配有教学视频与习题。
+\end{itemize}
+
+\subsection*{第三阶段：嵌入式 Linux 系统与驱动开发}
+\begin{itemize}
+	\item 《嵌入式 Linux 应用开发完全手册》 —— 韦东山著，人民邮电出版社。以项目驱动，从 U-Boot 移植、内核裁剪到驱动编写，偏重工程实操，是嵌入式 Linux 入门的首选。
+	\item 《Linux 设备驱动程序》（第 3 版，LDD3） —— Jonathan Corbet 等著，O'Reilly。驱动开发的经典教材，以实践为导向讲解字符设备、块设备、网络接口驱动，覆盖中断、DMA、内存分配等核心主题[reference:5]。虽然内核版本较老，但设计思想至今仍有效。
+	\item 《Linux 设备驱动开发详解》（第 2 版） —— 宋宝华著，人民邮电出版社。结合 Linux 内核源码，系统讲解驱动框架与实现原理，豆瓣评分 8.2，适合深入阅读。
+	\item 《Linux 设备驱动开发》（第 2 版） —— John Madieu 著，陈莉君译，人民邮电出版社。基于最新内核版本，涵盖 IIO、RTC、DMA 等子系统，理论结合大量源码示例。
+\end{itemize}
+
+\subsection*{第四阶段：Linux 内核原理（进阶）}
+\begin{itemize}
+	\item 《深入理解 Linux 内核》（第 3 版） —— Daniel P. Bovet 等著，中国电力出版社。全面剖析内核核心子系统——进程调度、内存管理、文件系统、网络栈等，适合有一定基础后深入研读。
+	\item 《Linux 内核设计与实现》（原书第 3 版，典藏版） —— Robert Love 著，机械工业出版社。篇幅精炼，行文清晰，适合快速建立内核整体框架认知。
+	\item 《图解 Linux 内核：基于 6.x》 —— 姜亚华著，机械工业出版社。2024 年出版，基于 Linux 6.x 内核，图文并茂，适合希望结合最新内核代码学习的读者。
+\end{itemize}
+
+\subsection*{选读建议}
+从单片机转向嵌入式 Linux，不必一上来就啃内核。务实的路径是：先跑通开发板、写用户空间程序（第二阶段）\(\rightarrow\) 再学 U-Boot 与内核移植（第三阶段）\(\rightarrow\) 最后按需深入驱动或内核（第四阶段）。第一阶段的命令和 Shell 脚本贯穿始终，建议边用边查，不必一次性背完。
+% ---------------------------------------------------------------------
+\section{实验报告：Linux 开发环境搭建与基础命令验证}
+
+\subsection{实验基本信息}
+
+Linux 发行版：\LabFillLine[3.5cm] \quad 内核版本：\LabFillLine[3.5cm]
+
+虚拟机软件：\LabFillLine[3.5cm] \quad 分配内存/CPU：\LabFillLine[3.5cm]
+
+GCC 版本：\LabFillLine[3.5cm] \quad CMake 版本：\LabFillLine[3.5cm]
+
+\subsection{实验目的}
+\begin{enumerate}
+\item 掌握 Linux 虚拟机的安装与基本配置方法；
+\item 熟悉 Linux 常用命令（文件操作、文本处理、进程管理、网络工具）；
+\item 掌握 GCC 单文件与多文件编译流程；
+\item 理解 Makefile 自动构建规则；
+\item 掌握 CMake 工程构建方法。
+\end{enumerate}
+
+\subsection{实验原理}
+Linux 是嵌入式开发的重要平台，现代工具链（GCC、CMake、Git 等）均原生支持 Linux 环境。虚拟机技术允许在 Windows 主机上运行完整的 Linux 系统，无需双系统或额外硬件。GCC 将 C 源码依次经过预处理、编译、汇编、链接四个阶段生成可执行文件。Makefile 通过“目标-依赖-命令”规则实现增量编译，CMake 则进一步抽象构建过程，生成平台无关的构建配置。
+
+\subsection{硬件连接}
+
+\LabPasteBox{Linux 开发环境硬件连接}{粘贴虚拟机网络配置截图（NAT/桥接模式）和主机与虚拟机通信测试（ping）截图。}{fig:linux-hardware}
+
+\subsection{关键代码}
+
+\LabPasteBox{Linux 基础命令与构建脚本}{粘贴 Shell 测试命令、GCC 编译命令、Makefile 和 CMakeLists.txt 核心内容。}{fig:linux-code}
+
+\subsection{实验步骤}
+\begin{enumerate}
+\item 下载 Ubuntu 22.04/24.04 ISO 镜像，在 VMware 或 VirtualBox 中创建虚拟机，分配 4GB 以上内存和 60GB 以上磁盘。
+\item 安装系统，配置用户和网络（NAT 模式确保能联网），执行 \texttt{sudo apt update \&\& sudo apt upgrade -y} 更新系统。
+\item 安装开发工具：\texttt{sudo apt install -y build-essential cmake git openssh-server}。
+\item 练习文件操作命令：\texttt{ls}、\texttt{cd}、\texttt{cp}、\texttt{mv}、\texttt{rm}、\texttt{mkdir}、\texttt{touch}、\texttt{ln}。
+\item 练习文本查看与处理命令：\texttt{cat}、\texttt{less}、\texttt{head}、\texttt{tail}、\texttt{grep}、\texttt{awk}、\texttt{sed}、\texttt{sort}、\texttt{uniq}、\texttt{wc}、\texttt{cut}、\texttt{tr}、\texttt{xargs}。
+\item 练习查找命令：\texttt{find}，以及进程与网络命令：\texttt{ps}、\texttt{top}、\texttt{kill}、\texttt{df}、\texttt{du}、\texttt{free}、\texttt{ss}、\texttt{curl}、\texttt{wget}。
+\item 编写一个简单的 C 程序（\texttt{hello.c}），分别使用 GCC 单步（\texttt{-E}、\texttt{-S}、\texttt{-c}、\texttt{-o}）和一步编译，生成可执行文件并运行。
+\item 编写 Makefile，实现 \texttt{hello.c} 的自动构建和清理，执行 \texttt{make} 和 \texttt{make clean} 验证。
+\item 编写 \texttt{CMakeLists.txt}，使用 \texttt{cmake -S . -B build} 和 \texttt{cmake --build build} 构建工程。
+\item 启用 SSH 服务，在主机上用 VS Code Remote-SSH 连接虚拟机，验证远程开发环境。
+\end{enumerate}
+
+\subsection{实验现象与数据记录}
+
+\begin{table}[htbp]
+\centering
+\caption{Linux 命令与构建工具验证记录}
+\label{tab:linux-record}
+\begin{tabularx}{\textwidth}{p{2.8cm}p{3.5cm}p{3.5cm}X}
+\toprule
+\textbf{测试项目} & \textbf{输入命令/操作} & \textbf{预期结果} & \textbf{实际结果} \\
+\midrule
+文件操作 & \texttt{ls -la \string~} & 显示家目录所有文件 & \LabFillLine[2.8cm] \\
+文本搜索 & \texttt{grep -rn "main" .} & 显示含 main 的行 & \LabFillLine[2.8cm] \\
+GCC 编译 & \texttt{gcc hello.c -o hello} & 生成可执行文件 & \LabFillLine[2.8cm] \\
+Makefile & \texttt{make} & 自动编译生成目标 & \LabFillLine[2.8cm] \\
+CMake & \texttt{cmake --build build} & 构建成功 & \LabFillLine[2.8cm] \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\LabPasteBox{Linux 实验运行结果}{粘贴终端执行 \texttt{uname -a}、GCC 编译、Make 构建和 CMake 构建的完整输出截图。}{fig:linux-result}
+
+\subsection{结果分析}
+
+虚拟机网络配置（NAT/桥接模式）的选择依据：\LabFillLine[6cm]
+
+GCC 预处理、编译、汇编、链接四个阶段分别生成什么文件：\LabFillLine[6cm]
+
+Makefile 中 \texttt{\$@}、\texttt{\$<}、\texttt{\${\string^}} 分别代表什么：\LabFillLine[6cm]
+
+CMake 相比 Makefile 在跨平台构建中的优势：\LabFillLine[6cm]
+
+\subsection{实验总结}
+
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]
+
+% ---------------------------------------------------------------------
+\section{小结}
+
+Linux 对嵌入式工程师不是“另一个操作系统”，而是“新的工作台”。本章只覆盖了最高频的命令、GCC、Makefile 与 CMake；把它们练熟后，再学交叉编译、设备树和内核驱动会顺利得多。
+
+% ---------------------------------------------------------------------
+\begin{problemset}
+\item 用一条命令组合完成：“递归查找 \texttt{src/} 下所有包含 \texttt{error} 的 .c 文件并显示行号”。
+\item 说明 \texttt{ps aux | grep python}、\texttt{awk '\{print \$2\}'} 与 \texttt{xargs kill} 组合的含义，并说明为什么需要 \texttt{xargs}。
+\item 写一个 Bash 脚本：遍历 \texttt{/tmp/logs} 下所有 \texttt{.log} 文件，删除其中超过 7 天且大于 1M 的文件，并打印处理结果。
+\item Makefile 中的“目标、依赖和命令”三者关系是什么？为什么修改头文件后，依赖写全的工程能自动重新编译？
+\item 用 CMake 构建一个包含 \texttt{src} 与 \texttt{include} 两个目录的最小 C 工程，并解释 \texttt{cmake -S . -B build} 的作用。
+\item GCC 的 \texttt{-Wall -Wextra -g} 分别解决了什么问题？调试器需要的调试信息由哪个选项生成？
+\end{problemset}

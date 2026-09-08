@@ -2,7 +2,7 @@
 
 前几章的菜单、协议栈、命令表都是“静态分配”：要么在编译期把数组定死，要么使用固定大小的全局池。很多从 PC 转到单片机的读者会问：为什么不能直接 \texttt{malloc} 与 \texttt{free}？本章从单片机的内存布局讲起，说明动态内存分配在裸机环境下的风险，并实现一个简单、可靠的“固定块内存池”（Memory Pool），用它统一管理同尺寸对象。
 
-\medskip \textbf{本章涉及到的实验内容：}
+\medskip 本章涉及到的实验内容：
 \begin{enumerate}
 \item 内存区域与 \texttt{malloc} 风险分析；
 \item 固定块内存池初始化；
@@ -16,17 +16,17 @@
 MCU 内部通常有两类存储：
 
 \begin{itemize}
-\item \textbf{Flash（只读）}：存放代码、启动向量、\texttt{const} 常量、字库表；
-\item \textbf{RAM（可读写）}：存放全局变量、静态变量、栈、堆。
+\item Flash（只读）：存放代码、启动向量、\texttt{const} 常量、字库表；
+\item RAM（可读写）：存放全局变量、静态变量、栈、堆。
 \end{itemize}
 
 RAM 进一步划分为：
 
 \begin{itemize}
-\item \textbf{.data}：已初始化全局与静态变量，启动时从 Flash 拷贝到 RAM；
-\item \textbf{.bss}：未初始化（或初始化为 0）的全局与静态变量，启动时清零；
-\item \textbf{栈（Stack）}：局部变量、函数调用现场，向下增长，大小由链接脚本或启动文件确定；
-\item \textbf{堆（Heap）}：\texttt{malloc} 与 \texttt{free} 使用的区域，大小同样由链接脚本划定。
+\item .data：已初始化全局与静态变量，启动时从 Flash 拷贝到 RAM；
+\item .bss：未初始化（或初始化为 0）的全局与静态变量，启动时清零；
+\item 栈（Stack）：局部变量、函数调用现场，向下增长，大小由链接脚本或启动文件确定；
+\item 堆（Heap）：\texttt{malloc} 与 \texttt{free} 使用的区域，大小同样由链接脚本划定。
 \end{itemize}
 
 \begin{figure}[htbp]
@@ -60,9 +60,9 @@ RAM 进一步划分为：
 \texttt{malloc} 与 \texttt{free} 在 PC 上很常见，但它会带来三个单片机难以承受的问题：
 
 \begin{enumerate}
-\item \textbf{碎片}：反复申请不同大小的内存后，空闲内存被切成许多不连续的小块。后续一个大块申请即使总空闲空间足够，也可能失败；
-\item \textbf{不确定性}：\texttt{malloc} 的分配时间与当前堆状态有关，最坏情况下需要遍历空闲链表，实时性无法保证；
-\item \textbf{泄漏}：裸机没有操作系统回收“已结束进程”的内存，只要有一次忘记 \texttt{free}，这部分内存就永久丢失。
+\item 碎片：反复申请不同大小的内存后，空闲内存被切成许多不连续的小块。后续一个大块申请即使总空闲空间足够，也可能失败；
+\item 不确定性：\texttt{malloc} 的分配时间与当前堆状态有关，最坏情况下需要遍历空闲链表，实时性无法保证；
+\item 泄漏：裸机没有操作系统回收“已结束进程”的内存，只要有一次忘记 \texttt{free}，这部分内存就永久丢失。
 \end{enumerate}
 
 此外，许多编译器提供的 \texttt{malloc} 实现体积较大，还会要求配置堆起始地址和大小。对于菜单节点、FIFO、协议帧这类“数量有限、尺寸相同”的对象，完全可以用更简单的静态池替代。
@@ -71,7 +71,7 @@ RAM 进一步划分为：
 \centering \caption{静态数组、malloc 与固定块内存池的对比} \label{tab:alloc-compare}
     \begin{tabular}{llll}
         \toprule
-        \textbf{对比项} & \textbf{静态数组} & \textbf{malloc 与 free} & \textbf{固定块内存池} \\
+        对比项 & 静态数组 & malloc 与 free & 固定块内存池 \\
         \midrule
         内存碎片 & 无 & 有 & 无 \\
         分配时间 & 编译期 & 不确定 & 确定（线性或位图扫描） \\
@@ -89,10 +89,10 @@ RAM 进一步划分为：
 固定块内存池的思路是：在编译期准备一块连续内存（或一个全局数组），把它切分成 $N$ 个大小完全相同的块。每次申请时返回一个空闲块，释放时把块归还池子。
 
 \begin{itemize}
-\item \textbf{无碎片}：所有块大小相同，不存在“外部碎片”；
-\item \textbf{时间确定}：申请与释放只需扫描固定数量的标记，或使用位图或空闲链表；
-\item \textbf{不会泄漏}：池子大小固定，释放逻辑简单；
-\item \textbf{代价}：只能管理同尺寸对象；如果对象尺寸跨度大，需要准备多个不同块大小的池子。
+\item 无碎片：所有块大小相同，不存在“外部碎片”；
+\item 时间确定：申请与释放只需扫描固定数量的标记，或使用位图或空闲链表；
+\item 不会泄漏：池子大小固定，释放逻辑简单；
+\item 代价：只能管理同尺寸对象；如果对象尺寸跨度大，需要准备多个不同块大小的池子。
 \end{itemize}
 
 内存池结构体的核心成员如下：
@@ -224,7 +224,7 @@ Mem_PoolCreate(&g_SmallPool, s_PoolSmall, 32u, 32u);
 Mem_PoolCreate(&g_BigPool,   s_PoolBig,   256u, 8u);
 \end{lstlisting}
 
-管理约定是：\textbf{从哪个池申请，就必须释放回哪个池}。由于池子本身能校验指针范围，误把大池指针交给小池释放时会被拒绝。
+管理约定是：从哪个池申请，就必须释放回哪个池。由于池子本身能校验指针范围，误把大池指针交给小池释放时会被拒绝。
 
 % ---------------------------------------------------------------------
 \section{完整示例代码}
@@ -245,9 +245,9 @@ Mem_PoolCreate(&g_BigPool,   s_PoolBig,   256u, 8u);
 PC 的内存控制器和编译器会帮你处理对齐、缓存和平台差异；单片机的差别在于：
 
 \begin{enumerate}
-\item \textbf{对齐要求}：Cortex-M 的 \texttt{LDR} 与 \texttt{STR} 要求地址对齐，非对齐访问可能触发 UsageFault，最终升级为 HardFault；
-\item \textbf{内存类型多样}：SRAM、Flash、外设寄存器、位带区、DMA 缓冲区的访问规则不一样，不是所有地址都能用 \texttt{memcpy} 直接搬；
-\item \textbf{错误不可恢复}：PC 程序访问非法地址最多弹窗崩溃；单片机一旦进入 HardFault，如果没有处理代码，就会一直死循环，系统完全失控。
+\item 对齐要求：Cortex-M 的 \texttt{LDR} 与 \texttt{STR} 要求地址对齐，非对齐访问可能触发 UsageFault，最终升级为 HardFault；
+\item 内存类型多样：SRAM、Flash、外设寄存器、位带区、DMA 缓冲区的访问规则不一样，不是所有地址都能用 \texttt{memcpy} 直接搬；
+\item 错误不可恢复：PC 程序访问非法地址最多弹窗崩溃；单片机一旦进入 HardFault，如果没有处理代码，就会一直死循环，系统完全失控。
 \end{enumerate}
 
 因此，嵌入式工程师不只要知道“怎么写功能”，还要知道“内存是怎么放的”“坏指针会怎样死机” 以及“死机后如何定位”。
@@ -408,9 +408,9 @@ void Memory_Zero4(uint32_t *pBuffer, uint32_t wordCount)
 结合“先按字节对齐，中间按字清零，尾部按字节清零”，可以得到类似 C 库 \texttt{memset(p, 0, n)} 的效果。置零有三个容易忽略的细节：
 
 \begin{enumerate}
-\item \textbf{硬件外设寄存器不能整体置零}：很多状态寄存器只写某几位有效，直接 \texttt{memset} 一个外设结构体可能触发“未定义行为”或写坏控制字；
-\item \textbf{DMA 正在使用的缓冲区不能随意清零}：DMA 可能在后台写入，清零会和 DMA 写入竞争；
-\item \textbf{置零不等于擦除 Flash}：Flash 只能按扇区擦除，擦除后变为 0xFF，不是 0x00；若想“看起来像 0”，需要向扇区写入 0x00。
+\item 硬件外设寄存器不能整体置零：很多状态寄存器只写某几位有效，直接 \texttt{memset} 一个外设结构体可能触发“未定义行为”或写坏控制字；
+\item DMA 正在使用的缓冲区不能随意清零：DMA 可能在后台写入，清零会和 DMA 写入竞争；
+\item 置零不等于擦除 Flash：Flash 只能按扇区擦除，擦除后变为 0xFF，不是 0x00；若想“看起来像 0”，需要向扇区写入 0x00。
 \end{enumerate}
 
 % ---------------------------------------------------------------------
@@ -466,7 +466,7 @@ SRAM 配置：\LabFillLine[8cm]
 \label{tab:memory-pool-record}
 \begin{tabularx}{\textwidth}{p{3cm}p{2.5cm}p{2.8cm}p{2.8cm}X}
 \toprule
-\textbf{测试场景} & \textbf{成功次数} & \textbf{失败位置} & \textbf{峰值占用} & \textbf{异常现象} \\
+测试场景 & 成功次数 & 失败位置 & 峰值占用 & 异常现象 \\
 \midrule
 内存块耗尽 & \LabFillLine[1.8cm] & \LabFillLine[2.1cm] & \LabFillLine[2.1cm] & \LabFillLine[2.6cm] \\
 释放后复用 & \LabFillLine[1.8cm] & \LabFillLine[2.1cm] & \LabFillLine[2.1cm] & \LabFillLine[2.6cm] \\
@@ -497,10 +497,10 @@ SRAM 配置：\LabFillLine[8cm]
 固定块池是嵌入式内存管理的“第一课”，之后可以扩展为：
 
 \begin{itemize}
-\item \textbf{空闲链表}：把空闲块用链表串起来，申请与释放时间降到 $O(1)$；
-\item \textbf{按大小分级池}：仿照 tlsf（Two-Level Segregated Fit）把内存按 2 的幂分级；
-\item \textbf{栈式分配器}：用于“申请后按顺序释放”的临时缓冲区；
-\item \textbf{环形缓冲区复用}：通信帧不再各自 \texttt{malloc}，而是从帧池取节点。
+\item 空闲链表：把空闲块用链表串起来，申请与释放时间降到 $O(1)$；
+\item 按大小分级池：仿照 tlsf（Two-Level Segregated Fit）把内存按 2 的幂分级；
+\item 栈式分配器：用于“申请后按顺序释放”的临时缓冲区；
+\item 环形缓冲区复用：通信帧不再各自 \texttt{malloc}，而是从帧池取节点。
 \end{itemize}
 
 无论采用哪种方案，核心原则都不变：在资源有限、不允许失败的环境中，宁可把内存的使用规则“写死在设计里”，也不要等到运行时才发现分配失败。
