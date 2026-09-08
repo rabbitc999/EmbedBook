@@ -733,55 +733,82 @@ python Chapter-script-engine/parser_gen.py --advanced -o parser_adv.c
 % ---------------------------------------------------------------------
 \section{单片机实验：串口表达式计算移植与实测}
 
-本节实验把表达式解析器接入单片机串口，让用户发送一条公式就能得到计算结果。作者先给出移植实验框架，实物照片与运行截图随后补充，实验代码参考 \texttt{Chapter-script-engine/表达式脚本引擎/}。
+本节实验把表达式解析器接入单片机串口，让用户发送公式并记录解析结果或错误码。实验代码参考 \texttt{Chapter-script-engine/表达式脚本引擎/}。
 
-\begin{anybox}{实验目的}
+\subsection{实验基本信息}
+
+脚本缓冲区容量：\LabFillLine[3.5cm] \quad
+变量表容量：\LabFillLine[3.5cm]
+
+串口配置：\LabFillLine[4cm] \quad
+表达式最大长度：\LabFillLine[3.5cm]
+
+\subsection{实验目的}
 
 \begin{enumerate}
-\item 在单片机串口层之上实现“接收表达式 -> 解析 -> 回传结果”；
-\item 验证变量设置命令与四则运算；
-\item 验证括号嵌套、除零、未知变量等错误不会导致系统崩溃。
+\item 在单片机串口层之上实现表达式输入、解析和结果回传。
+\item 验证整数、浮点、变量和四则运算表达式的处理流程。
+\item 分析非法语法、递归深度、内存边界和错误恢复机制。
 \end{enumerate}
 
-\end{anybox}
-\begin{anybox}{建议实验步骤}
+\subsection{实验原理}
+
+串口接收程序按换行收集脚本文本，词法分析器把数字、变量、运算符和括号转换为 Token，递归下降解析器按优先级计算表达式。变量从静态变量表读取，解析深度、输入长度和结果写入均进行边界检查，错误码沿调用链返回到串口输出层。
+
+\subsection{硬件连接}
+
+\LabPasteBox{脚本表达式实验串口连接}{粘贴开发板与 USB-TTL 接线图片，并标注 TX、RX、GND、电平标准和串口号。}{fig:ch10-script-hardware}
+
+\subsection{关键代码}
+
+\LabPasteBox{输入收集、词法解析、语法解析与执行入口关键代码}{粘贴输入缓冲区管理、Token 扫描、递归下降调用和执行入口代码，并标注长度与深度检查。}{fig:ch10-script-code}
+
+\subsection{实验步骤}
 
 \begin{enumerate}
-\item 把 \texttt{expr\_parser.c/h} 加入工程；
-\item 串口收到以换行为结尾的表达式后调用 \texttt{Expr\_Evaluate}；
-\item 实现 \texttt{set 变量=数值} 与 \texttt{calc 表达式} 两条命令；
-\item 发送 \texttt{set x=10} 后计算 \texttt{10 + 2 * (3 + x)}；
-\item 发送 \texttt{10 / 0}、嵌套 30 层以上括号，确认返回错误信息。
+\item 连接 USB-TTL 与开发板串口，配置串口参数并下载脚本引擎程序。
+\item 发送整数表达式 \texttt{10 + 2 * 3}，记录解析返回值。
+\item 发送浮点表达式并检查浮点结果的格式化输出。
+\item 设置变量后发送包含变量和括号的表达式，检查运算优先级。
+\item 发送含多级括号的表达式，观察递归深度限制边界。
+\item 发送非法语法表达式，记录语法错误码和恢复后的可用状态。
+\item 发送超过脚本缓冲区容量的超长输入，记录截断或拒绝处理结果。
 \end{enumerate}
 
-\end{anybox}
-\begin{anybox}{验收标准}
-\begin{itemize}
-\item 串口回显计算结果或错误码；
-\item 递归深度限制在单片机小栈下不触发 HardFault；
-\item 连续发送大量表达式后，RAM 与栈的使用保持稳定。
-\end{itemize}
+\subsection{实验现象与数据记录}
 
-\medskip \noindent\textbf{待补充实验记录}：
-
-\begin{itemize}
-\item 单片机串口接线照片；
-\item 串口助手计算回显截图；
-\item 错误表达式与深度测试日志。
-\end{itemize}
-\end{anybox}
-
-\begin{figure}[htbp]
+\begin{table}[htbp]
 \centering
-    % TODO: 在此插入串口接线照片
-\caption{表达式引擎实验硬件接线（待补充）} \label{fig:ch10-mcu-hw}
-\end{figure}
+\caption{脚本表达式实验记录}
+\label{tab:ch10-script-record}
+\begin{tabularx}{\textwidth}{p{4cm}p{4cm}p{3cm}X}
+\toprule
+\textbf{表达式} & \textbf{期望结果} & \textbf{实际结果} & \textbf{错误码} \\
+\midrule
+\texttt{10 + 2 * 3} & 16 & \LabFillLine[2.8cm] & \LabFillLine[2.4cm] \\
+浮点表达式 & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] & \LabFillLine[2.4cm] \\
+变量与括号表达式 & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] & \LabFillLine[2.4cm] \\
+非法语法表达式 & 返回语法错误 & \LabFillLine[2.8cm] & \LabFillLine[2.4cm] \\
+超长输入 & 触发长度保护 & \LabFillLine[2.8cm] & \LabFillLine[2.4cm] \\
+\bottomrule
+\end{tabularx}
+\end{table}
 
-\begin{figure}[htbp]
-\centering
-    % TODO: 在此插入表达式计算运行截图
-\caption{串口表达式计算日志（待补充）} \label{fig:ch10-mcu-log}
-\end{figure}
+\LabPasteBox{脚本表达式运行结果}{粘贴整数、浮点、变量、非法语法和超长输入的串口记录或显示截图。}{fig:ch10-script-result}
+
+\subsection{结果分析}
+
+递归下降解析深度与 MCU 栈空间的关系：\LabFillLine[6cm]
+
+脚本缓冲区、变量表和 Token 存储的内存边界：\LabFillLine[6cm]
+
+语法错误后的输入丢弃、重新同步和错误恢复过程：\LabFillLine[6cm]
+
+\subsection{实验总结}
+
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]
 
 % ---------------------------------------------------------------------
 \section{解析器的选择与工程边界}

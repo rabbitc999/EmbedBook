@@ -853,13 +853,84 @@ LVGL 是目前嵌入式领域最流行的开源 GUI 库之一，支持按钮、�
 最后需要强调一点：\textbf{LVGL 和本菜单系统不是二选一的互斥关系}。一个实际产品中，完全可以在 LVGL 的某个界面中嵌入一个“参数列表”风格的菜单页，或在菜单系统的某个函数项中调用 LVGL 绘制的曲线画面。两者既可以共存，也可以分层：LVGL 负责展示层（仪表盘、曲线、状态图标），本菜单系统负责参数配置与设备控制的逻辑流程。读者应把二者视为工具链上的不同选项，而非“谁替代谁”的竞争关系。
 
 % ---------------------------------------------------------------------
-\section{单片机代码移植实现}
+% 本实验区块统一采用九段式实验报告结构，便于记录菜单移植过程与实测数据。
+\section{实验报告：按键菜单系统移植与验证}
 
-\begin{figure}[htbp]
+\subsection{实验基本信息}
+
+显示屏型号：\LabFillLine[3.5cm] \quad
+显示分辨率：\LabFillLine[3.5cm]
+
+按键数量：\LabFillLine[3.5cm] \quad
+菜单深度：\LabFillLine[3.5cm]
+
+\subsection{实验目的}
+
+\begin{enumerate}
+\item 掌握显示屏、按键与菜单移植层的连接方法。
+\item 验证静态菜单创建、页面栈导航和输入分发流程。
+\item 观察数值、单选与多选菜单项的交互行为。
+\end{enumerate}
+
+\subsection{实验原理}
+
+菜单驱动器使用静态缓冲区保存菜单、菜单项和链表节点，进入子页面时将页面压入菜单栈，返回时弹出页面。主循环读取按键并分发到当前菜单项，绘制函数只更新发生变化的区域；整屏刷新时先清除背景，避免字符残影。
+
+\subsection{硬件连接}
+
+\LabPasteBox{按键菜单系统硬件连接}{粘贴 LCD、按键与开发板的连接图片，并标注电源、通信线、按键输入和公共地。}{fig:ch8-menu-hardware}
+
+\subsection{关键代码}
+
+\LabPasteBox{菜单创建、绘制与输入分发关键代码}{粘贴菜单创建、页面栈操作、LCD 绘制和按键分发代码，并标注缓冲区边界检查。}{fig:ch8-menu-code}
+
+\subsection{实验步骤}
+
+\begin{enumerate}
+\item 连接显示屏和按键，确认供电、电平与公共地连接正确。
+\item 配置显示分辨率、字符尺寸和按键扫描周期，编译并下载菜单程序。
+\item 进入主菜单页面，逐项检查光标移动和页面进入功能。
+\item 进入子页面后按返回键，检查页面栈是否恢复到上一级页面。
+\item 进入数值项，分别调整整数和浮点数，检查上下限与步进单位。
+\item 进入单选项，选择不同选项并检查绑定变量的变化。
+\item 进入多选项，重复切换开关状态并检查显示与变量是否一致。
+\item 连续翻页和返回，观察局部刷新区域是否出现字符残影。
+\end{enumerate}
+
+\subsection{实验现象与数据记录}
+
+\begin{table}[htbp]
 \centering
-    % TODO: 在此插入第6章菜单系统移植实测截图
-\caption{第6章实验记录图（待补充）} \label{fig:ch6-placeholder}
-\end{figure}
+\caption{按键菜单功能实验记录}
+\label{tab:ch8-menu-record}
+\begin{tabularx}{\textwidth}{p{3.1cm}p{3.4cm}p{3.1cm}X}
+\toprule
+\textbf{操作} & \textbf{目标页面或项目} & \textbf{显示结果} & \textbf{实际结果} \\
+\midrule
+页面进入 & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] \\
+页面返回 & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] \\
+数值调整 & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] \\
+单选操作 & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] \\
+多选操作 & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\LabPasteBox{按键菜单系统运行结果}{粘贴页面进入、返回、数值调整、单选和多选的显示截图或串口记录。}{fig:ch8-menu-result}
+
+\subsection{结果分析}
+
+菜单缓冲区使用量与剩余空间：\LabFillLine[6cm]
+
+局部刷新时出现残影的页面或字符区域：\LabFillLine[6cm]
+
+页面栈深度与返回路径的关系：\LabFillLine[6cm]
+
+\subsection{实验总结}
+
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]\par
+\noindent\LabFillLine[\linewidth]
 
 % ---------------------------------------------------------------------
 \begin{problemset}
