@@ -6,9 +6,9 @@
 
 \newif\ifrelease
 % 正式发布时取消下面一行的注释，并将另一行注释掉：
-% \releasetrue
+\releasetrue
 % 非正式版本（草稿/预览）使用下面一行：
-\releasefalse
+% \releasefalse
 
 % ------------------------- 文档信息 -------------------------
 \ifrelease
@@ -22,7 +22,7 @@
 \ifrelease
 \date{2025 年 11 月 28 日}
 \institute{安徽新华学院}
-\subtitle{从点灯到交付的12个生存法则}
+\subtitle{从点灯到交付的15个生存法则}
 \extrainfo{本文所有代码位于Gitee仓库，你可以从Release发布版本中下载完整的原文和示例代码}
 \else
 \date{\zhtoday}
@@ -74,13 +74,15 @@
 
 \appendix
 \input{chapters/appendix-board-bsp}
-\input{chapters/appendix-linux}
-\input{chapters/appendix-code-source}
+\input{chapters/appendix-parser-generator-runtime}
+\input{chapters/appendix-coroutine-internals}
 \ifrelease
 % 正式版
 \else
+\input{chapters/appendix-linux}
 \input{chapters/appendix-about-author}
 \fi
+\input{chapters/appendix-code-source}
 \input{chapters/appendix-answers}
 
 \end{document}

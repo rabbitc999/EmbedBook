@@ -41,10 +41,10 @@
     \draw[arrow] (model) -- (generator);
     \draw[arrow] (generator) -- (cparser);
     \draw[arrow] (tokens) -- (cparser);
-    \draw[arrow] (cparser) -- (runtime);
+    \draw[arrow] (cparser) to[out=-90,in=-90, looseness=0.5] (runtime);
     \draw[arrow] (runtime) -- (result);
     \node[note] at (0,3.15) {生成期：只在开发电脑上运行};
-    \node[note] at (0,-1.65) {运行期：可放在 PC，也可按资源条件移植到单片机};
+    \node[note] at (0,-2.15) {运行期：可放在 PC，也可按资源条件移植到单片机};
 \end{tikzpicture}
 \caption{语法转换器与动态类型运行时的数据流} \label{fig:app-parser-pipeline}
 \end{figure}
@@ -288,7 +288,7 @@ while (context.stackTop > 0u) {
     \draw[arrow] (root) -- (dict);
     \draw[arrow] (root) -- (string);
     \draw[arrow] (dict) -- (child);
-    \draw[free] (root.east) .. controls (5.0,1.2) and (4.8,-1.8) .. node[right] {一次释放递归清理整棵对象树} (child.east);
+    \draw[free] (root.east) to[out=0,in=0,looseness=3] node[right] {一次释放递归清理整棵对象树} (child.east);
 \end{tikzpicture}
 \caption{容器对动态子对象的所有权} \label{fig:app-var-ownership}
 \end{figure}

@@ -54,7 +54,12 @@
 % 第三行：深入
 \node[box, level3, below=of ch7] (ch10) {第10章\\表达式引擎};
 \node[box, level3, right=of ch10] (ch11) {第11章\\协程调度器};
-\node[box, level3, right=of ch11] (ch13) {第12章...第14章\\嵌入式信号处理};
+\node[box, level3, right=of ch11] (ch13) {第13章...第15章\\嵌入式信号处理};
+\ifrelease
+\else
+\node[title, level3, right=of ch13] (ch16) {第16章\\如何应对紧急的交期};
+\draw[arrow] (ch13) -- (ch16);
+\fi
 
 % 箭头：行内
 \draw[arrow] (ch1) -- (ch2);
@@ -79,26 +84,26 @@
 \end{center}
 
 \begin{table}[htbp]
-\centering
-\begin{tabular}{ccl}
-\toprule
-难度 & 章节 & 内容特点 \\
-\midrule
-\ifrelease
-% Release版（公开版）：不显示第13章
-入门 & 第1$\sim$5章 & 基础语法与核心概念，适合刚接触嵌入式 C 的读者，建议按顺序通读 \\
-\else
-% 非Release版（完整版）：显示第13章
-入门 & 第1$\sim$5章、第13章 & 基础语法与核心概念，适合刚接触嵌入式 C 的读者，建议按顺序通读 \\
-\fi
-进阶 & 第6$\sim$9章、第12章 & 综合应用与工程实践，每章可相对独立阅读，可根据项目需要跳读 \\
-深入 & 第10$\sim$11章、第13$\sim$15章 & 涉及编译原理、协程与嵌入式信号处理等进阶内容，建议在有基础后按顺序研读 \\
-\ifrelease
-\else
-非技术 & 第16章 & 交期应对，适合穿插阅读或遇到瓶颈时翻阅 \\
-\fi
-\bottomrule
-\end{tabular}
+	\centering
+	\begin{tabularx}{\textwidth}{c c X}
+		\toprule
+		难度 & 章节 & 内容特点 \\
+		\midrule
+		\ifrelease
+		% Release版（公开版）：不显示第13章
+		入门 & 第1$\sim$5章 & 基础语法与核心概念，适合刚接触嵌入式 C 的读者，建议按顺序通读 \\
+		\else
+		% 非Release版（完整版）：显示第13章
+		入门 & 第1$\sim$5章、第13章 & 基础语法与核心概念，适合刚接触嵌入式 C 的读者，建议按顺序通读 \\
+		\fi
+		进阶 & 第6$\sim$9章、第12章 & 综合应用与工程实践，每章可相对独立阅读，可根据项目需要跳读 \\
+		深入 & 第10$\sim$11章、第13$\sim$15章 & 涉及编译原理、协程与信号处理等进阶内容，建议在有基础后按顺序研读 \\
+		\ifrelease
+		\else
+		非技术 & 第16章 & 交期应对，适合穿插阅读或遇到瓶颈时翻阅 \\
+		\fi
+		\bottomrule
+	\end{tabularx}
 \end{table}
 
 \ifrelease

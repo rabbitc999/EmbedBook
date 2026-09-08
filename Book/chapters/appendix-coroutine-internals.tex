@@ -41,9 +41,9 @@
     \draw[link] (tcb1) -- (stack1);
     \draw[link] (tcb2) -- (stack2);
     \draw[link] (tcb3) -- (stack3);
-    \draw[arrow,rounded corners] (tcb1.east) -- ++(0.6,0) |- (tcb2.west);
-    \draw[arrow,rounded corners] (tcb2.east) -- ++(0.6,0) |- (tcb3.west);
-    \draw[arrow,rounded corners] (tcb3.north) -- ++(0,1.1) -| (tcb1.north);
+    \draw[arrow,rounded corners] (tcb1.east) -- (tcb2.west);
+    \draw[arrow,rounded corners] (tcb2.east) -- (tcb3.west);
+    \draw[arrow,rounded corners] (tcb3.north) to[out=90,in=90, looseness=1.5] (tcb1.north);
 \end{tikzpicture}
 \caption{调度器、任务控制块与任务资源的关系} \label{fig:app-coro-object-relation}
 \end{figure}

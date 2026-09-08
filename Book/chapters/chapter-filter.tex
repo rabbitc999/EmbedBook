@@ -22,10 +22,10 @@
     block/.style={draw=structurecolor, thick, rounded corners=2pt, minimum width=2.5cm, minimum height=1.0cm, align=center, fill=structurecolor!8},
     arrow/.style={-stealth, thick}
 ]
-    \node[block] (sensor) at (-4.5,0) {传感器};
-    \node[block] (sample) at (-1.5,0) {定时采样};
-    \node[block] (filter) at (1.5,0) {数字滤波器};
-    \node[block] (consumer) at (4.5,0) {显示或控制器};
+    \node[block] (sensor) at (-6,0) {传感器};
+    \node[block] (sample) at (-2,0) {定时采样};
+    \node[block] (filter) at (2,0) {数字滤波器};
+    \node[block] (consumer) at (6,0) {显示或控制器};
 
     \draw[arrow] (sensor) -- node[above] {模拟量} (sample);
     \draw[arrow] (sample) -- node[above] {$x[k]$} (filter);
@@ -165,8 +165,8 @@ filter->errorCovariance = (1.0f - kalmanGain) * predictedCovariance;
     \node[gray] at (2.0,7.5) {原始信号};
     \node[structurecolor] at (5.0,6.9) {滑动平均};
     \node[red] at (8.1,6.9) {一阶低通};
-    \node[green!50!black] at (5.0,6.3) {中值};
-    \node[purple] at (8.1,6.3) {卡尔曼};
+    \node[green!50!black] at (5.0,6.0) {中值};
+    \node[purple] at (8.1,6.0) {卡尔曼};
 \end{tikzpicture}
 \caption{含噪信号与四种滤波结果对比} \label{fig:filter-result-comparison}
 \end{figure}

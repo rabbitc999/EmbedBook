@@ -689,7 +689,7 @@ $$ = $1.int32 ^ $2.int32;          /* 显式 int32 位运算 */
 \item 未显式类型就对运行时值做位运算，生成时会告警；建议先写 \texttt{\$1.int32} 这样的类型字段，再参与异或、位与等运算。
 \end{itemize}
 
-生成结果包含 Token 枚举、默认 Lexer、预测分析表、显式分析栈、变量表，以及 \texttt{Parser\_Run} 和 \texttt{Parser\_RunText} 两个入口。语义值使用 \texttt{VarValue\_T}（无 GC，由 \texttt{Var\_Free} 手动释放）。外部 C 程序可以用 \texttt{Var\_GetInt32}、\texttt{Var\_GetUint32}、\texttt{Var\_GetFloat}、\texttt{Var\_GetDouble} 等 Getter 做带范围检查的访问。
+生成结果包含 Token 枚举、预测分析表、显式分析栈、变量表等，以及 \texttt{Parser\_Run} 和 \texttt{Parser\_RunText} 两个入口。语义值使用 \texttt{VarValue\_T}（无 GC，由 \texttt{Var\_Free} 手动释放）。外部 C 程序可以用 \texttt{Var\_GetInt32}、\texttt{Var\_GetUint32}、\texttt{Var\_GetFloat}、\texttt{Var\_GetDouble} 等 Getter 做带范围检查的访问。
 
 \subsection{生成命令}
 
@@ -708,7 +708,7 @@ python Chapter-script-engine/parser_gen.py \
     -o parser_calc.c
 \end{lstlisting}
 
-生成器默认在控制台输出消除直接左递归后的最终产生式、FIRST 集合、FOLLOW 集合和预测分析表；\texttt{--report} 会把同样内容保存为 UTF-8 文本，便于读者逐项核对。
+生成器默认在控制台输出消除直接左递归后的最终产生式、FIRST 集合、FOLLOW 集合等信息；\texttt{--report} 会把同样内容保存为 UTF-8 文本，便于读者逐项核对。
 
 生成高级 IF 与 FOR 测试文法：
 
