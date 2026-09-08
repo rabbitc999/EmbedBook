@@ -108,8 +108,6 @@ BFAR = 0xA0000000
 
 结合 PC 与 LR 与 \texttt{.map} 文件即可定位到故障函数；BFAR 与 MMFAR 则给出出错的内存地址。
 
-\subsection{三种常见故障的分析方法}
-
 \begin{table}[htbp]
 \centering \caption{SEGGER 工具中三类常见 HardFault 的判读} \label{tab:segger-fault}
     \begin{tabular}{lll}
@@ -205,7 +203,7 @@ Thumb 指令的一般形式可以概括为：
 阅读 HardFaultHandler.S 只需要掌握上面这几条；真正的现场分析仍在 C 层完成，汇编只负责把正确的栈指针交给 C。
 
 % ---------------------------------------------------------------------
-\section{实验报告：HardFault 分析与定位}
+\section{单片机实验：HardFault 分析与定位}
 
 \subsection{实验基本信息}
 
@@ -227,18 +225,15 @@ Thumb 指令的一般形式可以概括为：
 \subsection{实验原理}
 Cortex-M 处理器发生不可恢复异常时进入 HardFault，硬件自动将 R0--R3、R12、LR、PC、PSR 压入当前栈。处理函数通过检查 EXC\_RETURN 的 bit2 判断压栈时使用的是 MSP 还是 PSP，进而获取栈指针。配合系统控制块中的 CFSR、HFSR、BFAR、MMFAR 等寄存器，可以区分非对齐访问、总线错误、非法指令等故障类型，再结合编译生成的 \texttt{.map} 文件和反汇编输出，即可精确定位到出错源代码位置。
 
-\subsection{硬件连接}
-
-\LabPasteBox{HardFault 调试硬件连接}{粘贴开发板与调试器（如 J-Link、ST-Link）以及串口转 USB 模块的连接图片，标注 SWD 接口、串口 TX/RX 和电源。}{fig:ch12-hardfault-hardware}
-
-\subsection{关键代码}
-
-\LabPasteBox{HardFault 处理函数与故障注入测试代码}{粘贴 \texttt{HardFault\_Handler} 中保存 CFSR、HFSR、BFAR、MMFAR 的代码，以及三个典型故障注入函数（非法函数指针、非对齐访问、非法地址指针）的调用片段。}{fig:ch12-hardfault-code}
-
 \subsection{实验步骤}
 \begin{enumerate}
 \item 将 SEGGER HardFault 分析文件（\texttt{HardFaultHandler.S} 与 \texttt{SEGGER\_HardFaultHandler.c}）加入工程，或自行编写简易故障捕获函数。
-\item 编写三个测试用例：① 调用非法函数指针（\texttt{pBad = (void*)0xDEADBEEF; pBad();}）；② 非对齐访问（\texttt{uint32\_t *p = (uint32\_t*)(buffer+1); *p = 0x1234;}）；③ 非法地址指针（\texttt{volatile uint32\_t *p = (uint32\_t*)0xA0000000; *p = 0x5678;}）。
+\item 编写三个测试用例：
+\begin{enumerate}
+	\item 调用非法函数指针（\texttt{pBad = (void*)0xDEADBEEF; pBad();}）；
+	\item 非对齐访问（\texttt{uint32\_t *p = (uint32\_t*)(buffer+1); *p = 0x1234;}）；
+	\item 非法地址指针（\texttt{volatile uint32\_t *p = (uint32\_t*)0xA0000000; *p = 0x5678;}）。
+\end{enumerate}
 \item 依次使能每个测试用例（每次仅启用一个），编译并下载到开发板，进入调试模式运行。
 \item 触发 HardFault 后，在调试器中读取 CFSR、HFSR、BFAR、MMFAR，并记录栈中保存的 PC 和 LR 值。
 \item 查看工程的 \texttt{.map} 文件，将 PC 地址映射到对应的函数名；查看反汇编（Keil 的 Disassembly 或 \texttt{objdump}），定位到具体指令行。
@@ -262,8 +257,6 @@ Cortex-M 处理器发生不可恢复异常时进入 HardFault，硬件自动将 
 \bottomrule
 \end{tabularx}
 \end{table}
-
-\LabPasteBox{HardFault 调试输出截图}{粘贴调试器中 Registers 窗口的 CFSR/HFSR/BFAR 截图、串口打印的故障信息，以及 \texttt{.map} 文件中定位到的函数片段。}{fig:ch12-hardfault-result}
 
 \subsection{结果分析}
 

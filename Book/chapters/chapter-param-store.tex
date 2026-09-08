@@ -292,9 +292,7 @@ void Param_MigrateV1ToV2(
 \end{anybox}
 % ---------------------------------------------------------------------
 % 本章实验区块统一采用九段式实验报告结构。
-\section{实验报告：参数保存、断电恢复与版本迁移}
-
-\subsection{实验基本信息}
+\section{单片机实验：参数保存、断电恢复与版本迁移}
 
 \subsection{实验基本信息}
 
@@ -316,14 +314,6 @@ void Param_MigrateV1ToV2(
 \subsection{实验原理}
 
 参数记录由魔数、版本号、业务字段和校验字段组成。首次启动时，程序检测到存储区内容无效，便装载默认值；保存时先完成数据组织与校验计算，再写入非易失存储介质；加载时只有魔数、版本和校验均满足要求的数据才能生效。固件升级后，程序依据旧版本号选择迁移函数，把共有字段复制到新结构，并为新增字段设置默认值。为降低掉电中断写入和介质磨损的风险，可结合双备份、有效标志、轮换地址及延迟写入策略。
-
-\subsection{硬件连接}
-
-\LabPasteBox{参数存储实验硬件连接}{粘贴开发板与片内 Flash、外部 Flash、EEPROM 或 SD 卡的连接图片，并标注供电、通信引脚及公共地。}{fig:param-store-hardware}
-
-\subsection{关键代码}
-
-\LabPasteBox{参数保存、加载与迁移关键代码}{粘贴参数保存、加载、校验、默认值恢复及版本迁移代码，并标出存储地址、版本号和掉电保护逻辑。}{fig:param-store-code}
 
 \subsection{实验步骤}
 
@@ -356,8 +346,6 @@ void Param_MigrateV1ToV2(
 \bottomrule
 \end{tabularx}
 \end{table}
-
-\LabPasteBox{参数保存与版本迁移运行结果}{粘贴串口日志、存储区数据或上位机对比图片，并标注首次启动、断电恢复、校验破坏及版本迁移结果。}{fig:param-store-result}
 
 \subsection{结果分析}
 

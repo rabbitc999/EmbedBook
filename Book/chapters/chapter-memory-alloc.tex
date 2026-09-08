@@ -415,7 +415,7 @@ void Memory_Zero4(uint32_t *pBuffer, uint32_t wordCount)
 
 % ---------------------------------------------------------------------
 % 本章实验区块统一采用九段式实验报告结构。
-\section{实验报告：固定块内存池移植与压力测试}
+\section{单片机实验：固定块内存池移植与压力测试}
 
 \subsection{实验基本信息}
 
@@ -437,14 +437,6 @@ void Memory_Zero4(uint32_t *pBuffer, uint32_t wordCount)
 \subsection{实验原理}
 
 固定块内存池把一段连续 SRAM 按相同大小切分为若干内存块，并使用占用标记记录每个块的状态。申请操作从有限的标记表中寻找空闲块，释放操作先检查地址范围、块边界和占用状态，再将对应内存块归还。由于块大小与块数量在初始化时已经确定，内存池不会产生外部碎片，分配时间上界也可预测；缓冲区首地址与块大小仍需满足目标处理器的数据对齐要求。
-
-\subsection{硬件连接}
-
-\LabPasteBox{固定块内存池实验硬件连接}{粘贴开发板与调试串口接线图片，并标注供电、串口收发、公共地及所用 SRAM 区域。}{fig:memory-pool-hardware}
-
-\subsection{关键代码}
-
-\LabPasteBox{固定块内存池申请与保护关键代码}{粘贴内存池初始化、申请、释放、地址越界检查及重复释放保护代码，并标出块大小、块数量和对齐配置。}{fig:memory-pool-code}
 
 \subsection{实验步骤}
 
@@ -476,8 +468,6 @@ void Memory_Zero4(uint32_t *pBuffer, uint32_t wordCount)
 \bottomrule
 \end{tabularx}
 \end{table}
-
-\LabPasteBox{固定块内存池运行结果}{粘贴串口日志或调试器监视图片，并标注耗尽位置、释放复用、重复释放、越界保护及压力循环结果。}{fig:memory-pool-result}
 
 \subsection{结果分析}
 

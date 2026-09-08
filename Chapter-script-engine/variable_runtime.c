@@ -956,7 +956,7 @@ int32_t Var_GetString(const VarValue_T *pValue, const char **ppResult)
 }
 
 /**
- * @brief  按简单类型或数组模板转换并深拷贝动态值。
+ * @brief  按类型模板转换并深拷贝动态值，支持简单类型、数组、字典与结构体。
  * @param  pSource 源动态值。
  * @param  pTypeTemplate 类型模板。
  * @param  ppResult 输出的新动态值。
@@ -1011,6 +1011,17 @@ int32_t Var_ConvertValue(const VarValue_T *pSource,
                     Var_Free(pResult);
                     return ret;
                 }
+            }
+            break;
+        case VAR_TYPE_DICT:
+        case VAR_TYPE_STRUCT:
+            /* 中文注释：复杂类型以模板为形状依据，类型一致时深拷贝源值 */
+            if (pSource->type != pTypeTemplate->type) {
+                return VAR_RUNTIME_ERR_TYPE;
+            }
+            pResult = Var_Clone(pSource);
+            if (pResult == NULL) {
+                ret = VAR_RUNTIME_ERR_MEMORY;
             }
             break;
         default:
@@ -1184,6 +1195,27 @@ VarValue_T *Var_Div(VarValue_T *pLeft, VarValue_T *pRight)
     return Var_CreateDouble(Var_ToDouble(pLeft) / Var_ToDouble(pRight));
 }
 
+/** @brief 求余；整数按 C 的 % 计算，浮点按 fmod 处理。 @retval 新变量。 */
+VarValue_T *Var_Mod(VarValue_T *pLeft, VarValue_T *pRight)
+{
+    if ((pLeft == NULL) || (pRight == NULL)) {
+        return NULL;
+    }
+    if (Var_BothInt(pLeft, pRight)) {
+        if (pRight->u.intValue == 0) {
+            return NULL;
+        }
+        return Var_CreateInt(pLeft->u.intValue % pRight->u.intValue);
+    }
+    {
+        double rightValue = Var_ToDouble(pRight);
+        if (rightValue == 0.0) {
+            return NULL;
+        }
+        return Var_CreateDouble(fmod(Var_ToDouble(pLeft), rightValue));
+    }
+}
+
 /**
  * @brief  一元负号
  */
@@ -1196,6 +1228,161 @@ VarValue_T *Var_Neg(VarValue_T *pValue)
         return Var_CreateInt(-pValue->u.intValue);
     }
     return Var_CreateDouble(-Var_ToDouble(pValue));
+}
+
+/** @brief 判断三个动态值是否都是 int 类型。 @retval 1 表示都是整数。 */
+static uint8_t Var_AllInt(VarValue_T *pFirst, VarValue_T *pSecond,
+                          VarValue_T *pThird)
+{
+    if ((pFirst == NULL) || (pSecond == NULL) || (pThird == NULL)) {
+        return 0u;
+    }
+    return (pFirst->type == VAR_TYPE_INT) &&
+           (pSecond->type == VAR_TYPE_INT) &&
+           (pThird->type == VAR_TYPE_INT);
+}
+
+/** @brief 返回两个动态值的较大者。 @retval 新变量；参数为空返回 NULL。 */
+VarValue_T *Var_Max(VarValue_T *pLeft, VarValue_T *pRight)
+{
+    if ((pLeft == NULL) || (pRight == NULL)) {
+        return NULL;
+    }
+    if (Var_BothInt(pLeft, pRight)) {
+        return Var_CreateInt(pLeft->u.intValue >= pRight->u.intValue
+                             ? pLeft->u.intValue : pRight->u.intValue);
+    }
+    return Var_CreateDouble(fmax(Var_ToDouble(pLeft),
+                                 Var_ToDouble(pRight)));
+}
+
+/** @brief 返回两个动态值的较小者。 @retval 新变量；参数为空返回 NULL。 */
+VarValue_T *Var_Min(VarValue_T *pLeft, VarValue_T *pRight)
+{
+    if ((pLeft == NULL) || (pRight == NULL)) {
+        return NULL;
+    }
+    if (Var_BothInt(pLeft, pRight)) {
+        return Var_CreateInt(pLeft->u.intValue <= pRight->u.intValue
+                             ? pLeft->u.intValue : pRight->u.intValue);
+    }
+    return Var_CreateDouble(fmin(Var_ToDouble(pLeft),
+                                 Var_ToDouble(pRight)));
+}
+
+/** @brief 返回动态值的绝对值。 @retval 新变量；参数为空返回 NULL。 */
+VarValue_T *Var_Abs(VarValue_T *pValue)
+{
+    if (pValue == NULL) {
+        return NULL;
+    }
+    if (pValue->type == VAR_TYPE_INT) {
+        if (pValue->u.intValue == INT32_MIN) {
+            return Var_CreateDouble(fabs((double)pValue->u.intValue));
+        }
+        return Var_CreateInt(pValue->u.intValue < 0
+                             ? -pValue->u.intValue : pValue->u.intValue);
+    }
+    return Var_CreateDouble(fabs(Var_ToDouble(pValue)));
+}
+
+/** @brief 计算动态值幂运算；整数指数且结果不溢出时保持 int。 @retval 新变量。 */
+VarValue_T *Var_Pow(VarValue_T *pBase, VarValue_T *pExponent)
+{
+    int64_t result = 1;
+    int64_t index = 0;
+    int64_t base = 0;
+    int64_t exponent = 0;
+    if ((pBase == NULL) || (pExponent == NULL)) {
+        return NULL;
+    }
+    if (Var_BothInt(pBase, pExponent)) {
+        base = pBase->u.intValue;
+        exponent = pExponent->u.intValue;
+        if ((base == 0) && (exponent < 0)) {
+            return NULL;
+        }
+        if (exponent < 0) {
+            return Var_CreateDouble(pow((double)base, (double)exponent));
+        }
+        for (index = 0; index < exponent; index++) {
+            result *= base;
+            if ((result < INT32_MIN) || (result > INT32_MAX)) {
+                return Var_CreateDouble(pow((double)base,
+                                            (double)exponent));
+            }
+        }
+        return Var_CreateInt((int32_t)result);
+    }
+    return Var_CreateDouble(pow(Var_ToDouble(pBase),
+                                Var_ToDouble(pExponent)));
+}
+
+/** @brief 计算动态值的平方根。 @retval 新变量；参数为空返回 NULL。 */
+VarValue_T *Var_Sqrt(VarValue_T *pValue)
+{
+    if (pValue == NULL) {
+        return NULL;
+    }
+    return Var_CreateDouble(sqrt(Var_ToDouble(pValue)));
+}
+
+/** @brief 向下取整。 @retval 新变量；参数为空返回 NULL。 */
+VarValue_T *Var_Floor(VarValue_T *pValue)
+{
+    if (pValue == NULL) {
+        return NULL;
+    }
+    if (pValue->type == VAR_TYPE_INT) {
+        return Var_CreateInt(pValue->u.intValue);
+    }
+    return Var_CreateDouble(floor(Var_ToDouble(pValue)));
+}
+
+/** @brief 向上取整。 @retval 新变量；参数为空返回 NULL。 */
+VarValue_T *Var_Ceil(VarValue_T *pValue)
+{
+    if (pValue == NULL) {
+        return NULL;
+    }
+    if (pValue->type == VAR_TYPE_INT) {
+        return Var_CreateInt(pValue->u.intValue);
+    }
+    return Var_CreateDouble(ceil(Var_ToDouble(pValue)));
+}
+
+/** @brief 四舍五入。 @retval 新变量；参数为空返回 NULL。 */
+VarValue_T *Var_Round(VarValue_T *pValue)
+{
+    if (pValue == NULL) {
+        return NULL;
+    }
+    if (pValue->type == VAR_TYPE_INT) {
+        return Var_CreateInt(pValue->u.intValue);
+    }
+    return Var_CreateDouble(round(Var_ToDouble(pValue)));
+}
+
+/** @brief 把动态值限制在 [low, high] 区间。 @retval 新变量。 */
+VarValue_T *Var_Clamp(VarValue_T *pValue, VarValue_T *pLow,
+                      VarValue_T *pHigh)
+{
+    if ((pValue == NULL) || (pLow == NULL) || (pHigh == NULL)) {
+        return NULL;
+    }
+    if (Var_AllInt(pValue, pLow, pHigh)) {
+        int32_t value = pValue->u.intValue;
+        if (value < pLow->u.intValue) {
+            value = pLow->u.intValue;
+        }
+        if (value > pHigh->u.intValue) {
+            value = pHigh->u.intValue;
+        }
+        return Var_CreateInt(value);
+    }
+    return Var_CreateDouble(
+        fmin(fmax(Var_ToDouble(pValue), Var_ToDouble(pLow)),
+             Var_ToDouble(pHigh)));
 }
 
 /**

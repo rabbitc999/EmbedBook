@@ -445,7 +445,7 @@ void Cmd_SendHexData(uint16_t COMx, uint8_t CommandID, uint8_t *Data, uint16_t D
 
 
 % ---------------------------------------------------------------------
-\section{实验报告：串口 FIFO 与 HEX 协议移植验证}
+\section{单片机实验：串口 FIFO 与 HEX 协议移植验证}
 
 \subsection{实验基本信息}
 
@@ -469,14 +469,6 @@ void Cmd_SendHexData(uint16_t COMx, uint8_t CommandID, uint8_t *Data, uint16_t D
 
 \subsection{实验原理}
 串口 FIFO 缓冲区采用循环队列（Ring Buffer）结构，接收中断将数据写入 RxFifo，主循环从中批量读取并解析。HEX 协议定义固定帧格式（包头、命令 ID、长度、数据、校验码、包尾），接收状态机逐字节解析，校验通过后查命令表调用对应处理函数。发送侧同样通过 TxFifo 缓存数据，实现“发送不阻塞应用”的效果。
-
-\subsection{硬件连接}
-
-\LabPasteBox{串口 FIFO 与 HEX 协议硬件连接}{粘贴开发板与 USB 转串口模块（或上位机）的连接图片，标注 TX/RX 交叉连接、电源和公共地。}{fig:ch4-serial-hardware}
-
-\subsection{关键代码}
-
-\LabPasteBox{FIFO 缓冲区、HEX 状态机与命令表代码}{粘贴 FIFO 的读写函数、HEX 接收状态机、命令表定义以及串口中断服务函数的核心代码片段。}{fig:ch4-serial-code}
 
 \subsection{实验步骤}
 \begin{enumerate}
@@ -506,8 +498,6 @@ void Cmd_SendHexData(uint16_t COMx, uint8_t CommandID, uint8_t *Data, uint16_t D
 \bottomrule
 \end{tabularx}
 \end{table}
-
-\LabPasteBox{串口收发调试截图}{粘贴串口调试助手截图，显示发送的 HEX 帧和 MCU 返回的应答帧。}{fig:ch4-serial-result}
 
 \subsection{结果分析}
 

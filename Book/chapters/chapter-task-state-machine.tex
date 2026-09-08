@@ -951,7 +951,7 @@ int main(void) {
 \end{lstlisting}
 
 % ---------------------------------------------------------------------
-\section{实验报告：任务调度与状态机编程验证}
+\section{单片机实验：任务调度与状态机编程验证}
 
 \subsection{实验基本信息}
 
@@ -974,14 +974,6 @@ int main(void) {
 
 \subsection{实验原理}
 调度器采用时间触发、协作运行模式：1ms 定时器中断更新所有任务的计数器，当计数器达到周期值时将任务置为就绪状态；主循环遍历任务池，执行就绪任务并处理回调返回值。任务通过返回值中的 \texttt{UserState} 字段维护自身状态，实现状态机逻辑。按键状态机通过检测电平跳变沿和计时器，将物理按键输入转化为稳定的单击、双击、长按和重复事件。
-
-\subsection{硬件连接}
-
-\LabPasteBox{任务调度与状态机硬件连接}{粘贴开发板与按键、LED、LCD（或串口）的连接图片，标注按键输入引脚、LED 输出和调试接口。}{fig:ch2-sched-hardware}
-
-\subsection{关键代码}
-
-\LabPasteBox{调度器核心与按键状态机代码}{粘贴任务控制块定义、\texttt{Task\_Tick}/\texttt{Task\_Loop} 实现、按键状态机主循环以及任务回调函数的核心代码片段。}{fig:ch2-sched-code}
 
 \subsection{实验步骤}
 \begin{enumerate}
@@ -1011,8 +1003,6 @@ int main(void) {
 \bottomrule
 \end{tabularx}
 \end{table}
-
-\LabPasteBox{调度与状态机运行结果}{粘贴 LCD 显示的事件类型截图、串口输出的任务状态信息以及 LED 闪烁的波形截图。}{fig:ch2-sched-result}
 
 \subsection{结果分析}
 

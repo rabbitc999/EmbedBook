@@ -1,0 +1,55 @@
+% !Mode:: "TeX:UTF-8"
+% 封面背景：浅色底 + 柔和圆点/圆环，无任何线段与复杂图形
+\documentclass[tikz,border=0pt]{standalone}
+
+\usepackage[paperwidth=16cm,paperheight=12.62cm,margin=0pt]{geometry}
+
+\usetikzlibrary{calc}
+
+\definecolor{coverbg}{RGB}{250,249,245}
+\definecolor{coverblue}{RGB}{38,88,164}
+\definecolor{covercyan}{RGB}{0,168,204}
+\definecolor{covertint}{RGB}{229,236,245}
+
+\begin{document}
+\begin{tikzpicture}[
+    x=1cm,
+    y=1cm,
+    scale=15
+]
+    \path[use as bounding box] (0,0) rectangle (16,12.62);
+
+    % 干净的浅色底
+    \shade[left color=coverbg, right color=covertint]
+        (0,0) rectangle (17,13.62);
+
+    % 大面积柔和光晕
+    \begin{scope}[opacity=0.13]
+        \fill[covercyan] (12.6,9.7) circle (4.4);
+        \fill[coverblue] (2.8,2.6) circle (4.0);
+        \fill[coverblue!40!covercyan] (14.2,2.2) circle (3.0);
+        \fill[coverblue!60!white] (3.4,10.4) circle (3.2);
+    \end{scope}
+
+    % 圆环与实心圆点，不使用任何线段
+    \newcommand{\ring}[3]{%
+        \fill[white] (#1) circle (#2);
+        \draw[#3, line width=2.2pt] (#1) circle (#2);
+    }
+
+    \ring{2.4,8.4}{1.35}{coverblue}
+    \ring{5.0,10.0}{0.85}{covercyan}
+    \ring{8.2,4.6}{2.15}{coverblue!80!black}
+    \ring{10.2,7.1}{0.60}{covercyan}
+    \ring{11.2,10.8}{1.05}{covercyan!60!white}
+    \ring{13.8,7.5}{1.60}{coverblue!55!white}
+    \ring{15.0,10.6}{0.70}{covercyan}
+
+    \fill[coverblue] (3.8,3.6) circle (0.45);
+    \fill[covercyan] (7.2,8.8) circle (0.38);
+    \fill[coverblue!70!black] (9.6,3.2) circle (0.50);
+    \fill[covercyan!80!white] (14.2,4.8) circle (0.35);
+    \fill[coverblue] (15.2,5.2) circle (0.28);
+    \fill[coverblue!55!covercyan] (5.8,5.9) circle (0.42);
+\end{tikzpicture}
+\end{document}

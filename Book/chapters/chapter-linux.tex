@@ -847,7 +847,7 @@ CMake 的价值是“一处写 CMakeLists.txt，Windows、Linux 与单片机交�
 \subsection*{选读建议}
 从单片机转向嵌入式 Linux，不必一上来就啃内核。务实的路径是：先跑通开发板、写用户空间程序（第二阶段）\(\rightarrow\) 再学 U-Boot 与内核移植（第三阶段）\(\rightarrow\) 最后按需深入驱动或内核（第四阶段）。第一阶段的命令和 Shell 脚本贯穿始终，建议边用边查，不必一次性背完。
 % ---------------------------------------------------------------------
-\section{实验报告：Linux 开发环境搭建与基础命令验证}
+\section{单片机实验：Linux 开发环境搭建与基础命令验证}
 
 \subsection{实验基本信息}
 
@@ -872,14 +872,6 @@ CMake 的价值是“一处写 CMakeLists.txt，Windows、Linux 与单片机交�
 \subsection{实验原理}
 Linux 是嵌入式开发的重要平台，现代工具链（GCC、CMake、Git 等）均原生支持 Linux 环境。虚拟机技术允许在 Windows 主机上运行完整的 Linux 系统，无需双系统或额外硬件。GCC 将 C 源码依次经过预处理、编译、汇编、链接四个阶段生成可执行文件。Makefile 通过“目标-依赖-命令”规则实现增量编译，CMake 则进一步抽象构建过程，生成平台无关的构建配置。
 
-\subsection{硬件连接}
-
-\LabPasteBox{Linux 开发环境硬件连接}{粘贴虚拟机网络配置截图（NAT/桥接模式）和主机与虚拟机通信测试（ping）截图。}{fig:linux-hardware}
-
-\subsection{关键代码}
-
-\LabPasteBox{Linux 基础命令与构建脚本}{粘贴 Shell 测试命令、GCC 编译命令、Makefile 和 CMakeLists.txt 核心内容。}{fig:linux-code}
-
 \subsection{实验步骤}
 \begin{enumerate}
 \item 下载 Ubuntu 22.04/24.04 ISO 镜像，在 VMware 或 VirtualBox 中创建虚拟机，分配 4GB 以上内存和 60GB 以上磁盘。
@@ -900,7 +892,7 @@ Linux 是嵌入式开发的重要平台，现代工具链（GCC、CMake、Git �
 \centering
 \caption{Linux 命令与构建工具验证记录}
 \label{tab:linux-record}
-\begin{tabularx}{\textwidth}{p{2.8cm}p{3.5cm}p{3.5cm}X}
+\begin{tabularx}{\textwidth}{XXXX}
 \toprule
 \textbf{测试项目} & \textbf{输入命令/操作} & \textbf{预期结果} & \textbf{实际结果} \\
 \midrule
@@ -912,8 +904,6 @@ CMake & \texttt{cmake --build build} & 构建成功 & \LabFillBlack[2.8cm] \\
 \bottomrule
 \end{tabularx}
 \end{table}
-
-\LabPasteBox{Linux 实验运行结果}{粘贴终端执行 \texttt{uname -a}、GCC 编译、Make 构建和 CMake 构建的完整输出截图。}{fig:linux-result}
 
 \subsection{结果分析}
 

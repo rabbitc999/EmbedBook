@@ -153,10 +153,23 @@ VarValue_T *Var_Add(VarValue_T *pLeft, VarValue_T *pRight);
 VarValue_T *Var_Sub(VarValue_T *pLeft, VarValue_T *pRight);
 VarValue_T *Var_Mul(VarValue_T *pLeft, VarValue_T *pRight);
 VarValue_T *Var_Div(VarValue_T *pLeft, VarValue_T *pRight);
+VarValue_T *Var_Mod(VarValue_T *pLeft, VarValue_T *pRight);
 VarValue_T *Var_Neg(VarValue_T *pValue);
 VarValue_T *Var_Not(VarValue_T *pValue);
 VarValue_T *Var_And(VarValue_T *pLeft, VarValue_T *pRight);
 VarValue_T *Var_Or(VarValue_T *pLeft, VarValue_T *pRight);
+
+/* 常见数值函数：参数与返回值均为动态变量 */
+VarValue_T *Var_Max(VarValue_T *pLeft, VarValue_T *pRight);
+VarValue_T *Var_Min(VarValue_T *pLeft, VarValue_T *pRight);
+VarValue_T *Var_Abs(VarValue_T *pValue);
+VarValue_T *Var_Pow(VarValue_T *pBase, VarValue_T *pExponent);
+VarValue_T *Var_Sqrt(VarValue_T *pValue);
+VarValue_T *Var_Floor(VarValue_T *pValue);
+VarValue_T *Var_Ceil(VarValue_T *pValue);
+VarValue_T *Var_Round(VarValue_T *pValue);
+VarValue_T *Var_Clamp(VarValue_T *pValue, VarValue_T *pLow,
+                      VarValue_T *pHigh);
 
 /* 返回码 */
 #define VAR_RUNTIME_OK               0
@@ -180,7 +193,7 @@ int32_t Var_GetDouble(const VarValue_T *pValue, double *pResult);
 int32_t Var_GetChar(const VarValue_T *pValue, char *pResult);
 int32_t Var_GetString(const VarValue_T *pValue, const char **ppResult);
 
-/* 按类型模板构造转换后的独立值，仅支持简单类型与数组 */
+/* 按类型模板构造转换后的独立值，支持简单类型、数组、字典与结构体 */
 int32_t Var_ConvertValue(const VarValue_T *pSource,
                          const VarValue_T *pTypeTemplate,
                          VarValue_T **ppResult);

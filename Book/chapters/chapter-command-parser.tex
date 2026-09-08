@@ -513,8 +513,6 @@ argv[5] = led      type = STRING
 
 \subsection{实验基本信息}
 
-\subsection{实验基本信息}
-
 \begin{tabular}{l l l l}
   实验日期：   & \LabFillLine[3cm] & 
   开发板型号： & \LabFillLine[3.5cm] \\[2pt]
@@ -533,14 +531,6 @@ argv[5] = led      type = STRING
 \subsection{实验原理}
 
 串口中断把字节写入 FIFO，主循环读取字节并检测换行符，组成一条命令后交给词法分析和命令查找模块。命令适配器先检查参数个数和类型，再调用 LED、小车等业务函数；未知命令、非法参数和超长输入均在命令层返回错误码，不直接进入业务函数。
-
-\subsection{硬件连接}
-
-\LabPasteBox{串口命令解析实验硬件连接}{粘贴开发板与 USB-TTL 接线图片，并标注 TX、RX、GND、电平标准和串口号。}{fig:ch9-command-hardware}
-
-\subsection{关键代码}
-
-\LabPasteBox{FIFO 读取、换行检测与命令解析关键代码}{粘贴 FIFO 出队、换行检测、解析调用、参数校验和错误处理代码。}{fig:ch9-command-code}
 
 \subsection{实验步骤}
 
@@ -572,8 +562,6 @@ argv[5] = led      type = STRING
 \bottomrule
 \end{tabularx}
 \end{table}
-
-\LabPasteBox{串口命令解析运行结果}{粘贴五组命令的串口收发截图或日志，并标注时间、命令和返回码。}{fig:ch9-command-result}
 
 \subsection{结果分析}
 

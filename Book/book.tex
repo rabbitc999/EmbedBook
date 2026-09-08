@@ -11,26 +11,13 @@
 \releasefalse
 
 % ------------------------- 文档信息 -------------------------
-\ifrelease
-\title{嵌入式C语言生存手册}
-\else
-\title{一个嵌入式工程师的荒野求生笔记}
-\fi
-
-\author{最爱小兔糖糖}
-
-\ifrelease
-\date{2025 年 11 月 28 日}
-\institute{安徽新华学院}
-\subtitle{从点灯到交付的15个生存法则}
-\extrainfo{本文所有代码位于Gitee仓库，你可以从Release发布版本中下载完整的原文和示例代码}
-\else
-\date{\zhtoday}
-\institute{真正的高手不会受到环境的影响}
+\title{嵌入式工程师的荒野求生笔记}
 \subtitle{单片机武林高手秘籍，使用\LaTeX{}编写}
+\author{最爱小兔糖糖}
+\institute{真正的高手不会受到环境的影响}
 \extrainfo{初次见面，我已经关注你很久了。别看我像个孩子，其实我比任何一位大人都了解这个世界。所以我可以用我的知识，换取你路上的见闻吗？——《原神》纳西妲}
-\fi
 
+\date{\zhtoday}
 \cover{figure/cover.pdf}
 
 \begin{document}
@@ -65,19 +52,15 @@
 \input{chapters/chapter-pid-control}
 \input{chapters/chapter-fft}
 \input{chapters/chapter-filter}
-
-\ifrelease
-% 正式版：跳过16章的所有介绍
-\else
 \input{chapters/chapter-linux}
 \input{chapters/chapter-deadline-ai}
 \input{chapters/chapter-about-author}
-\fi
 
 \appendix
 \input{chapters/appendix-parser-generator-runtime}
 \input{chapters/appendix-coroutine-internals}
 \input{chapters/appendix-code-source}
 \input{chapters/appendix-answers}
+\input{chapters/appendix-projects}
 
 \end{document}

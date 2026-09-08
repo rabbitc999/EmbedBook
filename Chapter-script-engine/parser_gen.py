@@ -38,10 +38,13 @@ generate_parser_c(grammar, tokens)
   - Token 枚举
   - ParserToken_T（携带 value / line / column）
   - 默认 Lexer、预测分析表与显式分析栈
+  - 原 variable_runtime.c/h 的完整实现；输出 C 文件可直接单独编译
+  - 演示 main()：编译后运行可解析表达式并打印结果
+  - 可选 %tree：文法开头写 %tree 后，生成代码附带通用语法树 API
+  - 可选 %var_max_count N：设置生成代码中变量表的固定容量
 """
 
 import argparse
-import json
 import os
 import re
 import subprocess
@@ -75,6 +78,1738 @@ import warnings
 
 import io
 import re
+
+# =====================================================================
+# 变量运行时内嵌源码（原 variable_runtime.h / variable_runtime.c）
+# 生成 C 代码时由 generate_parser_c 直接嵌入产物，运行时不再依赖外部文件。
+# =====================================================================
+VARIABLE_RUNTIME_HEADER = r'''#ifndef __VARIABLE_RUNTIME_H
+#define __VARIABLE_RUNTIME_H
+
+#include <stdint.h>
+#include <stddef.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* 变量类型 */
+typedef enum __VarType_T
+{
+    VAR_TYPE_NONE = 0,
+    VAR_TYPE_UINT8,
+    VAR_TYPE_INT8,
+    VAR_TYPE_UINT16,
+    VAR_TYPE_INT16,
+    VAR_TYPE_UINT32,
+    VAR_TYPE_UINT64,
+    VAR_TYPE_INT64,
+    VAR_TYPE_INT,
+    VAR_TYPE_FLOAT,
+    VAR_TYPE_DOUBLE,
+    VAR_TYPE_CHAR,
+    VAR_TYPE_STRING,
+    VAR_TYPE_ARRAY,
+    VAR_TYPE_DICT,
+    VAR_TYPE_STRUCT
+} VarType_T;
+
+/* 前向声明 */
+typedef struct __VarValue_T VarValue_T;
+
+/* 字典键值对 */
+typedef struct __VarKeyValue_T
+{
+    char *key;        /* 键名（运行时 malloc/free） */
+    VarValue_T *value; /* 键对应的值 */
+} VarKeyValue_T;
+
+/* 结构体成员 */
+typedef struct __VarMember_T
+{
+    char *name;       /* 成员名 */
+    VarValue_T *value; /* 成员值 */
+} VarMember_T;
+
+/* 动态容器 */
+typedef struct __VarArrayBody_T
+{
+    VarValue_T **items;  /* 元素数组 */
+    size_t length;       /* 当前长度 */
+    size_t capacity;     /* 容量 */
+} VarArrayBody_T;
+
+typedef struct __VarDictBody_T
+{
+    VarKeyValue_T *entries; /* 键值对数组 */
+    size_t length;          /* 当前项数 */
+    size_t capacity;        /* 容量 */
+} VarDictBody_T;
+
+typedef struct __VarStructBody_T
+{
+    VarMember_T *members;   /* 成员数组 */
+    size_t length;          /* 成员数 */
+    size_t capacity;        /* 容量 */
+} VarStructBody_T;
+
+/* 变量值：所有类型共用 */
+struct __VarValue_T
+{
+    VarType_T type;
+    union
+    {
+        int32_t intValue;
+        uint8_t uint8Value;
+        int8_t int8Value;
+        uint16_t uint16Value;
+        int16_t int16Value;
+        uint32_t uint32Value;
+        uint64_t uint64Value;
+        int64_t int64Value;
+        float floatValue;
+        double doubleValue;
+        char charValue;
+        char *stringValue;        /* malloc 管理，非固定长度 */
+        VarArrayBody_T array;     /* 数组，元素可继续嵌套 */
+        VarDictBody_T dict;       /* 字典，value 可继续嵌套 */
+        VarStructBody_T object;   /* 结构体，成员可继续嵌套 */
+    } u;
+};
+
+/* 创建基本类型 */
+VarValue_T *Var_CreateInt(int32_t value);
+VarValue_T *Var_CreateUint8(uint8_t value);
+VarValue_T *Var_CreateInt8(int8_t value);
+VarValue_T *Var_CreateUint16(uint16_t value);
+VarValue_T *Var_CreateInt16(int16_t value);
+VarValue_T *Var_CreateUint32(uint32_t value);
+VarValue_T *Var_CreateUint64(uint64_t value);
+VarValue_T *Var_CreateInt64(int64_t value);
+VarValue_T *Var_CreateFloat(float value);
+VarValue_T *Var_CreateDouble(double value);
+VarValue_T *Var_CreateChar(char value);
+
+/* 创建字符串：内部复制一份，长度不固定 */
+VarValue_T *Var_CreateString(const char *text);
+
+/* 创建空数组 / 字典 / 结构体 */
+VarValue_T *Var_CreateArray(void);
+VarValue_T *Var_CreateDict(void);
+VarValue_T *Var_CreateStruct(void);
+
+/* 释放变量（递归释放内部所有节点） */
+void Var_Free(VarValue_T *pValue);
+
+/* 数组操作 */
+int32_t Var_ArrayPush(VarValue_T *pArray, VarValue_T *pItem);
+VarValue_T *Var_ArrayGet(VarValue_T *pArray, size_t index);
+int32_t Var_ArraySet(VarValue_T *pArray, size_t index, VarValue_T *pItem);
+
+/* 字典操作 */
+int32_t Var_DictSet(VarValue_T *pDict, const char *key, VarValue_T *pValue);
+VarValue_T *Var_DictGet(VarValue_T *pDict, const char *key);
+
+/* 结构体操作 */
+int32_t Var_StructSetField(VarValue_T *pStruct, const char *name,
+                           VarValue_T *pValue);
+VarValue_T *Var_StructGetField(VarValue_T *pStruct, const char *name);
+
+/* 运行时桥接 API */
+VarValue_T *Var_CloneValue(const VarValue_T *pValue);
+int64_t Var_ToInt(VarValue_T *pValue);
+double Var_ToDouble(VarValue_T *pValue);
+uint8_t Var_IsTrue(VarValue_T *pValue);
+int32_t Var_SetValue(VarValue_T *pDst, const VarValue_T *pSrc);
+
+/* 类型化赋值：把标量直接覆盖到已有变量对象（保留指针、释放旧内容） */
+int32_t Var_SetInt8(VarValue_T *pDst, int8_t value);
+int32_t Var_SetUint8(VarValue_T *pDst, uint8_t value);
+int32_t Var_SetChar(VarValue_T *pDst, char value);
+int32_t Var_SetInt16(VarValue_T *pDst, int16_t value);
+int32_t Var_SetUint16(VarValue_T *pDst, uint16_t value);
+int32_t Var_SetInt(VarValue_T *pDst, int32_t value);
+int32_t Var_SetUint32(VarValue_T *pDst, uint32_t value);
+int32_t Var_SetInt64(VarValue_T *pDst, int64_t value);
+int32_t Var_SetUint64(VarValue_T *pDst, uint64_t value);
+int32_t Var_SetFloat(VarValue_T *pDst, float value);
+int32_t Var_SetDouble(VarValue_T *pDst, double value);
+VarValue_T *Var_Add(VarValue_T *pLeft, VarValue_T *pRight);
+VarValue_T *Var_Sub(VarValue_T *pLeft, VarValue_T *pRight);
+VarValue_T *Var_Mul(VarValue_T *pLeft, VarValue_T *pRight);
+VarValue_T *Var_Div(VarValue_T *pLeft, VarValue_T *pRight);
+VarValue_T *Var_Mod(VarValue_T *pLeft, VarValue_T *pRight);
+VarValue_T *Var_Neg(VarValue_T *pValue);
+VarValue_T *Var_Not(VarValue_T *pValue);
+VarValue_T *Var_And(VarValue_T *pLeft, VarValue_T *pRight);
+VarValue_T *Var_Or(VarValue_T *pLeft, VarValue_T *pRight);
+
+/* 常见数值函数：参数与返回值均为动态变量 */
+VarValue_T *Var_Max(VarValue_T *pLeft, VarValue_T *pRight);
+VarValue_T *Var_Min(VarValue_T *pLeft, VarValue_T *pRight);
+VarValue_T *Var_Abs(VarValue_T *pValue);
+VarValue_T *Var_Pow(VarValue_T *pBase, VarValue_T *pExponent);
+VarValue_T *Var_Sqrt(VarValue_T *pValue);
+VarValue_T *Var_Floor(VarValue_T *pValue);
+VarValue_T *Var_Ceil(VarValue_T *pValue);
+VarValue_T *Var_Round(VarValue_T *pValue);
+VarValue_T *Var_Clamp(VarValue_T *pValue, VarValue_T *pLow,
+                      VarValue_T *pHigh);
+
+/* 返回码 */
+#define VAR_RUNTIME_OK               0
+#define VAR_RUNTIME_ERR_TYPE        -1
+#define VAR_RUNTIME_ERR_BOUND       -2
+#define VAR_RUNTIME_ERR_NOT_FOUND   -3
+#define VAR_RUNTIME_ERR_MEMORY      -4
+#define VAR_RUNTIME_ERR_RANGE       -5
+
+/* 强类型读取：成功后才写输出参数，源变量保持不变 */
+int32_t Var_GetInt8(const VarValue_T *pValue, int8_t *pResult);
+int32_t Var_GetUint8(const VarValue_T *pValue, uint8_t *pResult);
+int32_t Var_GetInt16(const VarValue_T *pValue, int16_t *pResult);
+int32_t Var_GetUint16(const VarValue_T *pValue, uint16_t *pResult);
+int32_t Var_GetInt32(const VarValue_T *pValue, int32_t *pResult);
+int32_t Var_GetUint32(const VarValue_T *pValue, uint32_t *pResult);
+int32_t Var_GetInt64(const VarValue_T *pValue, int64_t *pResult);
+int32_t Var_GetUint64(const VarValue_T *pValue, uint64_t *pResult);
+int32_t Var_GetFloat(const VarValue_T *pValue, float *pResult);
+int32_t Var_GetDouble(const VarValue_T *pValue, double *pResult);
+int32_t Var_GetChar(const VarValue_T *pValue, char *pResult);
+int32_t Var_GetString(const VarValue_T *pValue, const char **ppResult);
+
+/* 按类型模板构造转换后的独立值，支持简单类型、数组、字典与结构体 */
+int32_t Var_ConvertValue(const VarValue_T *pSource,
+                         const VarValue_T *pTypeTemplate,
+                         VarValue_T **ppResult);
+
+/* 切片：字符串/数组共用，start 可为负数，end 可为负数或大于长度 */
+int32_t Var_Slice(VarValue_T *pValue,
+                  int64_t start,
+                  int64_t end,
+                  VarValue_T **ppOut);
+
+/* 拼接：只有同为字符串或同为数组才允许 */
+int32_t Var_Concat(VarValue_T *pLeft,
+                   VarValue_T *pRight,
+                   VarValue_T **ppOut);
+
+/* 类型检查工具 */
+int32_t Var_CanConcat(VarValue_T *pLeft, VarValue_T *pRight);
+const char *Var_TypeName(VarType_T type);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* __VARIABLE_RUNTIME_H */
+'''
+
+# 中文注释：variable_runtime.c 的完整实现，生成时同样嵌入
+VARIABLE_RUNTIME_SOURCE = r'''/**
+ * @file    variable_runtime.c
+ * @brief   VarValue_T 动态变量运行时
+ * @details 支持 int/float/double/string/array/dict/struct；
+ *          string/array 支持切片与拼接，拼接前做类型检查；
+ *          字符串长度不固定，由 malloc/free 管理。
+ */
+
+#include <float.h>
+#include <limits.h>
+#include <math.h>
+#include <stdlib.h>
+#include <string.h>
+#include "variable_runtime.h"
+
+/* 初始容器容量 */
+#define VAR_RUNTIME_INIT_CAPACITY 4u
+
+/**
+ * @brief  创建空变量节点
+ * @param  type 变量类型
+ * @retval 新节点；内存不足返回 NULL
+ */
+static VarValue_T *Var_New(VarType_T type)
+{
+    VarValue_T *pValue = (VarValue_T *)calloc(1, sizeof(VarValue_T));
+    if (pValue != NULL) {
+        pValue->type = type;
+    }
+    return pValue;
+}
+
+/**
+ * @brief  创建 int 变量
+ */
+VarValue_T *Var_CreateInt(int32_t value)
+{
+    VarValue_T *pValue = Var_New(VAR_TYPE_INT);
+    if (pValue != NULL) {
+        pValue->u.intValue = value;
+    }
+    return pValue;
+}
+
+VarValue_T *Var_CreateUint8(uint8_t value)
+{
+    VarValue_T *pValue = Var_New(VAR_TYPE_UINT8);
+    if (pValue != NULL) { pValue->u.uint8Value = value; }
+    return pValue;
+}
+
+VarValue_T *Var_CreateInt8(int8_t value)
+{
+    VarValue_T *pValue = Var_New(VAR_TYPE_INT8);
+    if (pValue != NULL) { pValue->u.int8Value = value; }
+    return pValue;
+}
+
+VarValue_T *Var_CreateUint16(uint16_t value)
+{
+    VarValue_T *pValue = Var_New(VAR_TYPE_UINT16);
+    if (pValue != NULL) { pValue->u.uint16Value = value; }
+    return pValue;
+}
+
+VarValue_T *Var_CreateInt16(int16_t value)
+{
+    VarValue_T *pValue = Var_New(VAR_TYPE_INT16);
+    if (pValue != NULL) { pValue->u.int16Value = value; }
+    return pValue;
+}
+
+VarValue_T *Var_CreateUint32(uint32_t value)
+{
+    VarValue_T *pValue = Var_New(VAR_TYPE_UINT32);
+    if (pValue != NULL) { pValue->u.uint32Value = value; }
+    return pValue;
+}
+
+VarValue_T *Var_CreateUint64(uint64_t value)
+{
+    VarValue_T *pValue = Var_New(VAR_TYPE_UINT64);
+    if (pValue != NULL) { pValue->u.uint64Value = value; }
+    return pValue;
+}
+
+VarValue_T *Var_CreateInt64(int64_t value)
+{
+    VarValue_T *pValue = Var_New(VAR_TYPE_INT64);
+    if (pValue != NULL) { pValue->u.int64Value = value; }
+    return pValue;
+}
+
+/**
+ * @brief  创建 float 变量
+ */
+VarValue_T *Var_CreateFloat(float value)
+{
+    VarValue_T *pValue = Var_New(VAR_TYPE_FLOAT);
+    if (pValue != NULL) {
+        pValue->u.floatValue = value;
+    }
+    return pValue;
+}
+
+/**
+ * @brief  创建 double 变量
+ */
+VarValue_T *Var_CreateDouble(double value)
+{
+    VarValue_T *pValue = Var_New(VAR_TYPE_DOUBLE);
+    if (pValue != NULL) {
+        pValue->u.doubleValue = value;
+    }
+    return pValue;
+}
+
+/**
+ * @brief  创建 char 变量
+ */
+VarValue_T *Var_CreateChar(char value)
+{
+    VarValue_T *pValue = Var_New(VAR_TYPE_CHAR);
+    if (pValue != NULL) {
+        pValue->u.charValue = value;
+    }
+    return pValue;
+}
+
+/**
+ * @brief  创建字符串变量
+ * @param  text 字符串内容
+ * @retval 新字符串节点；失败返回 NULL
+ */
+VarValue_T *Var_CreateString(const char *text)
+{
+    size_t length = 0u;
+    VarValue_T *pValue = NULL;
+
+    if (text == NULL) {
+        text = "";
+    }
+    length = strlen(text);
+
+    pValue = Var_New(VAR_TYPE_STRING);
+    if (pValue == NULL) {
+        return NULL;
+    }
+    pValue->u.stringValue = (char *)malloc(length + 1u);
+    if (pValue->u.stringValue == NULL) {
+        Var_Free(pValue);
+        return NULL;
+    }
+    memcpy(pValue->u.stringValue, text, length + 1u);
+    return pValue;
+}
+
+/**
+ * @brief  创建空数组
+ */
+VarValue_T *Var_CreateArray(void)
+{
+    VarValue_T *pValue = Var_New(VAR_TYPE_ARRAY);
+    if (pValue == NULL) {
+        return NULL;
+    }
+    pValue->u.array.capacity = VAR_RUNTIME_INIT_CAPACITY;
+    pValue->u.array.items = (VarValue_T **)calloc(
+        pValue->u.array.capacity, sizeof(VarValue_T *));
+    if (pValue->u.array.items == NULL) {
+        Var_Free(pValue);
+        return NULL;
+    }
+    return pValue;
+}
+
+/**
+ * @brief  创建空字典
+ */
+VarValue_T *Var_CreateDict(void)
+{
+    VarValue_T *pValue = Var_New(VAR_TYPE_DICT);
+    if (pValue == NULL) {
+        return NULL;
+    }
+    pValue->u.dict.capacity = VAR_RUNTIME_INIT_CAPACITY;
+    pValue->u.dict.entries = (VarKeyValue_T *)calloc(
+        pValue->u.dict.capacity, sizeof(VarKeyValue_T));
+    if (pValue->u.dict.entries == NULL) {
+        Var_Free(pValue);
+        return NULL;
+    }
+    return pValue;
+}
+
+/**
+ * @brief  创建空结构体
+ */
+VarValue_T *Var_CreateStruct(void)
+{
+    VarValue_T *pValue = Var_New(VAR_TYPE_STRUCT);
+    if (pValue == NULL) {
+        return NULL;
+    }
+    pValue->u.object.capacity = VAR_RUNTIME_INIT_CAPACITY;
+    pValue->u.object.members = (VarMember_T *)calloc(
+        pValue->u.object.capacity, sizeof(VarMember_T));
+    if (pValue->u.object.members == NULL) {
+        Var_Free(pValue);
+        return NULL;
+    }
+    return pValue;
+}
+
+/**
+ * @brief  只释放变量内部内容，不释放节点本身
+ * @param  pValue 待清理变量；NULL 直接返回
+ * @note   Var_SetValue 会借用栈上临时节点做内容交换，因此不能调用 Var_Free
+ */
+static void Var_FreeContent(VarValue_T *pValue)
+{
+    size_t index = 0u;
+
+    if (pValue == NULL) {
+        return;
+    }
+    switch (pValue->type) {
+        case VAR_TYPE_STRING:
+            free(pValue->u.stringValue);
+            break;
+        case VAR_TYPE_ARRAY:
+            for (index = 0u; index < pValue->u.array.length; index++) {
+                Var_Free(pValue->u.array.items[index]);
+            }
+            free(pValue->u.array.items);
+            break;
+        case VAR_TYPE_DICT:
+            for (index = 0u; index < pValue->u.dict.length; index++) {
+                free(pValue->u.dict.entries[index].key);
+                Var_Free(pValue->u.dict.entries[index].value);
+            }
+            free(pValue->u.dict.entries);
+            break;
+        case VAR_TYPE_STRUCT:
+            for (index = 0u; index < pValue->u.object.length; index++) {
+                free(pValue->u.object.members[index].name);
+                Var_Free(pValue->u.object.members[index].value);
+            }
+            free(pValue->u.object.members);
+            break;
+        default:
+            break;
+    }
+}
+
+/**
+ * @brief  递归释放变量
+ * @param  pValue 待释放变量；NULL 直接返回
+ */
+void Var_Free(VarValue_T *pValue)
+{
+    if (pValue == NULL) {
+        return;
+    }
+    Var_FreeContent(pValue);
+    free(pValue);
+}
+
+/**
+ * @brief  深拷贝变量
+ * @param  pSrc 源变量
+ * @retval 拷贝结果；失败返回 NULL
+ */
+static VarValue_T *Var_Clone(const VarValue_T *pSrc)
+{
+    VarValue_T *pDst = NULL;
+    size_t index = 0u;
+
+    if (pSrc == NULL) {
+        return NULL;
+    }
+    switch (pSrc->type) {
+        case VAR_TYPE_INT:
+            return Var_CreateInt(pSrc->u.intValue);
+        case VAR_TYPE_UINT8:
+            return Var_CreateUint8(pSrc->u.uint8Value);
+        case VAR_TYPE_INT8:
+            return Var_CreateInt8(pSrc->u.int8Value);
+        case VAR_TYPE_UINT16:
+            return Var_CreateUint16(pSrc->u.uint16Value);
+        case VAR_TYPE_INT16:
+            return Var_CreateInt16(pSrc->u.int16Value);
+        case VAR_TYPE_UINT32:
+            return Var_CreateUint32(pSrc->u.uint32Value);
+        case VAR_TYPE_UINT64:
+            return Var_CreateUint64(pSrc->u.uint64Value);
+        case VAR_TYPE_INT64:
+            return Var_CreateInt64(pSrc->u.int64Value);
+        case VAR_TYPE_FLOAT:
+            return Var_CreateFloat(pSrc->u.floatValue);
+        case VAR_TYPE_DOUBLE:
+            return Var_CreateDouble(pSrc->u.doubleValue);
+        case VAR_TYPE_CHAR:
+            return Var_CreateChar(pSrc->u.charValue);
+        case VAR_TYPE_STRING:
+            return Var_CreateString(pSrc->u.stringValue);
+        case VAR_TYPE_ARRAY:
+            pDst = Var_CreateArray();
+            if (pDst == NULL) {
+                return NULL;
+            }
+            for (index = 0u; index < pSrc->u.array.length; index++) {
+                if (Var_ArrayPush(pDst,
+                                  Var_Clone(pSrc->u.array.items[index]))
+                    != VAR_RUNTIME_OK) {
+                    Var_Free(pDst);
+                    return NULL;
+                }
+            }
+            return pDst;
+        case VAR_TYPE_DICT:
+            pDst = Var_CreateDict();
+            if (pDst == NULL) {
+                return NULL;
+            }
+            for (index = 0u; index < pSrc->u.dict.length; index++) {
+                Var_DictSet(pDst,
+                            pSrc->u.dict.entries[index].key,
+                            Var_Clone(pSrc->u.dict.entries[index].value));
+            }
+            return pDst;
+        case VAR_TYPE_STRUCT:
+            pDst = Var_CreateStruct();
+            if (pDst == NULL) {
+                return NULL;
+            }
+            for (index = 0u; index < pSrc->u.object.length; index++) {
+                Var_StructSetField(pDst,
+                                   pSrc->u.object.members[index].name,
+                                   Var_Clone(pSrc->u.object.members[index].value));
+            }
+            return pDst;
+        default:
+            return NULL;
+    }
+}
+
+/**
+ * @brief  数组扩容
+ */
+static int32_t Var_ArrayGrow(VarArrayBody_T *pBody)
+{
+    size_t newCapacity = 0u;
+    VarValue_T **pNewItems = NULL;
+
+    newCapacity = pBody->capacity * 2u;
+    pNewItems = (VarValue_T **)realloc(
+        pBody->items, newCapacity * sizeof(VarValue_T *));
+    if (pNewItems == NULL) {
+        return VAR_RUNTIME_ERR_MEMORY;
+    }
+    pBody->items = pNewItems;
+    pBody->capacity = newCapacity;
+    return VAR_RUNTIME_OK;
+}
+
+/**
+ * @brief  向数组尾部添加元素
+ * @note   数组接管 pItem 所有权，失败时调用者仍需自行释放
+ */
+int32_t Var_ArrayPush(VarValue_T *pArray, VarValue_T *pItem)
+{
+    int32_t ret = VAR_RUNTIME_OK;
+
+    if ((pArray == NULL) || (pArray->type != VAR_TYPE_ARRAY)) {
+        return VAR_RUNTIME_ERR_TYPE;
+    }
+    if (pItem == NULL) {
+        return VAR_RUNTIME_ERR_MEMORY;
+    }
+    if (pArray->u.array.length >= pArray->u.array.capacity) {
+        ret = Var_ArrayGrow(&pArray->u.array);
+        if (ret != VAR_RUNTIME_OK) {
+            return ret;
+        }
+    }
+    pArray->u.array.items[pArray->u.array.length] = pItem;
+    pArray->u.array.length++;
+    return VAR_RUNTIME_OK;
+}
+
+/**
+ * @brief  读取数组元素
+ */
+VarValue_T *Var_ArrayGet(VarValue_T *pArray, size_t index)
+{
+    if ((pArray == NULL) || (pArray->type != VAR_TYPE_ARRAY)) {
+        return NULL;
+    }
+    if (index >= pArray->u.array.length) {
+        return NULL;
+    }
+    return pArray->u.array.items[index];
+}
+
+/**
+ * @brief  写入数组元素（旧值由本函数释放）
+ */
+int32_t Var_ArraySet(VarValue_T *pArray, size_t index, VarValue_T *pItem)
+{
+    if ((pArray == NULL) || (pItem == NULL) ||
+        (pArray->type != VAR_TYPE_ARRAY)) {
+        return VAR_RUNTIME_ERR_TYPE;
+    }
+    if (index >= pArray->u.array.length) {
+        return VAR_RUNTIME_ERR_BOUND;
+    }
+    Var_Free(pArray->u.array.items[index]);
+    pArray->u.array.items[index] = pItem;
+    return VAR_RUNTIME_OK;
+}
+
+/**
+ * @brief  字典扩容
+ */
+static int32_t Var_DictGrow(VarDictBody_T *pBody)
+{
+    size_t newCapacity = 0u;
+    VarKeyValue_T *pNewEntries = NULL;
+
+    newCapacity = pBody->capacity * 2u;
+    pNewEntries = (VarKeyValue_T *)realloc(
+        pBody->entries, newCapacity * sizeof(VarKeyValue_T));
+    if (pNewEntries == NULL) {
+        return VAR_RUNTIME_ERR_MEMORY;
+    }
+    pBody->entries = pNewEntries;
+    pBody->capacity = newCapacity;
+    return VAR_RUNTIME_OK;
+}
+
+/**
+ * @brief  设置字典键值
+ * @note   若 key 已存在则替换旧值；字典接管 pValue 所有权
+ */
+int32_t Var_DictSet(VarValue_T *pDict, const char *key, VarValue_T *pValue)
+{
+    size_t index = 0u;
+
+    if ((pDict == NULL) || (pDict->type != VAR_TYPE_DICT) ||
+        (key == NULL) || (pValue == NULL)) {
+        return VAR_RUNTIME_ERR_TYPE;
+    }
+
+    for (index = 0u; index < pDict->u.dict.length; index++) {
+        if (strcmp(pDict->u.dict.entries[index].key, key) == 0) {
+            Var_Free(pDict->u.dict.entries[index].value);
+            pDict->u.dict.entries[index].value = pValue;
+            return VAR_RUNTIME_OK;
+        }
+    }
+
+    if (pDict->u.dict.length >= pDict->u.dict.capacity) {
+        if (Var_DictGrow(&pDict->u.dict) != VAR_RUNTIME_OK) {
+            return VAR_RUNTIME_ERR_MEMORY;
+        }
+    }
+    pDict->u.dict.entries[pDict->u.dict.length].key =
+        (char *)malloc(strlen(key) + 1u);
+    if (pDict->u.dict.entries[pDict->u.dict.length].key == NULL) {
+        return VAR_RUNTIME_ERR_MEMORY;
+    }
+    strcpy(pDict->u.dict.entries[pDict->u.dict.length].key, key);
+    pDict->u.dict.entries[pDict->u.dict.length].value = pValue;
+    pDict->u.dict.length++;
+    return VAR_RUNTIME_OK;
+}
+
+/**
+ * @brief  读取字典键值
+ */
+VarValue_T *Var_DictGet(VarValue_T *pDict, const char *key)
+{
+    size_t index = 0u;
+
+    if ((pDict == NULL) || (pDict->type != VAR_TYPE_DICT) ||
+        (key == NULL)) {
+        return NULL;
+    }
+    for (index = 0u; index < pDict->u.dict.length; index++) {
+        if (strcmp(pDict->u.dict.entries[index].key, key) == 0) {
+            return pDict->u.dict.entries[index].value;
+        }
+    }
+    return NULL;
+}
+
+/**
+ * @brief  结构体成员扩容
+ */
+static int32_t Var_StructGrow(VarStructBody_T *pBody)
+{
+    size_t newCapacity = 0u;
+    VarMember_T *pNewMembers = NULL;
+
+    newCapacity = pBody->capacity * 2u;
+    pNewMembers = (VarMember_T *)realloc(
+        pBody->members, newCapacity * sizeof(VarMember_T));
+    if (pNewMembers == NULL) {
+        return VAR_RUNTIME_ERR_MEMORY;
+    }
+    pBody->members = pNewMembers;
+    pBody->capacity = newCapacity;
+    return VAR_RUNTIME_OK;
+}
+
+/**
+ * @brief  设置结构体成员
+ */
+int32_t Var_StructSetField(VarValue_T *pStruct, const char *name,
+                           VarValue_T *pValue)
+{
+    size_t index = 0u;
+
+    if ((pStruct == NULL) || (pStruct->type != VAR_TYPE_STRUCT) ||
+        (name == NULL) || (pValue == NULL)) {
+        return VAR_RUNTIME_ERR_TYPE;
+    }
+
+    for (index = 0u; index < pStruct->u.object.length; index++) {
+        if (strcmp(pStruct->u.object.members[index].name, name) == 0) {
+            Var_Free(pStruct->u.object.members[index].value);
+            pStruct->u.object.members[index].value = pValue;
+            return VAR_RUNTIME_OK;
+        }
+    }
+
+    if (pStruct->u.object.length >= pStruct->u.object.capacity) {
+        if (Var_StructGrow(&pStruct->u.object) != VAR_RUNTIME_OK) {
+            return VAR_RUNTIME_ERR_MEMORY;
+        }
+    }
+    pStruct->u.object.members[pStruct->u.object.length].name =
+        (char *)malloc(strlen(name) + 1u);
+    if (pStruct->u.object.members[pStruct->u.object.length].name == NULL) {
+        return VAR_RUNTIME_ERR_MEMORY;
+    }
+    strcpy(pStruct->u.object.members[pStruct->u.object.length].name, name);
+    pStruct->u.object.members[pStruct->u.object.length].value = pValue;
+    pStruct->u.object.length++;
+    return VAR_RUNTIME_OK;
+}
+
+/**
+ * @brief  读取结构体成员
+ */
+VarValue_T *Var_StructGetField(VarValue_T *pStruct, const char *name)
+{
+    size_t index = 0u;
+
+    if ((pStruct == NULL) || (pStruct->type != VAR_TYPE_STRUCT) ||
+        (name == NULL)) {
+        return NULL;
+    }
+    for (index = 0u; index < pStruct->u.object.length; index++) {
+        if (strcmp(pStruct->u.object.members[index].name, name) == 0) {
+            return pStruct->u.object.members[index].value;
+        }
+    }
+    return NULL;
+}
+
+/**
+ * @brief  归一化切片索引
+ */
+static int64_t Var_NormalizeIndex(int64_t index, int64_t length)
+{
+    if (index < 0) {
+        index += length;
+    }
+    if (index < 0) {
+        return 0;
+    }
+    if (index > length) {
+        return length;
+    }
+    return index;
+}
+
+/**
+ * @brief  字符串/数组切片
+ */
+int32_t Var_Slice(VarValue_T *pValue,
+                  int64_t start,
+                  int64_t end,
+                  VarValue_T **ppOut)
+{
+    int64_t length = 0;
+    int64_t begin = 0;
+    int64_t finish = 0;
+    VarValue_T *pResult = NULL;
+    int64_t index = 0;
+
+    if ((pValue == NULL) || (ppOut == NULL)) {
+        return VAR_RUNTIME_ERR_TYPE;
+    }
+
+    if (pValue->type == VAR_TYPE_STRING) {
+        length = (int64_t)strlen(pValue->u.stringValue);
+        begin = Var_NormalizeIndex(start, length);
+        finish = Var_NormalizeIndex(end, length);
+        if (begin >= finish) {
+            begin = finish;
+        }
+        pResult = Var_CreateString("");
+        if (pResult == NULL) {
+            return VAR_RUNTIME_ERR_MEMORY;
+        }
+        free(pResult->u.stringValue);
+        pResult->u.stringValue = (char *)malloc(
+            (size_t)(finish - begin) + 1u);
+        if (pResult->u.stringValue == NULL) {
+            Var_Free(pResult);
+            return VAR_RUNTIME_ERR_MEMORY;
+        }
+        memcpy(pResult->u.stringValue,
+               pValue->u.stringValue + begin,
+               (size_t)(finish - begin));
+        pResult->u.stringValue[finish - begin] = '\0';
+        *ppOut = pResult;
+        return VAR_RUNTIME_OK;
+    }
+
+    if (pValue->type == VAR_TYPE_ARRAY) {
+        length = (int64_t)pValue->u.array.length;
+        begin = Var_NormalizeIndex(start, length);
+        finish = Var_NormalizeIndex(end, length);
+        if (begin >= finish) {
+            begin = finish;
+        }
+        pResult = Var_CreateArray();
+        if (pResult == NULL) {
+            return VAR_RUNTIME_ERR_MEMORY;
+        }
+        for (index = begin; index < finish; index++) {
+            Var_ArrayPush(pResult, Var_Clone(
+                pValue->u.array.items[index]));
+        }
+        *ppOut = pResult;
+        return VAR_RUNTIME_OK;
+    }
+
+    return VAR_RUNTIME_ERR_TYPE;
+}
+
+/**
+ * @brief  判断两个变量是否允许拼接
+ */
+int32_t Var_CanConcat(VarValue_T *pLeft, VarValue_T *pRight)
+{
+    if ((pLeft == NULL) || (pRight == NULL)) {
+        return VAR_RUNTIME_ERR_TYPE;
+    }
+    if ((pLeft->type == VAR_TYPE_STRING) &&
+        (pRight->type == VAR_TYPE_STRING)) {
+        return VAR_RUNTIME_OK;
+    }
+    if ((pLeft->type == VAR_TYPE_ARRAY) &&
+        (pRight->type == VAR_TYPE_ARRAY)) {
+        return VAR_RUNTIME_OK;
+    }
+    return VAR_RUNTIME_ERR_TYPE;
+}
+
+/**
+ * @brief  拼接字符串或数组（先类型检查）
+ */
+int32_t Var_Concat(VarValue_T *pLeft,
+                   VarValue_T *pRight,
+                   VarValue_T **ppOut)
+{
+    VarValue_T *pResult = NULL;
+    size_t leftLength = 0u;
+    size_t rightLength = 0u;
+    size_t index = 0u;
+
+    if ((ppOut == NULL) ||
+        (Var_CanConcat(pLeft, pRight) != VAR_RUNTIME_OK)) {
+        return VAR_RUNTIME_ERR_TYPE;
+    }
+
+    if (pLeft->type == VAR_TYPE_STRING) {
+        leftLength = strlen(pLeft->u.stringValue);
+        rightLength = strlen(pRight->u.stringValue);
+        pResult = Var_CreateString("");
+        if (pResult == NULL) {
+            return VAR_RUNTIME_ERR_MEMORY;
+        }
+        free(pResult->u.stringValue);
+        pResult->u.stringValue = (char *)malloc(
+            leftLength + rightLength + 1u);
+        if (pResult->u.stringValue == NULL) {
+            Var_Free(pResult);
+            return VAR_RUNTIME_ERR_MEMORY;
+        }
+        memcpy(pResult->u.stringValue,
+               pLeft->u.stringValue, leftLength);
+        memcpy(pResult->u.stringValue + leftLength,
+               pRight->u.stringValue, rightLength + 1u);
+        *ppOut = pResult;
+        return VAR_RUNTIME_OK;
+    }
+
+    /* 数组：结果内元素为深拷贝 */
+    pResult = Var_CreateArray();
+    if (pResult == NULL) {
+        return VAR_RUNTIME_ERR_MEMORY;
+    }
+    for (index = 0u; index < pLeft->u.array.length; index++) {
+        Var_ArrayPush(pResult, Var_Clone(pLeft->u.array.items[index]));
+    }
+    for (index = 0u; index < pRight->u.array.length; index++) {
+        Var_ArrayPush(pResult, Var_Clone(pRight->u.array.items[index]));
+    }
+    *ppOut = pResult;
+    return VAR_RUNTIME_OK;
+}
+
+/**
+ * @brief  深拷贝变量（公开桥接）
+ */
+VarValue_T *Var_CloneValue(const VarValue_T *pValue)
+{
+    return Var_Clone(pValue);
+}
+
+/**
+ * @brief  把简单数值统一读取为 long double，供严格 Getter 做范围检查。
+ * @param  pValue 源动态值。
+ * @param  pResult 输出的高精度临时数值。
+ * @retval VAR_RUNTIME_OK 表示成功，其他值表示类型或参数错误。
+ */
+static int32_t Var_GetLongDouble(const VarValue_T *pValue,
+                                 long double *pResult)
+{
+    long double value = 0.0L;
+
+    if ((pValue == NULL) || (pResult == NULL)) {
+        return VAR_RUNTIME_ERR_TYPE;
+    }
+    switch (pValue->type) {
+        case VAR_TYPE_INT:    value = (long double)pValue->u.intValue; break;
+        case VAR_TYPE_UINT8:  value = (long double)pValue->u.uint8Value; break;
+        case VAR_TYPE_INT8:   value = (long double)pValue->u.int8Value; break;
+        case VAR_TYPE_UINT16: value = (long double)pValue->u.uint16Value; break;
+        case VAR_TYPE_INT16:  value = (long double)pValue->u.int16Value; break;
+        case VAR_TYPE_UINT32: value = (long double)pValue->u.uint32Value; break;
+        case VAR_TYPE_UINT64: value = (long double)pValue->u.uint64Value; break;
+        case VAR_TYPE_INT64:  value = (long double)pValue->u.int64Value; break;
+        case VAR_TYPE_FLOAT:  value = (long double)pValue->u.floatValue; break;
+        case VAR_TYPE_DOUBLE: value = (long double)pValue->u.doubleValue; break;
+        case VAR_TYPE_CHAR:   value = (long double)pValue->u.charValue; break;
+        default: return VAR_RUNTIME_ERR_TYPE;
+    }
+    if (isfinite(value) == 0) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = value;
+    return VAR_RUNTIME_OK;
+}
+
+/**
+ * @brief  严格读取 int8_t。
+ * @param  pValue 源动态值。
+ * @param  pResult 输出值。
+ * @retval 运行时状态码。
+ */
+int32_t Var_GetInt8(const VarValue_T *pValue, int8_t *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < INT8_MIN) || (value > INT8_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (int8_t)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 uint8_t。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetUint8(const VarValue_T *pValue, uint8_t *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < 0.0L) || (value > UINT8_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (uint8_t)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 int16_t。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetInt16(const VarValue_T *pValue, int16_t *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < INT16_MIN) || (value > INT16_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (int16_t)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 uint16_t。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetUint16(const VarValue_T *pValue, uint16_t *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < 0.0L) || (value > UINT16_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (uint16_t)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 int32_t。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetInt32(const VarValue_T *pValue, int32_t *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < INT32_MIN) || (value > INT32_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (int32_t)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 uint32_t。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetUint32(const VarValue_T *pValue, uint32_t *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < 0.0L) || (value > UINT32_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (uint32_t)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 int64_t。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetInt64(const VarValue_T *pValue, int64_t *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < (long double)INT64_MIN) ||
+        (value > (long double)INT64_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (int64_t)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 uint64_t。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetUint64(const VarValue_T *pValue, uint64_t *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < 0.0L) || (value > (long double)UINT64_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (uint64_t)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 float。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetFloat(const VarValue_T *pValue, float *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < -(long double)FLT_MAX) ||
+        (value > (long double)FLT_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (float)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 double。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetDouble(const VarValue_T *pValue, double *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < -(long double)DBL_MAX) ||
+        (value > (long double)DBL_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (double)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 严格读取 char。 @param pValue 源值。 @param pResult 输出值。 @retval 运行时状态码。 */
+int32_t Var_GetChar(const VarValue_T *pValue, char *pResult)
+{
+    long double value = 0.0L;
+    int32_t ret = Var_GetLongDouble(pValue, &value);
+    if ((ret != VAR_RUNTIME_OK) || (pResult == NULL)) {
+        return (pResult == NULL) ? VAR_RUNTIME_ERR_TYPE : ret;
+    }
+    if ((value < CHAR_MIN) || (value > CHAR_MAX)) {
+        return VAR_RUNTIME_ERR_RANGE;
+    }
+    *pResult = (char)value;
+    return VAR_RUNTIME_OK;
+}
+
+/** @brief 读取字符串只读指针。 @param pValue 源值。 @param ppResult 输出指针。 @retval 运行时状态码。 */
+int32_t Var_GetString(const VarValue_T *pValue, const char **ppResult)
+{
+    if ((pValue == NULL) || (ppResult == NULL)) {
+        return VAR_RUNTIME_ERR_TYPE;
+    }
+    if (pValue->type != VAR_TYPE_STRING) {
+        return VAR_RUNTIME_ERR_TYPE;
+    }
+    *ppResult = pValue->u.stringValue;
+    return VAR_RUNTIME_OK;
+}
+
+/**
+ * @brief  按类型模板转换并深拷贝动态值，支持简单类型、数组、字典与结构体。
+ * @param  pSource 源动态值。
+ * @param  pTypeTemplate 类型模板。
+ * @param  ppResult 输出的新动态值。
+ * @retval 运行时状态码。
+ */
+int32_t Var_ConvertValue(const VarValue_T *pSource,
+                         const VarValue_T *pTypeTemplate,
+                         VarValue_T **ppResult)
+{
+    VarValue_T *pResult = NULL;
+    size_t index = 0u;
+    int32_t ret = VAR_RUNTIME_OK;
+
+    if ((pSource == NULL) || (pTypeTemplate == NULL) ||
+        (ppResult == NULL)) {
+        return VAR_RUNTIME_ERR_TYPE;
+    }
+    switch (pTypeTemplate->type) {
+        case VAR_TYPE_INT: { int32_t value; ret = Var_GetInt32(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateInt(value); } break; }
+        case VAR_TYPE_UINT8: { uint8_t value; ret = Var_GetUint8(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateUint8(value); } break; }
+        case VAR_TYPE_INT8: { int8_t value; ret = Var_GetInt8(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateInt8(value); } break; }
+        case VAR_TYPE_UINT16: { uint16_t value; ret = Var_GetUint16(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateUint16(value); } break; }
+        case VAR_TYPE_INT16: { int16_t value; ret = Var_GetInt16(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateInt16(value); } break; }
+        case VAR_TYPE_UINT32: { uint32_t value; ret = Var_GetUint32(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateUint32(value); } break; }
+        case VAR_TYPE_UINT64: { uint64_t value; ret = Var_GetUint64(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateUint64(value); } break; }
+        case VAR_TYPE_INT64: { int64_t value; ret = Var_GetInt64(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateInt64(value); } break; }
+        case VAR_TYPE_FLOAT: { float value; ret = Var_GetFloat(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateFloat(value); } break; }
+        case VAR_TYPE_DOUBLE: { double value; ret = Var_GetDouble(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateDouble(value); } break; }
+        case VAR_TYPE_CHAR: { char value; ret = Var_GetChar(pSource, &value); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateChar(value); } break; }
+        case VAR_TYPE_STRING: { const char *pText = NULL; ret = Var_GetString(pSource, &pText); if (ret == VAR_RUNTIME_OK) { pResult = Var_CreateString(pText); } break; }
+        case VAR_TYPE_ARRAY:
+            if ((pSource->type != VAR_TYPE_ARRAY) ||
+                (pSource->u.array.length != pTypeTemplate->u.array.length)) {
+                return VAR_RUNTIME_ERR_BOUND;
+            }
+            pResult = Var_CreateArray();
+            if (pResult == NULL) {
+                return VAR_RUNTIME_ERR_MEMORY;
+            }
+            for (index = 0u; index < pSource->u.array.length; index++) {
+                VarValue_T *pItem = NULL;
+                ret = Var_ConvertValue(pSource->u.array.items[index],
+                                       pTypeTemplate->u.array.items[index],
+                                       &pItem);
+                if (ret != VAR_RUNTIME_OK) {
+                    Var_Free(pResult);
+                    return ret;
+                }
+                ret = Var_ArrayPush(pResult, pItem);
+                if (ret != VAR_RUNTIME_OK) {
+                    Var_Free(pItem);
+                    Var_Free(pResult);
+                    return ret;
+                }
+            }
+            break;
+        case VAR_TYPE_DICT:
+        case VAR_TYPE_STRUCT:
+            /* 中文注释：复杂类型以模板为形状依据，类型一致时深拷贝源值 */
+            if (pSource->type != pTypeTemplate->type) {
+                return VAR_RUNTIME_ERR_TYPE;
+            }
+            pResult = Var_Clone(pSource);
+            if (pResult == NULL) {
+                ret = VAR_RUNTIME_ERR_MEMORY;
+            }
+            break;
+        default:
+            return VAR_RUNTIME_ERR_TYPE;
+    }
+    if (ret != VAR_RUNTIME_OK) {
+        return ret;
+    }
+    if (pResult == NULL) {
+        return VAR_RUNTIME_ERR_MEMORY;
+    }
+    *ppResult = pResult;
+    return VAR_RUNTIME_OK;
+}
+
+/**
+ * @brief  把变量转换为 int（非数值类型返回 0）
+ */
+int64_t Var_ToInt(VarValue_T *pValue)
+{
+    if (pValue == NULL) {
+        return 0;
+    }
+    switch (pValue->type) {
+        case VAR_TYPE_INT:
+            return (int64_t)pValue->u.intValue;
+        case VAR_TYPE_UINT8:
+            return (int64_t)pValue->u.uint8Value;
+        case VAR_TYPE_INT8:
+            return (int64_t)pValue->u.int8Value;
+        case VAR_TYPE_UINT16:
+            return (int64_t)pValue->u.uint16Value;
+        case VAR_TYPE_INT16:
+            return (int64_t)pValue->u.int16Value;
+        case VAR_TYPE_UINT32:
+            return (int64_t)pValue->u.uint32Value;
+        case VAR_TYPE_UINT64:
+            return (int64_t)pValue->u.uint64Value;
+        case VAR_TYPE_INT64:
+            return pValue->u.int64Value;
+        case VAR_TYPE_FLOAT:
+            return (int64_t)pValue->u.floatValue;
+        case VAR_TYPE_DOUBLE:
+            return (int64_t)pValue->u.doubleValue;
+        case VAR_TYPE_CHAR:
+            return (int64_t)pValue->u.charValue;
+        default:
+            return 0;
+    }
+}
+
+/**
+ * @brief  把变量转换为 double
+ */
+double Var_ToDouble(VarValue_T *pValue)
+{
+    if (pValue == NULL) {
+        return 0.0;
+    }
+    switch (pValue->type) {
+        case VAR_TYPE_INT:
+            return (double)pValue->u.intValue;
+        case VAR_TYPE_UINT8:
+            return (double)pValue->u.uint8Value;
+        case VAR_TYPE_INT8:
+            return (double)pValue->u.int8Value;
+        case VAR_TYPE_UINT16:
+            return (double)pValue->u.uint16Value;
+        case VAR_TYPE_INT16:
+            return (double)pValue->u.int16Value;
+        case VAR_TYPE_UINT32:
+            return (double)pValue->u.uint32Value;
+        case VAR_TYPE_UINT64:
+            return (double)pValue->u.uint64Value;
+        case VAR_TYPE_INT64:
+            return (double)pValue->u.int64Value;
+        case VAR_TYPE_FLOAT:
+            return (double)pValue->u.floatValue;
+        case VAR_TYPE_DOUBLE:
+            return pValue->u.doubleValue;
+        case VAR_TYPE_CHAR:
+            return (double)pValue->u.charValue;
+        default:
+            return 0.0;
+    }
+}
+
+/**
+ * @brief  判断变量是否为真
+ */
+uint8_t Var_IsTrue(VarValue_T *pValue)
+{
+    if (pValue == NULL) {
+        return 0u;
+    }
+    if (pValue->type == VAR_TYPE_STRING) {
+        return (pValue->u.stringValue != NULL) &&
+               (pValue->u.stringValue[0] != '\0');
+    }
+    return Var_ToInt(pValue) != 0;
+}
+
+/**
+ * @brief  两个值是否都是整数
+ */
+static uint8_t Var_BothInt(VarValue_T *pLeft, VarValue_T *pRight)
+{
+    if ((pLeft == NULL) || (pRight == NULL)) {
+        return 0u;
+    }
+    return (pLeft->type == VAR_TYPE_INT) &&
+           (pRight->type == VAR_TYPE_INT);
+}
+
+/**
+ * @brief  数值加法
+ */
+VarValue_T *Var_Add(VarValue_T *pLeft, VarValue_T *pRight)
+{
+    if ((pLeft == NULL) || (pRight == NULL)) {
+        return NULL;
+    }
+    if (Var_BothInt(pLeft, pRight)) {
+        return Var_CreateInt(pLeft->u.intValue + pRight->u.intValue);
+    }
+    return Var_CreateDouble(Var_ToDouble(pLeft) + Var_ToDouble(pRight));
+}
+
+/**
+ * @brief  数值减法
+ */
+VarValue_T *Var_Sub(VarValue_T *pLeft, VarValue_T *pRight)
+{
+    if ((pLeft == NULL) || (pRight == NULL)) {
+        return NULL;
+    }
+    if (Var_BothInt(pLeft, pRight)) {
+        return Var_CreateInt(pLeft->u.intValue - pRight->u.intValue);
+    }
+    return Var_CreateDouble(Var_ToDouble(pLeft) - Var_ToDouble(pRight));
+}
+
+/**
+ * @brief  数值乘法
+ */
+VarValue_T *Var_Mul(VarValue_T *pLeft, VarValue_T *pRight)
+{
+    if ((pLeft == NULL) || (pRight == NULL)) {
+        return NULL;
+    }
+    if (Var_BothInt(pLeft, pRight)) {
+        return Var_CreateInt(pLeft->u.intValue * pRight->u.intValue);
+    }
+    return Var_CreateDouble(Var_ToDouble(pLeft) * Var_ToDouble(pRight));
+}
+
+/**
+ * @brief  数值除法
+ */
+VarValue_T *Var_Div(VarValue_T *pLeft, VarValue_T *pRight)
+{
+    if ((pLeft == NULL) || (pRight == NULL)) {
+        return NULL;
+    }
+    if (Var_BothInt(pLeft, pRight)) {
+        if (pRight->u.intValue == 0) {
+            return NULL;
+        }
+        return Var_CreateInt(pLeft->u.intValue / pRight->u.intValue);
+    }
+    return Var_CreateDouble(Var_ToDouble(pLeft) / Var_ToDouble(pRight));
+}
+
+/** @brief 求余；整数按 C 的 % 计算，浮点按 fmod 处理。 @retval 新变量。 */
+VarValue_T *Var_Mod(VarValue_T *pLeft, VarValue_T *pRight)
+{
+    if ((pLeft == NULL) || (pRight == NULL)) {
+        return NULL;
+    }
+    if (Var_BothInt(pLeft, pRight)) {
+        if (pRight->u.intValue == 0) {
+            return NULL;
+        }
+        return Var_CreateInt(pLeft->u.intValue % pRight->u.intValue);
+    }
+    {
+        double rightValue = Var_ToDouble(pRight);
+        if (rightValue == 0.0) {
+            return NULL;
+        }
+        return Var_CreateDouble(fmod(Var_ToDouble(pLeft), rightValue));
+    }
+}
+
+/**
+ * @brief  一元负号
+ */
+VarValue_T *Var_Neg(VarValue_T *pValue)
+{
+    if (pValue == NULL) {
+        return NULL;
+    }
+    if (pValue->type == VAR_TYPE_INT) {
+        return Var_CreateInt(-pValue->u.intValue);
+    }
+    return Var_CreateDouble(-Var_ToDouble(pValue));
+}
+
+/** @brief 判断三个动态值是否都是 int 类型。 @retval 1 表示都是整数。 */
+static uint8_t Var_AllInt(VarValue_T *pFirst, VarValue_T *pSecond,
+                          VarValue_T *pThird)
+{
+    if ((pFirst == NULL) || (pSecond == NULL) || (pThird == NULL)) {
+        return 0u;
+    }
+    return (pFirst->type == VAR_TYPE_INT) &&
+           (pSecond->type == VAR_TYPE_INT) &&
+           (pThird->type == VAR_TYPE_INT);
+}
+
+/** @brief 返回两个动态值的较大者。 @retval 新变量；参数为空返回 NULL。 */
+VarValue_T *Var_Max(VarValue_T *pLeft, VarValue_T *pRight)
+{
+    if ((pLeft == NULL) || (pRight == NULL)) {
+        return NULL;
+    }
+    if (Var_BothInt(pLeft, pRight)) {
+        return Var_CreateInt(pLeft->u.intValue >= pRight->u.intValue
+                             ? pLeft->u.intValue : pRight->u.intValue);
+    }
+    return Var_CreateDouble(fmax(Var_ToDouble(pLeft),
+                                 Var_ToDouble(pRight)));
+}
+
+/** @brief 返回两个动态值的较小者。 @retval 新变量；参数为空返回 NULL。 */
+VarValue_T *Var_Min(VarValue_T *pLeft, VarValue_T *pRight)
+{
+    if ((pLeft == NULL) || (pRight == NULL)) {
+        return NULL;
+    }
+    if (Var_BothInt(pLeft, pRight)) {
+        return Var_CreateInt(pLeft->u.intValue <= pRight->u.intValue
+                             ? pLeft->u.intValue : pRight->u.intValue);
+    }
+    return Var_CreateDouble(fmin(Var_ToDouble(pLeft),
+                                 Var_ToDouble(pRight)));
+}
+
+/** @brief 返回动态值的绝对值。 @retval 新变量；参数为空返回 NULL。 */
+VarValue_T *Var_Abs(VarValue_T *pValue)
+{
+    if (pValue == NULL) {
+        return NULL;
+    }
+    if (pValue->type == VAR_TYPE_INT) {
+        if (pValue->u.intValue == INT32_MIN) {
+            return Var_CreateDouble(fabs((double)pValue->u.intValue));
+        }
+        return Var_CreateInt(pValue->u.intValue < 0
+                             ? -pValue->u.intValue : pValue->u.intValue);
+    }
+    return Var_CreateDouble(fabs(Var_ToDouble(pValue)));
+}
+
+/** @brief 计算动态值幂运算；整数指数且结果不溢出时保持 int。 @retval 新变量。 */
+VarValue_T *Var_Pow(VarValue_T *pBase, VarValue_T *pExponent)
+{
+    int64_t result = 1;
+    int64_t index = 0;
+    int64_t base = 0;
+    int64_t exponent = 0;
+    if ((pBase == NULL) || (pExponent == NULL)) {
+        return NULL;
+    }
+    if (Var_BothInt(pBase, pExponent)) {
+        base = pBase->u.intValue;
+        exponent = pExponent->u.intValue;
+        if ((base == 0) && (exponent < 0)) {
+            return NULL;
+        }
+        if (exponent < 0) {
+            return Var_CreateDouble(pow((double)base, (double)exponent));
+        }
+        for (index = 0; index < exponent; index++) {
+            result *= base;
+            if ((result < INT32_MIN) || (result > INT32_MAX)) {
+                return Var_CreateDouble(pow((double)base,
+                                            (double)exponent));
+            }
+        }
+        return Var_CreateInt((int32_t)result);
+    }
+    return Var_CreateDouble(pow(Var_ToDouble(pBase),
+                                Var_ToDouble(pExponent)));
+}
+
+/** @brief 计算动态值的平方根。 @retval 新变量；参数为空返回 NULL。 */
+VarValue_T *Var_Sqrt(VarValue_T *pValue)
+{
+    if (pValue == NULL) {
+        return NULL;
+    }
+    return Var_CreateDouble(sqrt(Var_ToDouble(pValue)));
+}
+
+/** @brief 向下取整。 @retval 新变量；参数为空返回 NULL。 */
+VarValue_T *Var_Floor(VarValue_T *pValue)
+{
+    if (pValue == NULL) {
+        return NULL;
+    }
+    if (pValue->type == VAR_TYPE_INT) {
+        return Var_CreateInt(pValue->u.intValue);
+    }
+    return Var_CreateDouble(floor(Var_ToDouble(pValue)));
+}
+
+/** @brief 向上取整。 @retval 新变量；参数为空返回 NULL。 */
+VarValue_T *Var_Ceil(VarValue_T *pValue)
+{
+    if (pValue == NULL) {
+        return NULL;
+    }
+    if (pValue->type == VAR_TYPE_INT) {
+        return Var_CreateInt(pValue->u.intValue);
+    }
+    return Var_CreateDouble(ceil(Var_ToDouble(pValue)));
+}
+
+/** @brief 四舍五入。 @retval 新变量；参数为空返回 NULL。 */
+VarValue_T *Var_Round(VarValue_T *pValue)
+{
+    if (pValue == NULL) {
+        return NULL;
+    }
+    if (pValue->type == VAR_TYPE_INT) {
+        return Var_CreateInt(pValue->u.intValue);
+    }
+    return Var_CreateDouble(round(Var_ToDouble(pValue)));
+}
+
+/** @brief 把动态值限制在 [low, high] 区间。 @retval 新变量。 */
+VarValue_T *Var_Clamp(VarValue_T *pValue, VarValue_T *pLow,
+                      VarValue_T *pHigh)
+{
+    if ((pValue == NULL) || (pLow == NULL) || (pHigh == NULL)) {
+        return NULL;
+    }
+    if (Var_AllInt(pValue, pLow, pHigh)) {
+        int32_t value = pValue->u.intValue;
+        if (value < pLow->u.intValue) {
+            value = pLow->u.intValue;
+        }
+        if (value > pHigh->u.intValue) {
+            value = pHigh->u.intValue;
+        }
+        return Var_CreateInt(value);
+    }
+    return Var_CreateDouble(
+        fmin(fmax(Var_ToDouble(pValue), Var_ToDouble(pLow)),
+             Var_ToDouble(pHigh)));
+}
+
+/**
+ * @brief  逻辑非
+ */
+VarValue_T *Var_Not(VarValue_T *pValue)
+{
+    return Var_CreateInt(Var_IsTrue(pValue) ? 0 : 1);
+}
+
+VarValue_T *Var_And(VarValue_T *pLeft, VarValue_T *pRight)
+{
+    if ((pLeft == NULL) || (pRight == NULL)) {
+        return NULL;
+    }
+    return Var_CreateInt((Var_IsTrue(pLeft) != 0) &&
+                         (Var_IsTrue(pRight) != 0));
+}
+
+VarValue_T *Var_Or(VarValue_T *pLeft, VarValue_T *pRight)
+{
+    if ((pLeft == NULL) || (pRight == NULL)) {
+        return NULL;
+    }
+    return Var_CreateInt((Var_IsTrue(pLeft) != 0) ||
+                         (Var_IsTrue(pRight) != 0));
+}
+
+/**
+ * @brief  用源值覆盖目标值
+ */
+int32_t Var_SetValue(VarValue_T *pDst, const VarValue_T *pSrc)
+{
+    VarValue_T *pCopy = NULL;
+
+    if ((pDst == NULL) || (pSrc == NULL)) {
+        return VAR_RUNTIME_ERR_TYPE;
+    }
+    pCopy = Var_Clone(pSrc);
+    if (pCopy == NULL) {
+        return VAR_RUNTIME_ERR_MEMORY;
+    }
+
+    /* 临时保存原对象主体，交换内部内容后释放旧内容 */
+    {
+        VarValue_T temp = *pDst;
+        *pDst = *pCopy;
+        free(pCopy);
+        Var_FreeContent(&temp);
+    }
+    return VAR_RUNTIME_OK;
+}
+
+/**
+ * @brief  用标量覆盖变量对象内容
+ * @details 先用对应构造函数生成临时节点，再复用 Var_SetValue 完成整对象覆盖，
+ *          最后释放临时节点，因此 pDst 的指针始终保持不变。
+ */
+#define VAR_DEFINE_SCALAR_SETTER(FnName, CreateFn, ArgType)            \
+int32_t FnName(VarValue_T *pDst, ArgType value)                        \
+{                                                                      \
+    VarValue_T *pTemp = CreateFn(value);                               \
+    int32_t ret = 0;                                                   \
+                                                                       \
+    if (pTemp == NULL) {                                               \
+        return VAR_RUNTIME_ERR_MEMORY;                                 \
+    }                                                                  \
+    ret = Var_SetValue(pDst, pTemp);                                   \
+    Var_Free(pTemp);                                                   \
+    return ret;                                                        \
+}
+
+/* 逐类型展开，便于阅读者对照类型名查找对应函数 */
+VAR_DEFINE_SCALAR_SETTER(Var_SetInt8, Var_CreateInt8, int8_t)
+VAR_DEFINE_SCALAR_SETTER(Var_SetUint8, Var_CreateUint8, uint8_t)
+VAR_DEFINE_SCALAR_SETTER(Var_SetChar, Var_CreateChar, char)
+VAR_DEFINE_SCALAR_SETTER(Var_SetInt16, Var_CreateInt16, int16_t)
+VAR_DEFINE_SCALAR_SETTER(Var_SetUint16, Var_CreateUint16, uint16_t)
+VAR_DEFINE_SCALAR_SETTER(Var_SetInt, Var_CreateInt, int32_t)
+VAR_DEFINE_SCALAR_SETTER(Var_SetUint32, Var_CreateUint32, uint32_t)
+VAR_DEFINE_SCALAR_SETTER(Var_SetInt64, Var_CreateInt64, int64_t)
+VAR_DEFINE_SCALAR_SETTER(Var_SetUint64, Var_CreateUint64, uint64_t)
+VAR_DEFINE_SCALAR_SETTER(Var_SetFloat, Var_CreateFloat, float)
+VAR_DEFINE_SCALAR_SETTER(Var_SetDouble, Var_CreateDouble, double)
+
+#undef VAR_DEFINE_SCALAR_SETTER
+
+/**
+ * @brief  类型名字符串
+ */
+const char *Var_TypeName(VarType_T type)
+{
+    switch (type) {
+        case VAR_TYPE_INT:    return "int";
+        case VAR_TYPE_UINT8:  return "uint8";
+        case VAR_TYPE_INT8:   return "int8";
+        case VAR_TYPE_UINT16: return "uint16";
+        case VAR_TYPE_INT16:  return "int16";
+        case VAR_TYPE_UINT32: return "uint32";
+        case VAR_TYPE_UINT64: return "uint64";
+        case VAR_TYPE_INT64:  return "int64";
+        case VAR_TYPE_FLOAT:  return "float";
+        case VAR_TYPE_DOUBLE: return "double";
+        case VAR_TYPE_CHAR:   return "char";
+        case VAR_TYPE_STRING: return "string";
+        case VAR_TYPE_ARRAY:  return "array";
+        case VAR_TYPE_DICT:   return "dict";
+        case VAR_TYPE_STRUCT: return "struct";
+        default:              return "none";
+    }
+}
+'''
+
+# 中文注释：嵌入版本移除对 variable_runtime.h 的外部 include，改为行内注释
+VARIABLE_RUNTIME_SOURCE_EMBEDDED = VARIABLE_RUNTIME_SOURCE.replace(
+    '#include "variable_runtime.h"',
+    '/* 中文注释：variable_runtime.h 已内嵌于上方，无需再引用外部头文件 */'
+)
+
 
 # 与 parser_gen.py 保持一致的标量类型
 GRAMMAR_SCALAR_TYPES = {
@@ -198,6 +1933,8 @@ class _GramParser:
         self.rules = {}
         self.variables = {}
         self.first_rule = None
+        self.tree_enabled = False
+        self.var_max_count = None
 
     # ------------------------------------------------------------------
     def _peek(self, offset=0):
@@ -242,6 +1979,10 @@ class _GramParser:
                 self._parse_define_directive()
             elif token == "%start":
                 self._parse_start_directive()
+            elif token == "%tree":
+                self._parse_tree_directive()
+            elif token == "%var_max_count":
+                self._parse_var_max_count_directive()
             elif token == "%var":
                 self._parse_var_directive()
             elif (self._peek_kind() == "id" and
@@ -258,6 +1999,14 @@ class _GramParser:
             if self.first_rule is None:
                 raise GrammarLoadError("没有找到任何文法规则")
             self.start = self.first_rule
+
+        # 校验：%var 预声明数量不能超过 %var_max_count 指定的容量
+        if (self.var_max_count is not None) and (
+                len(self.variables) > self.var_max_count):
+            raise GrammarLoadError(
+                "%%var_max_count 为 %d，但 %%var 预声明了 %d 个变量"
+                % (self.var_max_count, len(self.variables))
+            )
 
         # 校验：RHS 符号必须已声明为终结符或非终结符
         known = set(self.token_names) | set(self.rules.keys())
@@ -278,6 +2027,8 @@ class _GramParser:
             "token_defs": self.token_defs,
             "grammar": {"start": self.start, "rules": self.rules},
             "variables": self.variables,
+            "tree": self.tree_enabled,
+            "var_max_count": self.var_max_count,
         }
 
     # ------------------------------------------------------------------
@@ -380,6 +2131,39 @@ class _GramParser:
         self._skip_nl()
         if self._peek() == "\n":
             self.pos += 1
+
+    def _parse_tree_directive(self):
+        """%tree：要求生成代码附带通用语法树 API。"""
+        self.pos += 1
+        self.tree_enabled = True
+        if self._peek() == "\n":
+            self.pos += 1
+        elif self._peek() is not None:
+            raise GrammarLoadError(
+                "%%tree 指令不能带参数，实际得到 '%s'" % self._peek()
+            )
+
+    def _parse_var_max_count_directive(self):
+        """%var_max_count N：设置生成代码中变量表的固定容量。"""
+        self.pos += 1
+        if self._peek_kind() != "num":
+            raise GrammarLoadError(
+                "%%var_max_count 后应跟正整数，实际得到 '%s'" % self._peek()
+            )
+        value = int(float(self._peek()))
+        self.pos += 1
+        if value <= 0:
+            raise GrammarLoadError("%%var_max_count 必须是正整数")
+        if self._peek() == "\n":
+            self.pos += 1
+        elif self._peek() is not None:
+            raise GrammarLoadError(
+                "%%var_max_count %d 后有多余内容 '%s'"
+                % (value, self._peek())
+            )
+        if self.var_max_count is not None:
+            raise GrammarLoadError("%%var_max_count 只能声明一次")
+        self.var_max_count = value
 
     # ------------------------------------------------------------------
     def _parse_var_directive(self):
@@ -954,6 +2738,22 @@ def format_grammar_report(analysis):
     return "\n".join(lines) + "\n"
 
 
+def _compiler_supports_sanitizer(temp_dir):
+    """探测当前 GCC 是否提供 ASan/UBSan 运行库，避免 MinGW 自测失败。"""
+    probe_path = os.path.join(temp_dir, "sanitizer_probe.c")
+    executable_path = os.path.join(temp_dir, "sanitizer_probe")
+    with open(probe_path, "w", encoding="utf-8") as file_handle:
+        file_handle.write("int main(void) { return 0; }\n")
+    probe_command = [
+        "gcc", "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
+        probe_path, "-o", executable_path,
+    ]
+    result = subprocess.run(
+        probe_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+    )
+    return result.returncode == 0
+
+
 def _compile_and_run_generated_test(generated_code, harness_code,
                                     sanitize=False):
     """在临时目录编译运行生成的 C，可选启用地址与泄漏检查。"""
@@ -964,15 +2764,16 @@ def _compile_and_run_generated_test(generated_code, harness_code,
         executable_path = os.path.join(temp_dir, "generated_harness")
         with open(parser_path, "w", encoding="utf-8") as file_handle:
             file_handle.write(generated_code)
+        # 中文注释：测试 harness 自带 main，先跳过生成代码里的演示 main
         with open(harness_path, "w", encoding="utf-8") as file_handle:
-            file_handle.write(harness_code)
+            file_handle.write("#define PARSER_SKIP_DEMO_MAIN\n" + harness_code)
         compile_command = [
             "gcc", "-std=c99", "-Wall", "-Wextra", "-Werror",
             "-I", script_dir, harness_path,
-            os.path.join(script_dir, "variable_runtime.c"),
             "-lm", "-o", executable_path,
         ]
-        if sanitize:
+        # 中文注释：编译器不支持 ASan/UBSan 时自动降级，保证 Windows/MinGW 可自检
+        if sanitize and _compiler_supports_sanitizer(temp_dir):
             compile_command[1:1] = [
                 "-fsanitize=address,undefined", "-fno-omit-frame-pointer"
             ]
@@ -981,6 +2782,23 @@ def _compile_and_run_generated_test(generated_code, harness_code,
         if sanitize:
             environment["ASAN_OPTIONS"] = "detect_leaks=1:halt_on_error=1"
         subprocess.run([executable_path], check=True, env=environment)
+
+
+def _compile_and_run_generated_demo(generated_code, demo_arguments):
+    """编译并运行带演示 main() 的生成 C，验证产物可独立执行。"""
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    with tempfile.TemporaryDirectory(prefix="ll1_demo_") as temp_dir:
+        parser_path = os.path.join(temp_dir, "generated_parser.c")
+        executable_path = os.path.join(temp_dir, "generated_demo")
+        with open(parser_path, "w", encoding="utf-8") as file_handle:
+            file_handle.write(generated_code)
+        compile_command = [
+            "gcc", "-std=c99", "-Wall", "-Wextra", "-Werror",
+            "-I", script_dir, parser_path,
+            "-lm", "-o", executable_path,
+        ]
+        subprocess.run(compile_command, check=True)
+        subprocess.run([executable_path] + list(demo_arguments), check=True)
 
 
 # 变量标量类型 -> VarValue 构造函数
@@ -1237,10 +3055,23 @@ class _ActionTranslator:
         "-": "Var_Sub",
         "*": "Var_Mul",
         "/": "Var_Div",
+        "%": "Var_Mod",
     }
     _RUNTIME_LOGIC = {
         "&&": "Var_And",
         "||": "Var_Or",
+    }
+    # 常见运行时数值函数：函数名 -> (运行时 API, 参数个数)
+    _RUNTIME_FUNCTIONS = {
+        "max": ("Var_Max", 2),
+        "min": ("Var_Min", 2),
+        "abs": ("Var_Abs", 1),
+        "pow": ("Var_Pow", 2),
+        "sqrt": ("Var_Sqrt", 1),
+        "floor": ("Var_Floor", 1),
+        "ceil": ("Var_Ceil", 1),
+        "round": ("Var_Round", 1),
+        "clamp": ("Var_Clamp", 3),
     }
 
     _TOKEN_RE = re.compile(
@@ -1346,6 +3177,11 @@ class _ActionTranslator:
         """翻译整条动作，返回可直接写入生成的 C 文件的语句。"""
         statements = []
         while self.pos < len(self.tokens):
+            if ((self._peek() == "delete") and
+                    (self.pos + 1 < len(self.tokens)) and
+                    (self.tokens[self.pos + 1][1] == "[")):
+                statements.append(self._parse_delete_statement())
+                continue
             lhs = self._parse_ternary()
             if self._accept("="):
                 rhs = self._parse_ternary()
@@ -1360,6 +3196,25 @@ class _ActionTranslator:
                 f"'{self.tokens[self.pos][1]}'"
             )
         return "\n        ".join(statements)
+
+    def _parse_delete_statement(self):
+        """delete[$n];：删除普通变量；系统/默认变量返回 PARSER_ERR_SYSTEM。"""
+        self._expect("delete")
+        self._expect("[")
+        dollar = self._peek()
+        if not (dollar is not None and dollar.startswith("$") and
+                dollar[1:].isdigit()):
+            raise ValueError(
+                f"动作 '{self.action}'：delete 的参数必须是 $n"
+            )
+        name_index = int(dollar[1:])
+        self.pos += 1
+        self._expect("]")
+        self._expect(";")
+        return (
+            "if (actionStatus == PARSER_OK) { "
+            f"actionStatus = Parser_DeleteVariable(names[{name_index}]); }}"
+        )
 
     def _parse_ternary(self):
         """ternary := binary ('?' ternary ':' ternary)?  —— 自顶向下入口"""
@@ -1476,6 +3331,8 @@ class _ActionTranslator:
                     arg = self._parse_ternary()
                     self._expect(")")
                     return self._make_constructor(ident, arg)
+                if ident in self._RUNTIME_FUNCTIONS:
+                    return self._make_runtime_function(ident)
                 # 其余函数调用保持原样（例如 Var_CloneValue(...)）
                 code = self._consume_call(token)
                 return _ExprNode("ptr", code)
@@ -1530,6 +3387,33 @@ class _ActionTranslator:
         return _ExprNode(
             "ptr", f"Parser_FindVariable(names[{name_index}])",
             lvalue=("define", name_index, type_spec)
+        )
+
+    def _make_runtime_function(self, ident):
+        """把 max/min/abs/pow 等动作函数翻译成运行时 Var_* 调用。"""
+        runtime_name, expected_arity = self._RUNTIME_FUNCTIONS[ident]
+        arguments = []
+        self._expect("(")
+        if self._peek() != ")":
+            while True:
+                arguments.append(self._parse_ternary())
+                if not self._accept(","):
+                    break
+        self._expect(")")
+        if len(arguments) != expected_arity:
+            raise ValueError(
+                f"动作 '{self.action}'：函数 {ident} 需要 {expected_arity} "
+                f"个参数，实际得到 {len(arguments)} 个"
+            )
+        # 中文注释：运行时函数接收 VarValue_T*，标量参数先包装成动态值
+        arg_codes = []
+        for argument in arguments:
+            if argument.kind == "raw":
+                argument = self._wrap_raw(argument)
+            arg_codes.append(argument.code)
+        return _ExprNode(
+            "ptr",
+            "%s(%s)" % (runtime_name, ", ".join(arg_codes))
         )
 
     def _consume_call(self, ident):
@@ -1800,7 +3684,7 @@ def c_token_name(token):
     return "TOKEN_" + token
 
 
-def _generator_registry_block(variables):
+def _generator_registry_block(variables, max_variables):
     """生成固定容量变量表，以及定义和固定类型赋值接口。"""
     builders = []
     initializers = []
@@ -1821,12 +3705,13 @@ def _generator_registry_block(variables):
     code = r'''
 /* 固定容量变量表避免在 MCU 上动态扩展注册表。 */
 #ifndef PARSER_MAX_VARIABLES
-#define PARSER_MAX_VARIABLES 32u
+#define PARSER_MAX_VARIABLES __VAR_MAX_COUNT__u
 #endif
 
 typedef struct __ParserVariable_T
 {
     uint8_t used;
+    uint8_t system;
     char name[PARSER_MAX_NAME_LENGTH];
     VarValue_T *pValue;
 } ParserVariable_T;
@@ -1857,6 +3742,7 @@ static PARSER_UNUSED int32_t Parser_StoreBuiltin(const char *pName,
     for (index = 0u; index < PARSER_MAX_VARIABLES; index++) {
         if (s_ParserVariables[index].used == 0u) {
             s_ParserVariables[index].used = 1u;
+            s_ParserVariables[index].system = 1u;
             snprintf(s_ParserVariables[index].name,
                      sizeof(s_ParserVariables[index].name), "%s", pName);
             s_ParserVariables[index].pValue = pValue;
@@ -1891,11 +3777,11 @@ static int32_t Parser_DefineVariable(const char *pName,
                                      const VarValue_T *pTemplate)
 {
     VarValue_T *pNewValue = NULL;
+    ParserVariable_T *pEntry = NULL;
     uint32_t index = 0u;
     int32_t ret = VAR_RUNTIME_OK;
     Parser_InitVariables();
     if ((pName == NULL) || (pValue == NULL)) { return VAR_RUNTIME_ERR_TYPE; }
-    if (Parser_FindVariableEntry(pName) != NULL) { return PARSER_ERR_DUPLICATE; }
     if (pTemplate == NULL) {
         pNewValue = Var_CloneValue(pValue);
     } else {
@@ -1903,9 +3789,21 @@ static int32_t Parser_DefineVariable(const char *pName,
         if (ret != VAR_RUNTIME_OK) { return ret; }
     }
     if (pNewValue == NULL) { return VAR_RUNTIME_ERR_MEMORY; }
+    pEntry = Parser_FindVariableEntry(pName);
+    if (pEntry != NULL) {
+        /* 中文注释：系统变量禁止覆盖；普通变量允许用新类型覆盖旧定义 */
+        if (pEntry->system != 0u) {
+            Var_Free(pNewValue);
+            return PARSER_ERR_SYSTEM;
+        }
+        Var_Free(pEntry->pValue);
+        pEntry->pValue = pNewValue;
+        return VAR_RUNTIME_OK;
+    }
     for (index = 0u; index < PARSER_MAX_VARIABLES; index++) {
         if (s_ParserVariables[index].used == 0u) {
             s_ParserVariables[index].used = 1u;
+            s_ParserVariables[index].system = 0u;
             snprintf(s_ParserVariables[index].name,
                      sizeof(s_ParserVariables[index].name), "%s", pName);
             s_ParserVariables[index].pValue = pNewValue;
@@ -1932,8 +3830,23 @@ static PARSER_UNUSED int32_t Parser_AssignVariable(
     Var_Free(pConverted);
     return ret;
 }
+
+/** @brief 删除普通变量；系统/默认变量禁止删除。 @param pName 名称。 @retval 状态码。 */
+int32_t Parser_DeleteVariable(const char *pName)
+{
+    ParserVariable_T *pEntry = NULL;
+    Parser_InitVariables();
+    pEntry = Parser_FindVariableEntry(pName);
+    if (pEntry == NULL) { return PARSER_ERR_UNDEFINED; }
+    if (pEntry->system != 0u) { return PARSER_ERR_SYSTEM; }
+    Var_Free(pEntry->pValue);
+    memset(pEntry, 0, sizeof(*pEntry));
+    return PARSER_OK;
+}
 '''
-    return builder_text + "\n\n" + code.replace("__INITIALIZERS__", init_text)
+    return builder_text + "\n\n" + code \
+        .replace("__VAR_MAX_COUNT__", str(max_variables)) \
+        .replace("__INITIALIZERS__", init_text)
 
 
 def _generator_lex_rules(token_defs):
@@ -2397,10 +4310,508 @@ VarValue_T *Parser_RunText(const char *pText)
 '''
 
 
-def generate_parser_c(grammar, tokens, variables=None, token_defs=None):
+def _generator_tree_code(analysis, terminals, nonterms, tree_enabled):
+    """生成通用语法树元数据与 Parser_ParseTreeText 等 API。"""
+    if not tree_enabled:
+        return ""
+    terminal_set = set(terminals)
+    nonterm_ids = {name: index for index, name in enumerate(nonterms)}
+    term_count = len(terminals)
+    prod_starts = []
+    prod_lengths = []
+    prod_symbols = []
+    for prod in analysis["productions"]:
+        prod_starts.append(len(prod_symbols))
+        prod_lengths.append(len(prod["rhs"]))
+        for symbol in prod["rhs"]:
+            if symbol in terminal_set:
+                prod_symbols.append(terminals.index(symbol))
+            else:
+                prod_symbols.append(term_count + nonterm_ids[symbol])
+    if not prod_symbols:
+        prod_symbols.append(0)
+    token_names = ",\n".join(
+        "    %s" % _var_c_string(token) for token in terminals
+    )
+    nonterm_names = ",\n".join(
+        "    %s" % _var_c_string(name) for name in nonterms
+    )
+    starts_text = ",\n".join(
+        "    %du" % value for value in prod_starts
+    )
+    lengths_text = ",\n".join(
+        "    %du" % value for value in prod_lengths
+    )
+    symbols_text = ",\n".join(
+        "    %du" % value for value in prod_symbols
+    )
+    return r'''/* ============ 通用语法树 API（由 %tree 指令启用） ============ */
+
+/* 终结符与语法树元数据 */
+static const char *const s_ParserTreeTokenNames[] =
+{
+__TREE_TOKEN_NAMES__
+};
+static const char *const s_ParserTreeNontermNames[] =
+{
+__TREE_NONTERM_NAMES__
+};
+static const uint16_t s_ParserTreeProdStart[] =
+{
+__TREE_PROD_STARTS__
+};
+static const uint16_t s_ParserTreeProdLength[] =
+{
+__TREE_PROD_LENGTHS__
+};
+static const uint16_t s_ParserTreeProdSymbols[] =
+{
+__TREE_PROD_SYMBOLS__
+};
+
+/** @brief 创建语法树节点。 @param pName 节点名。 @param pText 终结符文本。 @retval 新节点。 */
+static VarValue_T *Parser_TreeCreateNode(const char *pName, const char *pText)
+{
+    VarValue_T *pNode = NULL;
+    VarValue_T *pChildren = NULL;
+    if (pName == NULL) { return NULL; }
+    pNode = Var_CreateStruct();
+    if (pNode == NULL) { return NULL; }
+    pChildren = Var_CreateArray();
+    if (pChildren == NULL) { Var_Free(pNode); return NULL; }
+    if (Var_StructSetField(pNode, "name",
+                           Var_CreateString(pName)) != VAR_RUNTIME_OK) {
+        Var_Free(pNode);
+        return NULL;
+    }
+    if (Var_StructSetField(pNode, "text",
+                           Var_CreateString((pText != NULL) ? pText : ""))
+        != VAR_RUNTIME_OK) {
+        Var_Free(pNode);
+        return NULL;
+    }
+    if (Var_StructSetField(pNode, "children", pChildren) != VAR_RUNTIME_OK) {
+        Var_Free(pNode);
+        return NULL;
+    }
+    return pNode;
+}
+
+/** @brief 把子节点挂到父节点的 children 数组。 @retval 状态码。 */
+static int32_t Parser_TreeAttach(VarValue_T *pParent, VarValue_T *pChild)
+{
+    VarValue_T *pChildren = NULL;
+    if ((pParent == NULL) || (pChild == NULL)) {
+        return VAR_RUNTIME_ERR_TYPE;
+    }
+    pChildren = Var_StructGetField(pParent, "children");
+    if (pChildren == NULL) { return VAR_RUNTIME_ERR_TYPE; }
+    return Var_ArrayPush(pChildren, pChild);
+}
+
+/** @brief 打开一个语法树节点。 @retval 状态码。 */
+static int32_t Parser_TreeOpen(ParserCtx_T *pCtx, const char *pName)
+{
+    VarValue_T *pNode = NULL;
+    if (pCtx->pTreeDepth >= PARSER_MAX_STACK_DEPTH) {
+        return PARSER_ERR_STACK;
+    }
+    pNode = Parser_TreeCreateNode(pName, NULL);
+    if (pNode == NULL) { return VAR_RUNTIME_ERR_MEMORY; }
+    if (pCtx->pTreeDepth > 0u) {
+        if (Parser_TreeAttach(pCtx->pTreePath[pCtx->pTreeDepth - 1u],
+                              pNode) != PARSER_OK) {
+            Var_Free(pNode);
+            return VAR_RUNTIME_ERR_MEMORY;
+        }
+    } else {
+        pCtx->pTreeRoot = pNode;
+    }
+    pCtx->pTreePath[pCtx->pTreeDepth++] = pNode;
+    return PARSER_OK;
+}
+
+/** @brief 关闭当前语法树节点。 @retval 状态码。 */
+static int32_t Parser_TreeClose(ParserCtx_T *pCtx)
+{
+    if (pCtx->pTreeDepth == 0u) {
+        return PARSER_ERR_SYNTAX;
+    }
+    pCtx->pTreeDepth--;
+    return PARSER_OK;
+}
+
+/** @brief 记录一个终结符叶子节点。 @retval 状态码。 */
+static int32_t Parser_TreeAddTerminal(ParserCtx_T *pCtx,
+                                      const char *pName,
+                                      const char *pText)
+{
+    VarValue_T *pLeaf = NULL;
+    if (pCtx->pTreeDepth == 0u) {
+        return PARSER_ERR_SYNTAX;
+    }
+    pLeaf = Parser_TreeCreateNode(pName, pText);
+    if (pLeaf == NULL) { return VAR_RUNTIME_ERR_MEMORY; }
+    if (Parser_TreeAttach(pCtx->pTreePath[pCtx->pTreeDepth - 1u],
+                          pLeaf) != PARSER_OK) {
+        Var_Free(pLeaf);
+        return VAR_RUNTIME_ERR_MEMORY;
+    }
+    return PARSER_OK;
+}
+
+/** @brief 读取当前 Token 的文本。 @param pCtx 上下文。 @param pBuffer 输出。 @param size 容量。 */
+static void Parser_TreeTokenText(ParserCtx_T *pCtx, char *pBuffer,
+                                 uint32_t size)
+{
+    if ((pBuffer == NULL) || (size == 0u)) { return; }
+    pBuffer[0] = '\0';
+    if (pCtx->current.pName != NULL) {
+        snprintf(pBuffer, size, "%s", pCtx->current.pName);
+        return;
+    }
+    if (pCtx->current.pValue != NULL) {
+        switch (pCtx->current.pValue->type) {
+            case VAR_TYPE_INT:
+                snprintf(pBuffer, size, "%d",
+                         pCtx->current.pValue->u.intValue);
+                return;
+            case VAR_TYPE_UINT32:
+                snprintf(pBuffer, size, "%u",
+                         (unsigned int)pCtx->current.pValue->u.uint32Value);
+                return;
+            case VAR_TYPE_FLOAT:
+                snprintf(pBuffer, size, "%g",
+                         (double)pCtx->current.pValue->u.floatValue);
+                return;
+            case VAR_TYPE_DOUBLE:
+                snprintf(pBuffer, size, "%g",
+                         pCtx->current.pValue->u.doubleValue);
+                return;
+            case VAR_TYPE_STRING:
+                snprintf(pBuffer, size, "\"%s\"",
+                         pCtx->current.pValue->u.stringValue);
+                return;
+            default: break;
+        }
+    }
+    if (pCtx->current.name != NULL) {
+        snprintf(pBuffer, size, "%s", pCtx->current.name);
+        return;
+    }
+    if ((uint16_t)pCtx->current.type < __TERMINAL_COUNT__u) {
+        snprintf(pBuffer, size, "%s",
+                 s_ParserTreeTokenNames[pCtx->current.type]);
+    }
+}
+
+/** @brief 语法树解析主循环。 @param pCtx 上下文。 @retval 根节点或 NULL。 */
+static VarValue_T *Parser_TreeParseLoop(ParserCtx_T *pCtx)
+{
+    if (Parser_Push(pCtx, PARSER_ITEM_NONTERM, __START_ID__u,
+                    PARSER_INVALID_INDEX, 0u,
+                    PARSER_INVALID_INDEX) != PARSER_OK) {
+        return NULL;
+    }
+    while (pCtx->stackTop > 0u) {
+        ParserStackItem_T item = pCtx->stack[--pCtx->stackTop];
+        if (item.kind == PARSER_ITEM_TERMINAL) {
+            char textBuffer[96];
+            if ((uint16_t)pCtx->current.type != item.symbol) {
+                Parser_SetError(PARSER_ERR_SYNTAX, pCtx->current.line,
+                                pCtx->current.column, "终结符不匹配");
+                return NULL;
+            }
+            Parser_TreeTokenText(pCtx, textBuffer,
+                                 (uint32_t)sizeof(textBuffer));
+            if (Parser_TreeAddTerminal(
+                    pCtx,
+                    s_ParserTreeTokenNames[pCtx->current.type],
+                    textBuffer) != PARSER_OK) {
+                Parser_SetError(PARSER_ERR_STACK, pCtx->current.line,
+                                pCtx->current.column, "语法树创建失败");
+                return NULL;
+            }
+            if (Parser_Advance(pCtx) != PARSER_OK) { return NULL; }
+        } else if (item.kind == PARSER_ITEM_NONTERM) {
+            int16_t production = -1;
+            uint16_t rhsIndex = 0u;
+            uint32_t rhsStart = 0u;
+            uint32_t rhsLength = 0u;
+            if (((uint16_t)pCtx->current.type >= __TERMINAL_COUNT__u) ||
+                (item.symbol >= __NONTERM_COUNT__u)) {
+                Parser_SetError(PARSER_ERR_SYNTAX, pCtx->current.line,
+                                pCtx->current.column, "没有可用产生式");
+                return NULL;
+            }
+            production = s_ParserTable[item.symbol][pCtx->current.type];
+            if (production < 0) {
+                Parser_SetError(PARSER_ERR_SYNTAX, pCtx->current.line,
+                                pCtx->current.column, "预测分析表没有匹配项");
+                return NULL;
+            }
+            if (Parser_TreeOpen(
+                    pCtx,
+                    s_ParserTreeNontermNames[item.symbol]) != PARSER_OK) {
+                Parser_SetError(PARSER_ERR_STACK, pCtx->current.line,
+                                pCtx->current.column, "语法树节点栈已满");
+                return NULL;
+            }
+            if (Parser_Push(pCtx, PARSER_ITEM_TREE_END, 0u,
+                            PARSER_INVALID_INDEX, 0u,
+                            PARSER_INVALID_INDEX) != PARSER_OK) {
+                Parser_SetError(PARSER_ERR_STACK, pCtx->current.line,
+                                pCtx->current.column, "分析栈已满");
+                return NULL;
+            }
+            rhsStart = s_ParserTreeProdStart[production];
+            rhsLength = s_ParserTreeProdLength[production];
+            for (rhsIndex = (uint16_t)rhsLength; rhsIndex > 0u; rhsIndex--) {
+                uint16_t symbol = s_ParserTreeProdSymbols[rhsStart +
+                                                          rhsIndex - 1u];
+                if (symbol < __TERMINAL_COUNT__u) {
+                    if (Parser_Push(pCtx, PARSER_ITEM_TERMINAL, symbol,
+                                    PARSER_INVALID_INDEX, 0u,
+                                    PARSER_INVALID_INDEX) != PARSER_OK) {
+                        Parser_SetError(PARSER_ERR_STACK, pCtx->current.line,
+                                        pCtx->current.column, "分析栈已满");
+                        return NULL;
+                    }
+                } else {
+                    if (Parser_Push(pCtx, PARSER_ITEM_NONTERM,
+                                    (uint16_t)(symbol - __TERMINAL_COUNT__u),
+                                    PARSER_INVALID_INDEX, 0u,
+                                    PARSER_INVALID_INDEX) != PARSER_OK) {
+                        Parser_SetError(PARSER_ERR_STACK, pCtx->current.line,
+                                        pCtx->current.column, "分析栈已满");
+                        return NULL;
+                    }
+                }
+            }
+        } else if (item.kind == PARSER_ITEM_TREE_END) {
+            if (Parser_TreeClose(pCtx) != PARSER_OK) {
+                Parser_SetError(PARSER_ERR_SYNTAX, pCtx->current.line,
+                                pCtx->current.column, "语法树闭合失败");
+                return NULL;
+            }
+        } else {
+            Parser_SetError(PARSER_ERR_SYNTAX, pCtx->current.line,
+                            pCtx->current.column, "语法树分析出现未知项目");
+            return NULL;
+        }
+    }
+    if ((pCtx->pTreeRoot == NULL) || (pCtx->pTreeDepth != 0u) ||
+        (pCtx->current.type != TOKEN_END)) {
+        Parser_SetError(PARSER_ERR_SYNTAX, pCtx->current.line,
+                        pCtx->current.column, "输入尚未完全消费");
+        return NULL;
+    }
+    return pCtx->pTreeRoot;
+}
+
+/** @brief 直接解析脚本文本并返回语法树根节点。 @param pText 输入。 @retval 根节点或 NULL。 */
+VarValue_T *Parser_ParseTreeText(const char *pText)
+{
+    ParserCtx_T *pContext = &s_ParserContext;
+    VarValue_T *pTree = NULL;
+    if (pText == NULL) { return NULL; }
+    memset(pContext, 0, sizeof(*pContext));
+    memset(&s_ParserLastError, 0, sizeof(s_ParserLastError));
+    pContext->pText = pText;
+    pContext->textMode = 1u;
+    pContext->line = 1u;
+    pContext->column = 1u;
+    if (Parser_Advance(pContext) != PARSER_OK) { return NULL; }
+    pTree = Parser_TreeParseLoop(pContext);
+    if ((pContext->ownsCurrentValue != 0u) &&
+        (pContext->current.pValue != NULL)) {
+        Var_Free(pContext->current.pValue);
+    }
+    if (pTree == NULL) {
+        Var_Free(pContext->pTreeRoot);
+        pContext->pTreeRoot = NULL;
+        pContext->pTreeDepth = 0u;
+        pContext->stackTop = 0u;
+    }
+    return pTree;
+}
+
+/** @brief 返回语法树节点的 children 数组。 @retval 数组指针。 */
+VarValue_T *Parser_TreeGetChildren(const VarValue_T *pNode)
+{
+    if (pNode == NULL) { return NULL; }
+    return Var_StructGetField((VarValue_T *)pNode, "children");
+}
+
+/** @brief 返回语法树节点的名字。 @retval 只读字符串。 */
+const char *Parser_TreeGetName(const VarValue_T *pNode)
+{
+    VarValue_T *pField = NULL;
+    const char *pResult = NULL;
+    if (pNode == NULL) { return NULL; }
+    pField = Var_StructGetField((VarValue_T *)pNode, "name");
+    if (pField == NULL) { return NULL; }
+    if (Var_GetString(pField, &pResult) != VAR_RUNTIME_OK) { return NULL; }
+    return pResult;
+}
+
+/** @brief 返回终结符文本。 @retval 只读字符串。 */
+const char *Parser_TreeGetText(const VarValue_T *pNode)
+{
+    VarValue_T *pField = NULL;
+    const char *pResult = NULL;
+    if (pNode == NULL) { return NULL; }
+    pField = Var_StructGetField((VarValue_T *)pNode, "text");
+    if (pField == NULL) { return NULL; }
+    if (Var_GetString(pField, &pResult) != VAR_RUNTIME_OK) { return NULL; }
+    return pResult;
+}
+
+/** @brief 递归打印语法树。 @param pNode 当前节点。 @param depth 缩进深度。 */
+static void Parser_TreePrintRecursive(const VarValue_T *pNode, uint32_t depth)
+{
+    VarValue_T *pChildren = NULL;
+    const char *pName = NULL;
+    const char *pText = NULL;
+    uint32_t index = 0u;
+    uint32_t childCount = 0u;
+    if (pNode == NULL) { return; }
+    pName = Parser_TreeGetName(pNode);
+    pText = Parser_TreeGetText(pNode);
+    for (index = 0u; index < depth; index++) { printf("  "); }
+    printf("%s", (pName != NULL) ? pName : "?");
+    if ((pText != NULL) && (pText[0] != '\0')) {
+        printf("(%s)", pText);
+    }
+    printf("\n");
+    pChildren = Parser_TreeGetChildren(pNode);
+    if (pChildren == NULL) { return; }
+    childCount = (uint32_t)pChildren->u.array.length;
+    for (index = 0u; index < childCount; index++) {
+        Parser_TreePrintRecursive(
+            Var_ArrayGet(pChildren, (size_t)index), depth + 1u);
+    }
+}
+
+/** @brief 打印语法树根节点。 @param pRoot 根节点。 @retval 无。 */
+void Parser_TreePrint(const VarValue_T *pRoot)
+{
+    Parser_TreePrintRecursive(pRoot, 0u);
+}
+
+/** @brief 释放语法树。 @param pRoot 根节点。 @retval 无。 */
+void Parser_TreeFree(VarValue_T *pRoot)
+{
+    Var_Free(pRoot);
+}
+
+/* ============ 通用语法树 API 结束 ============ */
+''' .replace("__TREE_TOKEN_NAMES__", token_names) \
+      .replace("__TREE_NONTERM_NAMES__", nonterm_names) \
+      .replace("__TREE_PROD_STARTS__", starts_text) \
+      .replace("__TREE_PROD_LENGTHS__", lengths_text) \
+      .replace("__TREE_PROD_SYMBOLS__", symbols_text)
+
+
+def _generator_demo_main_c():
+    """生成带 main() 的演示程序，编译后可直接解析表达式并打印结果。"""
+    return r'''
+#ifndef PARSER_SKIP_DEMO_MAIN
+
+#ifndef PARSER_DEMO_INPUT
+#define PARSER_DEMO_INPUT "1+2*3"
+#endif
+
+/** @brief 递归打印一个动态变量值。 @param pValue 变量值。 @retval 无。 */
+static void Parser_DemoPrintValue(const VarValue_T *pValue)
+{
+    if (pValue == NULL) { printf("NULL"); return; }
+    switch (pValue->type) {
+        case VAR_TYPE_UINT8:  printf("%u", (unsigned int)pValue->u.uint8Value); break;
+        case VAR_TYPE_INT8:   printf("%d", (int)pValue->u.int8Value); break;
+        case VAR_TYPE_UINT16: printf("%u", (unsigned int)pValue->u.uint16Value); break;
+        case VAR_TYPE_INT16:  printf("%d", (int)pValue->u.int16Value); break;
+        case VAR_TYPE_UINT32: printf("%u", (unsigned int)pValue->u.uint32Value); break;
+        case VAR_TYPE_UINT64: printf("%llu", (unsigned long long)pValue->u.uint64Value); break;
+        case VAR_TYPE_INT64:  printf("%lld", (long long)pValue->u.int64Value); break;
+        case VAR_TYPE_INT:    printf("%d", (int)pValue->u.intValue); break;
+        case VAR_TYPE_FLOAT:  printf("%g", (double)pValue->u.floatValue); break;
+        case VAR_TYPE_DOUBLE: printf("%g", pValue->u.doubleValue); break;
+        case VAR_TYPE_CHAR:   printf("'%c'", pValue->u.charValue); break;
+        case VAR_TYPE_STRING: printf("\"%s\"", pValue->u.stringValue); break;
+        case VAR_TYPE_ARRAY: {
+            size_t index = 0u;
+            printf("[");
+            for (index = 0u; index < pValue->u.array.length; index++) {
+                if (index > 0u) { printf(", "); }
+                Parser_DemoPrintValue(pValue->u.array.items[index]);
+            }
+            printf("]");
+            break;
+        }
+        case VAR_TYPE_DICT: {
+            size_t index = 0u;
+            printf("{");
+            for (index = 0u; index < pValue->u.dict.length; index++) {
+                if (index > 0u) { printf(", "); }
+                printf("\"%s\": ", pValue->u.dict.entries[index].key);
+                Parser_DemoPrintValue(pValue->u.dict.entries[index].value);
+            }
+            printf("}");
+            break;
+        }
+        case VAR_TYPE_STRUCT: {
+            size_t index = 0u;
+            printf("{");
+            for (index = 0u; index < pValue->u.object.length; index++) {
+                if (index > 0u) { printf(", "); }
+                printf("\"%s\": ", pValue->u.object.members[index].name);
+                Parser_DemoPrintValue(pValue->u.object.members[index].value);
+            }
+            printf("}");
+            break;
+        }
+        default: printf("%s", Var_TypeName(pValue->type)); break;
+    }
+}
+
+/** @brief 演示程序入口：解析 argv[1] 或默认表达式并打印结果。 @retval 0 表示成功。 */
+int main(int argc, char **argv)
+{
+    const char *pInput = NULL;
+    VarValue_T *pResult = NULL;
+    const ParserError_T *pError = NULL;
+
+    if (argc > 1) {
+        pInput = argv[1];
+    } else {
+        pInput = PARSER_DEMO_INPUT;
+    }
+    printf("解析输入: %s\n", pInput);
+    pResult = Parser_RunText(pInput);
+    if (pResult == NULL) {
+        pError = Parser_GetLastError();
+        printf("解析失败: code=%d line=%u column=%u message=%s\n",
+               pError->code, pError->line, pError->column, pError->message);
+        return 1;
+    }
+    printf("解析结果[%s]: ", Var_TypeName(pResult->type));
+    Parser_DemoPrintValue(pResult);
+    printf("\n");
+    Var_Free(pResult);
+    return 0;
+}
+
+#endif /* PARSER_SKIP_DEMO_MAIN */
+'''
+
+
+def generate_parser_c(grammar, tokens, variables=None, token_defs=None,
+                      tree=False, var_max_count=32):
     """生成带默认 Lexer 的表驱动非递归 LL(1) C 解析器。"""
     variables = variables or {}
     token_defs = token_defs or {}
+    var_max_count = max(1, int(var_max_count if var_max_count else 32))
     analysis = prepare_grammar(grammar, tokens)
     terminals = analysis["terminals"]
     nonterms = analysis["nonterms"]
@@ -2426,14 +4837,16 @@ def generate_parser_c(grammar, tokens, variables=None, token_defs=None):
             for prod in analysis["productions"]
         ),
         "__LEX_RULES__": _generator_lex_rules(token_defs),
-        "__REGISTRY__": _generator_registry_block(variables),
+        "__REGISTRY__": _generator_registry_block(variables, var_max_count),
         "__EXPAND_CASES__": _generator_expand_cases(
             analysis, terminals, nonterm_ids
         ),
         "__ACTION_CASES__": _generator_action_cases(analysis),
         "__START_ID__": str(nonterm_ids[analysis["grammar"]["start"]]),
+        "__RUNTIME_HEADER__": VARIABLE_RUNTIME_HEADER,
+        "__RUNTIME_SOURCE__": VARIABLE_RUNTIME_SOURCE_EMBEDDED,
     }
-    code = r'''/* 由 Chapter-script-engine/parser_gen.py 自动生成：非递归 LL(1) 解析器 */
+    code = r'''/* 由 Chapter-script-engine/parser_gen.py 自动生成：内嵌 variable_runtime 且含演示 main 的非递归 LL(1) 解析器 */
 
 #include <ctype.h>
 #include <errno.h>
@@ -2442,7 +4855,14 @@ def generate_parser_c(grammar, tokens, variables=None, token_defs=None):
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "variable_runtime.h"
+
+/* ============ 嵌入式 variable_runtime.h 开始 ============ */
+__RUNTIME_HEADER__
+/* ============ 嵌入式 variable_runtime.h 结束 ============ */
+
+/* ============ 嵌入式 variable_runtime.c 开始 ============ */
+__RUNTIME_SOURCE__
+/* ============ 嵌入式 variable_runtime.c 结束 ============ */
 
 #ifndef PARSER_MAX_STACK_DEPTH
 #define PARSER_MAX_STACK_DEPTH 64u
@@ -2460,6 +4880,7 @@ def generate_parser_c(grammar, tokens, variables=None, token_defs=None):
 #define PARSER_ERR_LEXER -22
 #define PARSER_ERR_DUPLICATE -23
 #define PARSER_ERR_UNDEFINED -24
+#define PARSER_ERR_SYSTEM -25
 #define PARSER_INVALID_INDEX UINT16_MAX
 #define PARSER_VALUE_SLOTS __MAX_SLOTS__u
 #if defined(__GNUC__)
@@ -2501,7 +4922,8 @@ typedef enum __ParserItemKind_T
     PARSER_ITEM_ACTION,
     PARSER_ITEM_ACTION_KEEP,
     PARSER_ITEM_FORWARD,
-    PARSER_ITEM_LEFT_LOOP
+    PARSER_ITEM_LEFT_LOOP,
+    PARSER_ITEM_TREE_END
 } ParserItemKind_T;
 
 typedef struct __ParserStackItem_T
@@ -2542,6 +4964,9 @@ typedef struct __ParserCtx_T
     ParserSemanticFrame_T frames[PARSER_MAX_STACK_DEPTH];
     uint16_t frameTop;
     VarValue_T *pRootResult;
+    VarValue_T *pTreeRoot;
+    VarValue_T *pTreePath[PARSER_MAX_STACK_DEPTH];
+    uint16_t pTreeDepth;
 } ParserCtx_T;
 
 typedef struct __ParserLexRule_T
@@ -2835,6 +5260,10 @@ static int32_t Parser_CaptureTerminal(ParserCtx_T *pCtx,
 }
 '''
     code += _generator_parse_loop_c()
+    code += _generator_tree_code(
+        analysis, terminals, nonterms, tree
+    )
+    code += _generator_demo_main_c()
     for marker, value in replacements.items():
         code = code.replace(marker, value)
     return code
@@ -2846,12 +5275,8 @@ def main():
     )
     parser.add_argument("-o", "--output", default="parser_gen.c",
                         help="输出 C 文件名")
-    parser.add_argument("--grammar", default=None,
-                        help="可选 JSON 文法文件")
     parser.add_argument("--grammar-file", default=None,
-                        help="可选 .gram 文本文法文件")
-    parser.add_argument("--advanced", action="store_true",
-                        help="生成 IF/FOR/布尔运算符高级示例文法")
+                        help="文法文件（仅支持 .gram 文本格式）")
     parser.add_argument("--report", default=None,
                         help="把文法分析报告另存为 UTF-8 文本")
     parser.add_argument("--self-test", action="store_true",
@@ -2896,6 +5321,72 @@ def main():
             raise AssertionError("可空前缀后的间接左递归没有被拒绝")
         except ValueError as error:
             assert "间接左递归" in str(error)
+        limited_cfg = load_grammar_text(
+            '%define ASSIGN ":="\n'
+            '%var_max_count 2\n'
+            '%start root\n'
+            'root := VARIABLE ASSIGN NUMBER '
+            '{ def[$1, int32] = $3; $$ = [$1]; }\n'
+        )
+        assert limited_cfg["var_max_count"] == 2
+        limited_code = generate_parser_c(
+            limited_cfg["grammar"], limited_cfg["tokens"], {},
+            limited_cfg["token_defs"], var_max_count=2
+        )
+        assert "#define PARSER_MAX_VARIABLES 2u" in limited_code
+        _compile_and_run_generated_test(limited_code, r'''
+/** @file generated_harness.c @brief 验证声明与 %var_max_count 容量。 */
+#include "generated_parser.c"
+
+/** @brief 主入口。 @retval 0 表示通过。 */
+int main(void)
+{
+    VarValue_T *pValue = Parser_RunText("a:=1");
+    int32_t result = 0;
+    if ((pValue == NULL) ||
+        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
+        (result != 1)) { return 1; }
+    Var_Free(pValue);
+    pValue = Parser_RunText("b:=2");
+    if (pValue == NULL) { return 2; }
+    Var_Free(pValue);
+    if (Parser_RunText("c:=3") != NULL) { return 3; }
+    if (Parser_GetLastError()->code != VAR_RUNTIME_ERR_MEMORY) { return 4; }
+    return 0;
+}
+''')
+        assign_cfg = load_grammar_text(
+            '%define ASSIGN ":="\n'
+            '%var_max_count 2\n'
+            '%var X int32 = 0\n'
+            '%start root\n'
+            'root := VARIABLE ASSIGN NUMBER '
+            '{ [$1] = $3; $$ = [$1]; }\n'
+        )
+        assign_code = generate_parser_c(
+            assign_cfg["grammar"], assign_cfg["tokens"],
+            assign_cfg["variables"], assign_cfg["token_defs"],
+            var_max_count=2
+        )
+        _compile_and_run_generated_test(assign_code, r'''
+/** @file generated_harness.c @brief 验证已有变量固定类型赋值。 */
+#include "generated_parser.c"
+
+/** @brief 主入口。 @retval 0 表示通过。 */
+int main(void)
+{
+    VarValue_T *pValue = Parser_RunText("X:=42");
+    int32_t result = 0;
+    if ((pValue == NULL) ||
+        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
+        (result != 42)) { return 1; }
+    Var_Free(pValue);
+    if (Parser_RunText("Y:=1") != NULL) { return 2; }
+    if (Parser_GetLastError()->code != PARSER_ERR_UNDEFINED) { return 3; }
+    if (Parser_DeleteVariable("X") != PARSER_ERR_SYSTEM) { return 4; }
+    return 0;
+}
+''')
         generated_code = generate_parser_c(
             cfg["grammar"], cfg["tokens"], {}, cfg["token_defs"]
         )
@@ -2904,6 +5395,38 @@ def main():
         assert "Parser_RunText" in generated_code
         assert "static ParserCtx_T s_ParserContext;" in generated_code
         assert "ParserCtx_T context;" not in generated_code
+        assert '#include "variable_runtime.h"' not in generated_code
+        assert "Var_CreateInt" in generated_code
+        assert "Var_TypeName" in generated_code
+        assert "int main(" in generated_code
+        assert "#ifndef PARSER_SKIP_DEMO_MAIN" in generated_code
+        tree_generated_code = generate_parser_c(
+            cfg["grammar"], cfg["tokens"], {}, cfg["token_defs"], tree=True
+        )
+        assert "Parser_ParseTreeText" in tree_generated_code
+        assert "s_ParserTreeProdStart" in tree_generated_code
+        _compile_and_run_generated_test(tree_generated_code, r'''
+/** @file generated_harness.c @brief 验证 %tree 生成的通用语法树 API。 */
+#include <string.h>
+#include "generated_parser.c"
+
+/** @brief 解析文本并检查根节点。 @retval 0 表示通过。 */
+int main(void)
+{
+    VarValue_T *pTree = Parser_ParseTreeText("1");
+    VarValue_T *pChildren = NULL;
+    if (pTree == NULL) { return 1; }
+    if (strcmp(Parser_TreeGetName(pTree), "root") != 0) { return 2; }
+    pChildren = Parser_TreeGetChildren(pTree);
+    if ((pChildren == NULL) || (pChildren->u.array.length != 1u)) {
+        return 3;
+    }
+    if (strcmp(Parser_TreeGetName(Var_ArrayGet(pChildren, 0u)),
+               "NUMBER") != 0) { return 4; }
+    Parser_TreeFree(pTree);
+    return 0;
+}
+''')
         _compile_and_run_generated_test(generated_code, r'''
 /**
  * @file    generated_harness.c
@@ -2981,6 +5504,58 @@ int main(void)
     return 0;
 }
 ''', sanitize=True)
+        _compile_and_run_generated_demo(expression_code, ["1+1+1+1+1"])
+        left_assoc_cfg = load_grammar_text(
+            '%define PLUS "+"\n'
+            '%define MINUS "-"\n'
+            '%define STAR "*"\n'
+            '%define SLASH "/"\n'
+            '%define LPAREN "("\n'
+            '%define RPAREN ")"\n'
+            '%start expr\n'
+            'expr := expr PLUS term { $$ = $1 + $3; }\n'
+            'expr := expr MINUS term { $$ = $1 - $3; }\n'
+            'expr := term { $$ = $1; }\n'
+            'term := term STAR factor { $$ = $1 * $3; }\n'
+            'term := term SLASH factor { $$ = $1 / $3; }\n'
+            'term := factor { $$ = $1; }\n'
+            'factor := NUMBER { $$ = $1; }\n'
+            'factor := LPAREN expr RPAREN { $$ = $2; }\n'
+        )
+        left_assoc_code = generate_parser_c(
+            left_assoc_cfg["grammar"], left_assoc_cfg["tokens"], {},
+            left_assoc_cfg["token_defs"]
+        )
+        assert "Parser_ParseLoop" in left_assoc_code
+        assert "static ParseResult_T Parse_" not in left_assoc_code
+        _compile_and_run_generated_test(left_assoc_code, r'''
+/** @file generated_harness.c @brief 验证多级左递归与嵌套括号的左结合。 */
+#include "generated_parser.c"
+
+/** @brief 解析文本并核对整型结果。 @param pText 输入。 @param expected 期望值。 @retval 0 表示通过。 */
+static int RunLeftAssocCase(const char *pText, int32_t expected)
+{
+    VarValue_T *pValue = Parser_RunText(pText);
+    int32_t result = 0;
+    if ((pValue == NULL) ||
+        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
+        (result != expected)) { return 1; }
+    Var_Free(pValue);
+    return 0;
+}
+
+/** @brief 执行左结合测试。 @retval 0 表示通过。 */
+int main(void)
+{
+    if (RunLeftAssocCase("10-3-2", 5) != 0) { return 1; }
+    if (RunLeftAssocCase("100-20/5", 96) != 0) { return 2; }
+    if (RunLeftAssocCase("(10-3)*2", 14) != 0) { return 3; }
+    if (RunLeftAssocCase("2*(10-3)", 14) != 0) { return 4; }
+    if (RunLeftAssocCase("(10-3)-(4-2)", 5) != 0) { return 5; }
+    if (RunLeftAssocCase("2*3+4*5", 26) != 0) { return 6; }
+    return 0;
+}
+''', sanitize=True)
         string_cfg = load_grammar_text(
             '%start root\nroot := STRING { $$ = $1; }\n'
         )
@@ -3011,26 +5586,35 @@ int main(void)
             '%define ASSIGN ":="\n'
             '%start root\n'
             'root := VARIABLE ASSIGN NUMBER '
-            '{ def[$1, int32] = $3; $$ = [$1]; }\n'
+            '{ def[$1] = $3; $$ = [$1]; }\n'
         )
         define_code = generate_parser_c(
             define_cfg["grammar"], define_cfg["tokens"], {},
             define_cfg["token_defs"]
         )
         _compile_and_run_generated_test(define_code, r'''
-/** @file generated_harness.c @brief 验证变量定义和重复定义错误。 */
+/** @file generated_harness.c @brief 验证普通变量重定义/覆盖类型/删除。 */
 #include "generated_parser.c"
 
 /** @brief 执行变量定义测试。 @retval 0 表示通过。 */
 int main(void)
 {
     VarValue_T *pValue = Parser_RunText("x:=1.9");
+    float floatResult = 0.0f;
     int32_t result = 0;
+    if ((pValue == NULL) || (pValue->type != VAR_TYPE_FLOAT) ||
+        (Var_GetFloat(pValue, &floatResult) != VAR_RUNTIME_OK) ||
+        (floatResult != 1.9f)) { return 1; }
+    Var_Free(pValue);
+    pValue = Parser_RunText("x:=2");
     if ((pValue == NULL) || (pValue->type != VAR_TYPE_INT) ||
         (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
-        (result != 1)) { return 1; }
-    if (Parser_RunText("x:=2") != NULL) { return 2; }
-    if (Parser_GetLastError()->code != PARSER_ERR_DUPLICATE) { return 3; }
+        (result != 2)) { return 2; }
+    Var_Free(pValue);
+    if (Parser_DeleteVariable("x") != PARSER_OK) { return 3; }
+    pValue = Parser_RunText("x:=3.5");
+    if ((pValue == NULL) || (pValue->type != VAR_TYPE_FLOAT)) { return 4; }
+    Var_Free(pValue);
     return 0;
 }
 ''')
@@ -3078,7 +5662,60 @@ int main(void)
 int main(void)
 {
     if (Parser_RunText("x 2") != NULL) { return 1; }
-    if (Parser_GetLastError()->code != PARSER_ERR_DUPLICATE) { return 2; }
+    if (Parser_GetLastError()->code != PARSER_ERR_SYSTEM) { return 2; }
+    return 0;
+}
+''')
+        delete_cfg = load_grammar_text(
+            '%start root\n'
+            '%var x int32 = 0\n'
+            'root := VARIABLE '
+            '{ delete[$1]; $$ = int32(1); }\n'
+        )
+        delete_code = generate_parser_c(
+            delete_cfg["grammar"], delete_cfg["tokens"],
+            delete_cfg["variables"], delete_cfg["token_defs"]
+        )
+        _compile_and_run_generated_test(delete_code, r'''
+/** @file generated_harness.c @brief 验证脚本 delete 不能删除系统变量。 */
+#include "generated_parser.c"
+
+/** @brief 主入口。 @retval 0 表示通过。 */
+int main(void)
+{
+    if (Parser_RunText("x") != NULL) { return 1; }
+    if (Parser_GetLastError()->code != PARSER_ERR_SYSTEM) { return 2; }
+    return 0;
+}
+''')
+        complex_cfg = load_grammar_text(
+            '%start root\n'
+            '%var a struct { kp float } = { kp: 2.0 }\n'
+            '%var b struct { kp float } = { kp: 5.0 }\n'
+            'root := VARIABLE var_ref var_ref '
+            '{ def[$1, $2] = $3; $$ = [$1]; }\n'
+            'var_ref := VARIABLE { $$ = [$1]; }\n'
+        )
+        complex_code = generate_parser_c(
+            complex_cfg["grammar"], complex_cfg["tokens"],
+            complex_cfg["variables"], complex_cfg["token_defs"]
+        )
+        _compile_and_run_generated_test(complex_code, r'''
+/** @file generated_harness.c @brief 验证脚本层复杂结构体类型定义。 */
+#include "generated_parser.c"
+
+/** @brief 主入口。 @retval 0 表示通过。 */
+int main(void)
+{
+    VarValue_T *pValue = Parser_RunText("x a b");
+    VarValue_T *pField = NULL;
+    float kp = 0.0f;
+    if ((pValue == NULL) || (pValue->type != VAR_TYPE_STRUCT)) { return 1; }
+    pField = Var_StructGetField(pValue, "kp");
+    if ((pField == NULL) ||
+        (Var_GetFloat(pField, &kp) != VAR_RUNTIME_OK) ||
+        (kp != 5.0f)) { return 2; }
+    Var_Free(pValue);
     return 0;
 }
 ''')
@@ -3222,24 +5859,13 @@ int main(void)
 
     if args.grammar_file:
         cfg = load_grammar_file(args.grammar_file)
-        grammar = cfg["grammar"]
-        tokens = cfg["tokens"]
-        variables = cfg.get("variables", {})
-    elif args.grammar:
-        with open(args.grammar, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-        grammar = cfg["grammar"]
-        tokens = cfg["tokens"]
-        variables = cfg.get("variables", {})
     else:
-        grammar_file = ("grammar_advanced.json" if args.advanced
-                        else "grammar_default.json")
-        with open(os.path.join(script_dir, grammar_file),
-                  "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-        grammar = cfg["grammar"]
-        tokens = cfg["tokens"]
-        variables = cfg.get("variables", {})
+        cfg = load_grammar_file(
+            os.path.join(script_dir, "grammar_calc.gram")
+        )
+    grammar = cfg["grammar"]
+    tokens = cfg["tokens"]
+    variables = cfg.get("variables", {})
 
     token_defs = cfg.get("token_defs", {})
 
@@ -3249,7 +5875,11 @@ int main(void)
     if args.report is not None:
         with open(args.report, "w", encoding="utf-8") as file_handle:
             file_handle.write(report)
-    code = generate_parser_c(grammar, tokens, variables, token_defs)
+    code = generate_parser_c(
+        grammar, tokens, variables, token_defs,
+        tree=bool(cfg.get("tree", False)),
+        var_max_count=cfg.get("var_max_count") or 32
+    )
     with open(args.output, "w", encoding="utf-8") as f:
         f.write(code)
     print(f"生成成功: {args.output}")

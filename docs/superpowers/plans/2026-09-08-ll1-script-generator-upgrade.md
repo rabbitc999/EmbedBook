@@ -4,7 +4,7 @@
 
 **Goal:** 把现有生成器升级为单文件、带默认 Lexer、非递归预测分析、动态数字、固定类型变量和文法分析报告的 MCU 友好型 LL(1) 工具。
 
-**Architecture:** `parser_gen.py` 统一负责 `.gram`/JSON 加载、直接左递归转换、集合与预测表计算、报告和 C 源码生成。生成的 C 代码以显式分析栈执行预测分析，Lexer 逐字符产生动态 `VarValue_T`；`variable_runtime.c/h` 提供严格 Getter、固定类型转换和变量注册表接口。
+**Architecture:** `parser_gen.py` 统一负责 `.gram` 文本加载、直接左递归转换、集合与预测表计算、报告和 C 源码生成。生成的 C 代码以显式分析栈执行预测分析，Lexer 逐字符产生动态 `VarValue_T`；`variable_runtime.c/h` 提供严格 Getter、固定类型转换和变量注册表接口。
 
 **Tech Stack:** Python 3 标准库、C99、GCC、LaTeX 文档。
 

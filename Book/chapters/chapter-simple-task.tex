@@ -870,7 +870,7 @@ void TIM6_IRQHandler(void)
 \end{lstlisting}
 
 % ---------------------------------------------------------------------
-\section{实验报告：simple\_task 调度器移植与验证}
+\section{单片机实验：simple\_task 调度器移植与验证}
 
 \subsection{实验基本信息}
 
@@ -893,14 +893,6 @@ void TIM6_IRQHandler(void)
 
 \subsection{实验原理}
 simple\_task 采用时间触发、协作运行模式：1ms 定时器中断调用 Task\_Tick 更新所有任务的计时，将到期的任务放入 FIFO 就绪队列；主循环调用 Task\_Loop 从队列中取出任务并执行。任务通过回调返回值（TaskRet\_T）控制下一次执行的周期和状态，实现动态周期调整和单次执行。DWT 内核定时器提供微秒级计时，用于统计每个任务的运行时间和 CPU 占用率。
-
-\subsection{硬件连接}
-
-\LabPasteBox{simple\_task 移植硬件连接}{粘贴开发板与调试器（或串口）的连接图片，标注 LED 指示和调试输出接口。}{fig:ch3-task-hardware}
-
-\subsection{关键代码}
-
-\LabPasteBox{Task\_Tick、Task\_Loop 与任务创建代码}{粘贴定时器中断服务函数、Task\_Loop 主循环、任务创建及回调函数的核心代码片段。}{fig:ch3-task-code}
 
 \subsection{实验步骤}
 \begin{enumerate}
@@ -930,8 +922,6 @@ simple\_task 采用时间触发、协作运行模式：1ms 定时器中断调用
 \bottomrule
 \end{tabularx}
 \end{table}
-
-\LabPasteBox{simple\_task 运行日志与 CPU 占用率}{粘贴串口打印的 \texttt{Task\_GetInfo} 输出截图和逻辑分析仪捕获的任务执行时序。}{fig:ch3-task-result}
 
 \subsection{结果分析}
 

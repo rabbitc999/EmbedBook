@@ -197,7 +197,7 @@ filter->errorCovariance = (1.0f - kalmanGain) * predictedCovariance;
 独立断言还验证了滑动平均的启动阶段、一阶低通的递推结果、中值窗口排序、一维卡尔曼增益和非法初始化参数，断言均正常通过。
 
 % ---------------------------------------------------------------------
-\section{实验报告：数字滤波器移植与验证}
+\section{单片机实验：数字滤波器移植与验证}
 
 \subsection{实验基本信息}
 
@@ -221,14 +221,6 @@ filter->errorCovariance = (1.0f - kalmanGain) * predictedCovariance;
 
 \subsection{实验原理}
 数字滤波器在采样时刻对输入序列进行运算，输出平滑后的估计值。滑动平均利用窗口内数据的算术平均值削弱随机噪声；一阶低通通过反馈系数 $\alpha$ 控制新旧数据的权重；中值滤波通过排序取中值有效抑制孤立脉冲；卡尔曼滤波基于状态模型和噪声统计特性，动态调整增益，在平滑性与跟随性之间取得最优平衡。四种滤波器的选择取决于信号的动态特性和噪声分布。
-
-\subsection{硬件连接}
-
-\LabPasteBox{数字滤波器硬件连接}{粘贴传感器与开发板连接的图片，标注信号源、ADC 输入引脚和公共地。}{fig:ch11-filter-hardware}
-
-\subsection{关键代码}
-
-\LabPasteBox{四种滤波器的初始化、更新与比较代码}{粘贴滤波器状态结构体定义、各滤波器的更新函数调用、以及同时输出原始值与滤波值的完整代码片段。}{fig:ch11-filter-code}
 
 \subsection{实验步骤}
 \begin{enumerate}
@@ -263,8 +255,6 @@ filter->errorCovariance = (1.0f - kalmanGain) * predictedCovariance;
 \bottomrule
 \end{tabularx}
 \end{table}
-
-\LabPasteBox{滤波器实测波形对比}{粘贴串口绘图工具（如 SerialPlot、Python）绘制的原始值与四种滤波输出曲线截图。}{fig:ch11-filter-result}
 
 \subsection{结果分析}
 

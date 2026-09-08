@@ -209,7 +209,7 @@ Python 生成阶段抛出带上下文的异常；生成的 C 运行时通过状�
 
 ## 兼容性与范围限制
 
-- 保留 JSON 文法输入和 `Parser_Run()`，现有用户可继续传入 Token 数组；
+- 不再支持 JSON 文法输入，所有文法统一使用 `.gram` 文本；保留 `Parser_Run()`，现有用户可继续传入 Token 数组；
 - `grammar_loader.py` 的实现合并进 `parser_gen.py`；仓库只保留一个正式 Python 生成器文件和命令入口；
 - `.gram` 中原有 `%token`、`%start`、`%var` 和直接左递归写法继续有效；
 - 原有 `VAR`、`IDENT` 不自动改名，但新文法推荐统一使用默认 `VARIABLE`；

@@ -640,7 +640,7 @@ int main(void)
 \end{itemize}
 
 % ---------------------------------------------------------------------
-\section{实验报告：协程调度器移植与验证}
+\section{单片机实验：协程调度器移植与验证}
 
 \subsection{实验基本信息}
 
@@ -662,14 +662,6 @@ int main(void)
 
 \subsection{实验原理}
 调度器使用 \texttt{setjmp}/\texttt{longjmp} 保存和恢复任务执行现场（寄存器、栈指针、程序计数器）。独立栈任务切换时仅需修改栈指针；共享栈任务在挂起时将当前运行栈的内容备份到私有缓冲区，恢复时再拷贝回去。调度器通过环形任务链表轮询唤醒条件，选择就绪任务并跳转执行。
-
-\subsection{硬件连接}
-
-\LabPasteBox{协程调度器硬件连接}{粘贴开发板、调试串口（或 LED）的连接图片，标注电源、调试接口和指示灯。}{fig:ch9-coro-hardware}
-
-\subsection{关键代码}
-
-\LabPasteBox{时间源、栈切换宏与任务创建代码}{粘贴 \texttt{GetTimerMs}、\texttt{TASK\_SET\_STACK} 宏实现，以及独立栈与共享栈任务的创建代码，并标注栈大小和对齐检查。}{fig:ch9-coro-code}
 
 \subsection{实验步骤}
 \begin{enumerate}
@@ -698,8 +690,6 @@ int main(void)
 \bottomrule
 \end{tabularx}
 \end{table}
-
-\LabPasteBox{协程调度器运行结果}{粘贴串口打印的任务切换日志、LED 翻转波形截图或逻辑分析仪捕获的时序图。}{fig:ch9-coro-result}
 
 \subsection{结果分析}
 

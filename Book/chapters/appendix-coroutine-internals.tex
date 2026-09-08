@@ -48,7 +48,7 @@
 \caption{调度器、任务控制块与任务资源的关系} \label{fig:app-coro-object-relation}
 \end{figure}
 
-\texttt{TaskScheduler\_T} 只有一个静态实例 \texttt{s\_TaskScheduler}。它保存时间回调、当前任务指针、循环任务链表、主调度现场 \texttt{envMain} 和两个资源位图。任务控制块来自静态数组 \texttt{s\_TcbPool}，共享栈备份区来自 \texttt{s\_SharedStackBuffers}，所以任务创建过程不调用动态内存分配函数。
+\texttt{TaskScheduler\_T} 只有一个静态实例 \texttt{s\_TaskScheduler}。它保存时间回调、当前任务指针、循环任务链表、主调度现场 \texttt{envMain} 等数据。控制块来自静态数组 \texttt{s\_TcbPool}，共享栈备份区来自 \texttt{s\_SharedStackBuffers}，所以任务创建过程不调用动态内存分配函数。
 
 % ---------------------------------------------------------------------
 \section{任务控制块逐项说明}

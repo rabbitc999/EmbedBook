@@ -224,7 +224,7 @@ $\alpha$ 越小，微分输出越平滑，但相位延迟也会增加。噪声�
 除示例程序外，还使用独立断言验证了纯比例位置式 PID、纯比例增量式 PID、非法控制周期和空指针处理，断言均正常通过。
 
 % ---------------------------------------------------------------------
-\section{实验报告：PID 控制器移植与整定}
+\section{单片机实验：PID 控制器移植与整定}
 
 \subsection{实验基本信息}
 
@@ -250,14 +250,6 @@ $\alpha$ 越小，微分输出越平滑，但相位延迟也会增加。噪声�
 \subsection{实验原理}
 PID 控制器根据设定值与反馈值的偏差 $e[k]$ 计算控制量。位置式 PID 直接输出当前控制量：$u[k] = K_p e[k] + I[k] + D[k]$，其中积分项 $I[k] = I[k-1] + K_i T_s e[k]$，微分项 $D[k] = K_d (e[k]-e[k-1])/T_s$。工程中需对积分项和输出进行限幅，并对微分项进行低通滤波以抑制噪声放大。增量式 PID 则计算输出变化量 $\Delta u[k]$，适合执行器需要增量控制的场景。参数整定通常从比例开始，再逐步引入积分和微分。
 
-\subsection{硬件连接}
-
-\LabPasteBox{PID 控制硬件连接}{粘贴开发板与执行器（如电机驱动或加热器）、传感器（编码器、ADC）以及调试串口的连接图片，标注电源、PWM 输出、反馈信号和公共地。}{fig:ch13-pid-hardware}
-
-\subsection{关键代码}
-
-\LabPasteBox{PID 控制器初始化、更新与参数整定代码}{粘贴 PID 结构体定义、参数设置函数、控制周期定时任务和 \texttt{PID\_Calculate} 调用代码，并标注积分限幅和输出限幅的配置。}{fig:ch13-pid-code}
-
 \subsection{实验步骤}
 \begin{enumerate}
 \item 将 `pid\_control.c` 与 `pid\_control.h` 加入单片机工程，确认控制周期定时器已正确配置（如 10ms）。
@@ -276,7 +268,7 @@ PID 控制器根据设定值与反馈值的偏差 $e[k]$ 计算控制量。位�
 \centering
 \caption{PID 控制器阶跃响应与扰动实验记录}
 \label{tab:ch13-pid-record}
-\begin{tabularx}{\textwidth}{p{2.4cm}p{2.2cm}p{2.0cm}p{2.0cm}p{2.0cm}X}
+\begin{tabularx}{\textwidth}{p{2.4cm}XXXXX}
 \toprule
 测试场景 & $K_p$ / $K_i$ / $K_d$ & 上升时间(ms) & 超调量(\%) & 稳态误差 & 备注 \\
 \midrule
@@ -287,8 +279,6 @@ PID 控制器根据设定值与反馈值的偏差 $e[k]$ 计算控制量。位�
 \bottomrule
 \end{tabularx}
 \end{table}
-
-\LabPasteBox{PID 阶跃响应与扰动波形}{粘贴串口绘图工具绘制的设定值、反馈值和控制量曲线截图，标注上升时间、超调量和稳态误差。}{fig:ch13-pid-result}
 
 \subsection{结果分析}
 

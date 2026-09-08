@@ -530,21 +530,9 @@ Lua 的代价是需要移植内存分配、提供系统时间，并严格限制�
 % ---------------------------------------------------------------------
 \section{Python 解析生成器}
 
-仓库里的 \texttt{Chapter-script-engine/parser\_gen.py} 是一个单文件工具：它负责加载 \texttt{.gram}、计算最终文法和预测分析表，并生成自带 Lexer 的非递归 C 解析器。生成结果既可以继续接收调用者准备的 TOKEN 流，也可以通过 \texttt{Parser\_RunText} 直接解析脚本文本。
+仓库里的 \texttt{Chapter-script-engine/parser\_gen.py} 是一个单文件工具：它负责加载 \texttt{.gram}、计算最终文法和预测分析表，并生成自带 Lexer 的非递归 C 解析器。生成出的单个 C 文件会把原 \texttt{variable\_runtime.c/h} 的完整实现内嵌，并附带一个演示 \texttt{main()}，因此不需要额外复制运行时源码即可直接编译运行。生成结果既可以继续接收调用者准备的 TOKEN 流，也可以通过 \texttt{Parser\_RunText} 直接解析脚本文本。
 
-一开始我们尝试用 JSON 描述文法，但 JSON 的嵌套规则写起来很痛苦：
-
-\begin{lstlisting}
-{
-  "rules": {
-    "expr": [
-      {"rhs": ["expr", "PLUS", "term"], "action": "$$ = $1 + $3;"}
-    ]
-  }
-}
-\end{lstlisting}
-
-于是改成 Yacc 风格但去掉 \texttt{|} 分隔符的 \texttt{.gram} 文本格式：
+文法只使用 Yacc 风格但去掉 \texttt{|} 分隔符的 \texttt{.gram} 文本格式：
 
 \begin{lstlisting}
 %define PLUS "+"
@@ -583,7 +571,9 @@ factor := LPAREN expr RPAREN { $$ = $2; }
 \item \texttt{\%token}：声明只由外部 TOKEN 流提供的其他终结符；
 \item \texttt{\%define}：声明固定字符串 Token，例如 \texttt{\%define EQ "==|="}；其中只支持竖线表示“或”，不支持正则表达式；
 \item \texttt{\%start}：起始非终结符；
+\item \texttt{\%tree}：让生成的 C 代码附带通用语法树 API（\texttt{Parser\_ParseTreeText} 等）；
 \item \texttt{\%var}：声明脚本变量及其类型，可带初始值；
+\item \texttt{\%var\_max\_count N}：设置生成代码中变量表的固定容量（默认 32）；
 \item 每条产生式单独写成 \texttt{lhs := rhs \{ 动作 \}}，不使用 \texttt{|}，也不需要结尾 \texttt{;}；
 \item \texttt{\%empty} 表示空产生式，例如 \texttt{else\_part := \%empty \{ \$\$ = int32(0); \}}。
 \end{itemize}
@@ -603,9 +593,10 @@ def[$1, int32[8]] = $3;   /* 定义固定元素类型与长度的数组 */
 def[$1, $2] = $3;         /* 复制 $2 的简单类型或数组类型 */
 [$1] = $3;                /* 给已有变量赋值 */
 $$ = [$1];                /* 读取变量作为产生式结果 */
+delete[$1];               /* 删除普通变量 */
 \end{lstlisting}
 
-变量定义后类型不再改变。再次赋值时，运行时先把右值转换为目标变量原有类型；转换越界、重复定义或给不存在的变量赋值都会失败。\texttt{def} 的类型复制只支持简单数据类型和数组，不接受字典或结构体。
+通过 \texttt{\%var} 预声明的变量属于系统默认变量：类型固定，不能被 \texttt{def} 重新定义，也不能用 \texttt{delete} 删除；脚本里尝试覆盖或删除系统变量会返回 \texttt{PARSER\_ERR\_SYSTEM}。运行时通过 \texttt{def} 创建的普通变量则可以再次 \texttt{def}，并且允许改变类型；\texttt{delete[\$1]} 会删除普通变量，之后可以重新定义。外部 C 代码也可以调用 \texttt{Parser\_DeleteVariable()} 删除普通变量。\texttt{def[\$1, \$2]} 可以从已有的简单类型、数组、字典、结构体或嵌套复合值复制类型；显式字面类型写法仍用于简单类型和定长数组。
 
 “一个非终结符的多条候选”不再用 \texttt{|} 连接，而是重复写 \texttt{lhs :=}：
 
@@ -682,6 +673,7 @@ $$ = $1.int32 ^ $2.int32;          /* 显式 int32 位运算 */
 
 \begin{itemize}
 \item \texttt{+ - * /} 依次对应 \texttt{Var\_Add}、\texttt{Var\_Sub}、\texttt{Var\_Mul} 与 \texttt{Var\_Div}；
+\item \texttt{\%} 对应 \texttt{Var\_Mod}：整数执行取模，浮点执行 \texttt{fmod}；
 \item \texttt{\&\& || !} 依次对应 \texttt{Var\_And}、\texttt{Var\_Or} 和 \texttt{Var\_Not}；
 \item \texttt{[\$1]}：读取已有变量；放在赋值号左侧时执行固定类型转换后赋值；
 \item \texttt{def[\$1, int32]}：定义具有固定类型的新变量，也可用 \texttt{\$n} 提供类型模板；
@@ -689,7 +681,7 @@ $$ = $1.int32 ^ $2.int32;          /* 显式 int32 位运算 */
 \item 未显式类型就对运行时值做位运算，生成时会告警；建议先写 \texttt{\$1.int32} 这样的类型字段，再参与异或、位与等运算。
 \end{itemize}
 
-生成结果包含 Token 枚举、预测分析表、显式分析栈、变量表等，以及 \texttt{Parser\_Run} 和 \texttt{Parser\_RunText} 两个入口。语义值使用 \texttt{VarValue\_T}（无 GC，由 \texttt{Var\_Free} 手动释放）。外部 C 程序可以用 \texttt{Var\_GetInt32}、\texttt{Var\_GetUint32}、\texttt{Var\_GetFloat}、\texttt{Var\_GetDouble} 等 Getter 做带范围检查的访问。
+生成结果包含 Token 枚举、预测分析表、显式分析栈、变量表等，以及 \texttt{Parser\_Run} 和 \texttt{Parser\_RunText} 两个入口。同一个 C 文件还会依次内嵌 \texttt{variable\_runtime.h} 与 \texttt{variable\_runtime.c} 的全部实现，并在末尾生成演示 \texttt{main()}：编译后直接运行，即可解析表达式并打印结果；若要把该 C 文件嵌入其他工程，可在 \texttt{\#include} 前定义 \texttt{PARSER\_SKIP\_DEMO\_MAIN} 来跳过演示入口。语义值使用 \texttt{VarValue\_T}（无 GC，由 \texttt{Var\_Free} 手动释放）。外部 C 程序可以用 \texttt{Var\_GetInt32}、\texttt{Var\_GetUint32}、\texttt{Var\_GetFloat}、\texttt{Var\_GetDouble} 等 Getter 做带范围检查的访问。
 
 \subsection{生成命令}
 
@@ -708,22 +700,23 @@ python Chapter-script-engine/parser_gen.py \
     -o parser_calc.c
 \end{lstlisting}
 
-生成器默认在控制台输出消除直接左递归后的最终产生式、FIRST 集合、FOLLOW 集合等信息；\texttt{--report} 会把同样内容保存为 UTF-8 文本，便于读者逐项核对。
-
-生成高级 IF 与 FOR 测试文法：
+生成出的 \texttt{parser\_calc.c} 已经自包含，可直接编译并运行演示程序：
 
 \begin{lstlisting}[language=Python]
-python Chapter-script-engine/parser_gen.py --advanced -o parser_adv.c
+gcc parser_calc.c -lm -o parser_calc
+./parser_calc "(1+2)*3"
 \end{lstlisting}
 
-完整示例见 \texttt{Chapter-script-engine/grammar\_calc.gram}。
+生成器默认在控制台输出消除直接左递归后的最终产生式、FIRST 集合、FOLLOW 集合等信息；\texttt{--report} 会把同样内容保存为 UTF-8 文本，便于读者逐项核对。
+
+完整示例见 \texttt{Chapter-script-engine/grammar\_calc.gram}；包含 IF/FOR、布尔与比较运算的高级示例见 \texttt{Chapter-script-engine/grammar\_advanced.gram}。两类文法都通过 \texttt{--grammar-file} 交给生成器，统一使用 \texttt{.gram} 文本格式。
 
 \begin{anybox}{为什么不把运行时与生成器展开讲解}
-	细心的读者可能已经注意到，本章的示例代码仓库里还包含了 \texttt{variable\_runtime.c} 和单文件工具 \texttt{parser\_gen.py}，但正文中只是浅尝辄止地介绍了它们的存在。这并不是遗漏，而是刻意的边界划定。
+	细心的读者可能已经注意到，本章的 \texttt{parser\_gen.py} 已经不再只是“文法转 C”的翻译器：它把 \texttt{variable\_runtime.c/h} 的实现收进自身，生成的 C 文件又同时携带动态类型运行时和演示 \texttt{main()}。正文中仍然只浅尝辄止地介绍它们的存在，这并不是遗漏，而是刻意的边界划定。
 	
-	\texttt{variable\_runtime.c} 实现了一套完整的动态类型系统——支持多种类型、深拷贝、切片拼接、类型自动提升等。这套代码本身已经构成了一个“微型语言运行时”，其设计涉及内存所有权、容器扩容、类型转换等话题，如果要讲透，至少需要再写半本书。本章的核心目标是让读者理解“如何用递归下降解析表达式”，而不是“如何设计一个动态语言虚拟机”，因此运行时的细节被封装到仓库里，作为“愿意深究的读者可以翻阅”的材料。
+	\texttt{VarValue\_T} 运行时实现了一套完整的动态类型系统——支持多种类型、深拷贝、切片拼接、类型自动提升等。这套代码本身已经构成了一个“微型语言运行时”，其设计涉及内存所有权、容器扩容、类型转换等话题，如果要讲透，至少需要再写半本书。本章的核心目标是让读者理解“如何用递归下降解析表达式”，而不是“如何设计一个动态语言虚拟机”，因此运行时的细节被封装进生成器和生成产物，作为“愿意深究的读者可以翻阅”的材料。
 	
-	\texttt{parser\_gen.py} 则是“工具链的工具链”——它把人类可读的文法描述翻译成带 Lexer 和显式分析栈的 C 代码。这套生成器涉及 FIRST/FOLLOW 集合、预测表、左递归转换、动作表达式翻译等编译原理话题，每一部分都足以单独成章。如果把这些内容全部铺进正文，这章就会从“单片机脚本引擎”变成“编译原理实践教程”，彻底脱离本书“嵌入式 C 生存实战”的定位。
+	\texttt{parser\_gen.py} 则是“工具链的工具链”——它把人类可读的文法描述翻译成带 Lexer、显式分析栈、内嵌运行时和演示 \texttt{main()} 的 C 代码。这套生成器涉及 FIRST/FOLLOW 集合、预测表、左递归转换、动作表达式翻译等编译原理话题，每一部分都足以单独成章。如果把这些内容全部铺进正文，这章就会从“单片机脚本引擎”变成“编译原理实践教程”，彻底脱离本书“嵌入式 C 生存实战”的定位。
 	
 	因此，作者的选择是：在正文中保留生成器的“使用方式”和“设计思路”，让读者知道存在这样一套工具，但把实现细节留在源码里。工具的价值在于被使用，而不是被背诵。对于有兴趣深挖的读者，仓库里的源码和注释是比任何书本都更直接的老师。
 	
@@ -756,14 +749,6 @@ python Chapter-script-engine/parser_gen.py --advanced -o parser_adv.c
 
 串口接收程序按换行收集脚本文本，词法分析器把数字、变量、运算符和括号转换为 Token，递归下降解析器按优先级计算表达式。变量从静态变量表读取，解析深度、输入长度和结果写入均进行边界检查，错误码沿调用链返回到串口输出层。
 
-\subsection{硬件连接}
-
-\LabPasteBox{脚本表达式实验串口连接}{粘贴开发板与 USB-TTL 接线图片，并标注 TX、RX、GND、电平标准和串口号。}{fig:ch10-script-hardware}
-
-\subsection{关键代码}
-
-\LabPasteBox{输入收集、词法解析、语法解析与执行入口关键代码}{粘贴输入缓冲区管理、Token 扫描、递归下降调用和执行入口代码，并标注长度与深度检查。}{fig:ch10-script-code}
-
 \subsection{实验步骤}
 
 \begin{enumerate}
@@ -794,8 +779,6 @@ python Chapter-script-engine/parser_gen.py --advanced -o parser_adv.c
 \bottomrule
 \end{tabularx}
 \end{table}
-
-\LabPasteBox{脚本表达式运行结果}{粘贴整数、浮点、变量、非法语法和超长输入的串口记录或显示截图。}{fig:ch10-script-result}
 
 \subsection{结果分析}
 
@@ -848,7 +831,7 @@ python Chapter-script-engine/parser_gen.py --advanced -o parser_adv.c
 因为 G 代码的宏展开（例如 \texttt{\#1 = 10; G01 X[\#1 + 5]}）必须在解析期完成展开，然后把展开后的结果直接变成插补器的输入。Lua 的运行时变量查表会在每次插补周期引入不可预测的延迟，而生成器在编译期就把 \texttt{\#1} 变成 \texttt{axis\_pos[1]} 的直接数组访问——少了整整一个“解释执行”的开销层级。
 \end{anybox}
 
-仓库中 \texttt{Chapter-script-engine/parser\_gen.py} 的使用方式见 README。
+仓库中 \texttt{Chapter-script-engine/parser\_gen.py} 的更多实现细节见附录~\ref{app:parser-generator-runtime}。
 
 % ---------------------------------------------------------------------
 \begin{problemset}
@@ -856,5 +839,5 @@ python Chapter-script-engine/parser_gen.py --advanced -o parser_adv.c
 \item 递归下降解析器为什么要把乘法放在比加法更深的“函数层级”中？如果两个运算符优先级相同，如何保证结合性？
 \item 直接左递归文法（如 \texttt{expr := expr PLUS term}）在递归下降中为什么不能直接实现？本章的生成器如何把它变成“基产生式 + 循环”？
 \item First 与 Follow 集合分别用于解决什么问题？LL(1) 冲突出现时，通常有哪几种处理手段？
-\item .gram 文法中，左递归、\texttt{\%var} 复杂变量和 \texttt{int32(...)} 动作各解决了 JSON 文法中的哪些书写痛点？
+\item .gram 文法中，左递归、\texttt{\%var} 复杂变量和 \texttt{int32(...)} 动作各让哪些原本需要手工维护的中间表示或动作代码得以省略？
 \end{problemset}
