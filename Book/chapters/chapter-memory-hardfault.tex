@@ -205,51 +205,44 @@ Thumb 指令的一般形式可以概括为：
 阅读 HardFaultHandler.S 只需要掌握上面这几条；真正的现场分析仍在 C 层完成，汇编只负责把正确的栈指针交给 C。
 
 % ---------------------------------------------------------------------
-\section{单片机实验：制造并分析 HardFault}
+\section{单片机实验报告：HardFault 定位}
 
-本节实验需要在自己开发板上完成，作者先给出实验框架，后续补充串口日志与截图。
-
-\begin{anybox}{实验目的}
-
+\subsection{实验目的}
 \begin{enumerate}
-\item 观察空指针或非对齐访问如何触发 HardFault；
-\item 读取并理解 CFSR、HFSR 和出错地址；
-\item 用 \texttt{.map} 与反汇编定位到出错函数。
+\item 触发并记录典型 HardFault 异常；
+\item 读取 CFSR、HFSR、BFAR 与故障现场寄存器；
+\item 使用映射文件定位出错代码。
 \end{enumerate}
 
-\end{anybox}
-\begin{anybox}{建议实验步骤}
+\subsection{实验原理}
+异常入口自动保存 R0--R3、R12、LR、PC、PSR，处理函数依据 CFSR 与 BFAR 判断故障类型。
 
+\subsection{实验步骤}
 \begin{enumerate}
-\item 编写 4 字节拷贝函数，比较对齐与非对齐场景；
-\item 故意对 \texttt{NULL} 或未映射地址写数据；
-\item 在 HardFault\_Handler 中保存现场并停在断点；
-\item 读取 PC、CFSR、HFSR 与 BFAR，对照 \texttt{.map} 文件定位代码；
-\item 最后恢复正确代码，确认系统正常运行。
+\item 编写对齐和非对齐访问示例，分别运行并记录现象。
+\item 在 \texttt{HardFault\_Handler} 中保存栈指针和故障状态寄存器。
+\item 根据 PC 值查询 .map 文件及反汇编输出，确定故障指令。
+\item 修复非法访问后重新下载，确认程序能够持续运行。
 \end{enumerate}
 
-\end{anybox}
-\begin{anybox}{验收标准}
-\begin{itemize}
-\item 能解释故障位含义与出错地址来源；
-\item 能根据现场信息找到触发 HardFault 的那一行代码；
-\item 修复后长时间运行不再进入 HardFault。
-\end{itemize}
+\subsection{关键代码（粘贴处）}
+\fbox{\rule{0pt}{4cm}\rule{0.8\linewidth}{0pt}}
 
-\medskip \noindent\textbf{待补充实验记录}：
+\subsection{图片（粘贴处）}
+\fbox{\rule{0pt}{5cm}\rule{0.8\linewidth}{0pt}}
 
-\begin{itemize}
-\item 开发板调试器截图；
-\item HardFault 现场寄存器日志；
-\item 修复前后对照说明。
-\end{itemize}
-\end{anybox}
+\subsection{实际结果}
+\noindent 故障寄存器记录：\rule{0.82\linewidth}{0.4pt}\\[0.8em]
+\noindent 故障地址与定位结果：\rule{0.72\linewidth}{0.4pt}\\[0.8em]
+\noindent 修复后运行现象：\rule{0.78\linewidth}{0.4pt}
 
-\begin{figure}[htbp]
-\centering
-    % TODO: 在此插入 Keil 或调试器故障现场截图
-\caption{HardFault 现场寄存器截图（待补充）} \label{fig:ch12-fault-log}
-\end{figure}
+\subsection{问题分析}
+\noindent 触发原因及改进措施：\rule{0.72\linewidth}{0.4pt}\\[0.8em]
+\rule{0.95\linewidth}{0.4pt}
+
+\subsection{实验结论}
+\noindent 结论：\rule{0.88\linewidth}{0.4pt}
+
 % ---------------------------------------------------------------------
 \begin{problemset}
 \item HardFault 的常见触发原因有哪些？请分别给出一个能触发该故障的最小 C 代码例子。

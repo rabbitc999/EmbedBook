@@ -1055,7 +1055,26 @@
 \definecolor{frenchplum}{RGB}{190, 20, 83}
 \lstset{language=[LaTeX]TeX}
 
-\setmonofont{CMU Typewriter Text}
+% 实验报告横线占位宏，支持可选长度参数。
+\newcommand{\LabFillLine}[1][4cm]{\rule{#1}{0.4pt}}
+% 图片或关键代码粘贴框：标题、填写提示和图标签分别作为三个参数。
+\newcommand{\LabPasteBox}[3]{%
+  \begin{figure}[htbp]\centering
+    \fbox{\rule{0pt}{5cm}\rule{0.8\linewidth}{0pt}}%
+    \caption{#1：#2}\label{#3}%
+  \end{figure}%
+}
+
+% 优先使用 CMU 等宽字体；在精简 TeX 环境中回退到 Latin Modern Mono，避免找不到字体导致 XeLaTeX 中止。
+\IfFontExistsTF{CMU Typewriter Text}{%
+  \setmonofont{CMU Typewriter Text}%
+}{%
+  \IfFontExistsTF{Latin Modern Mono}{%
+    \setmonofont{Latin Modern Mono}%
+  }{%
+    \setmonofont{DejaVu Sans Mono}%
+  }%
+}
 
 %%%%%%%%%%%%%%%%%性质%%%%%$%%%%%%%%%%%
 \newcounter{property}[section]
