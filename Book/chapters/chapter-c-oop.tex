@@ -324,10 +324,13 @@ C 语言没有继承语法，但可以利用“结构体嵌套”实现等价的
 
 \subsection{实验基本信息}
 
-对象数量：\LabFillLine[3.5cm] \quad
-设备类型：\LabFillLine[3.5cm]
+\subsection{实验基本信息}
 
-接口实现：\LabFillLine[8cm]
+\begin{tabular}{l l l l}
+  对象数量： & \LabFillLine[3.5cm] & 
+  设备类型： & \LabFillLine[3.5cm] \\[2pt]
+  接口实现： & \multicolumn{3}{l}{\LabFillLine[8cm]}   % 合并后三列，让横线足够长
+\end{tabular}
 
 \subsection{实验目的}
 
@@ -372,10 +375,10 @@ C 语言没有继承语法，但可以利用“结构体嵌套”实现等价的
 \toprule
 对象 & 调用接口 & 预期行为 & 实际结果 \\
 \midrule
-设备对象一 & \LabFillLine[2.5cm] & 执行对象一绑定的设备操作 & \LabFillLine[3cm] \\
-设备对象二 & \LabFillLine[2.5cm] & 执行对象二绑定的设备操作 & \LabFillLine[3cm] \\
-类型切换对象 & \LabFillLine[2.5cm] & 保持统一调用并切换具体实现 & \LabFillLine[3cm] \\
-无效对象 & \LabFillLine[2.5cm] & 拒绝调用并进入保护处理 & \LabFillLine[3cm] \\
+设备对象一 & \LabFillBlack[2.5cm] & 执行对象一绑定的设备操作 & \LabFillBlack[3cm] \\
+设备对象二 & \LabFillBlack[2.5cm] & 执行对象二绑定的设备操作 & \LabFillBlack[3cm] \\
+类型切换对象 & \LabFillBlack[2.5cm] & 保持统一调用并切换具体实现 & \LabFillBlack[3cm] \\
+无效对象 & \LabFillBlack[2.5cm] & 拒绝调用并进入保护处理 & \LabFillBlack[3cm] \\
 \bottomrule
 \end{tabularx}
 \end{table}

@@ -201,13 +201,16 @@ filter->errorCovariance = (1.0f - kalmanGain) * predictedCovariance;
 
 \subsection{实验基本信息}
 
-MCU 型号：\LabFillLine[3.5cm] \quad 工作主频：\LabFillLine[3.5cm]
-
-采样周期：\LabFillLine[3.5cm] \quad 信号类型：\LabFillLine[3.5cm]
-
-滑动平均窗口长度：\LabFillLine[3.5cm] \quad 一阶低通系数 $\alpha$：\LabFillLine[3.5cm]
-
-中值滤波窗口大小：\LabFillLine[3.5cm] \quad 卡尔曼 $Q$ / $R$：\LabFillLine[3.5cm]
+\begin{tabular}{r l r l}
+  MCU 型号：         & \LabFillLine[3.5cm] & 
+  工作主频：         & \LabFillLine[3.5cm] \\[2pt]
+  采样周期：         & \LabFillLine[3.5cm] & 
+  信号类型：         & \LabFillLine[3.5cm] \\[2pt]
+  滑动平均窗口长度： & \LabFillLine[3.5cm] & 
+  一阶低通系数 $\alpha$： & \LabFillLine[3.5cm] \\[2pt]
+  中值滤波窗口大小： & \LabFillLine[3.5cm] & 
+  卡尔曼 $Q$ / $R$： & \LabFillLine[3.5cm]
+\end{tabular}
 
 \subsection{实验目的}
 \begin{enumerate}
@@ -248,15 +251,15 @@ MCU 型号：\LabFillLine[3.5cm] \quad 工作主频：\LabFillLine[3.5cm]
 \toprule
 信号场景 & 滤波器类型 & 输出均方差 & 阶跃响应时间(ms) & 尖峰残留幅值 \\
 \midrule
-\multirow{4}{*}{随机噪声} & 滑动平均 & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
- & 一阶低通 & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
- & 中值滤波 & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
- & 卡尔曼滤波 & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+\multirow{4}{*}{随机噪声} & 滑动平均 & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] \\
+ & 一阶低通 & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] \\
+ & 中值滤波 & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] \\
+ & 卡尔曼滤波 & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] \\
 \midrule
-\multirow{4}{*}{脉冲尖峰} & 滑动平均 & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
- & 一阶低通 & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
- & 中值滤波 & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
- & 卡尔曼滤波 & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+\multirow{4}{*}{脉冲尖峰} & 滑动平均 & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] \\
+ & 一阶低通 & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] \\
+ & 中值滤波 & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] \\
+ & 卡尔曼滤波 & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] \\
 \bottomrule
 \end{tabularx}
 \end{table}

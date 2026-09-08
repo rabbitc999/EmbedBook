@@ -737,11 +737,12 @@ python Chapter-script-engine/parser_gen.py --advanced -o parser_adv.c
 
 \subsection{实验基本信息}
 
-脚本缓冲区容量：\LabFillLine[3.5cm] \quad
-变量表容量：\LabFillLine[3.5cm]
-
-串口配置：\LabFillLine[4cm] \quad
-表达式最大长度：\LabFillLine[3.5cm]
+\begin{tabular}{r l r l}
+  脚本缓冲区容量： & \LabFillLine[3.5cm] & 
+  变量表容量：     & \LabFillLine[3.5cm] \\[2pt]
+  串口配置：       & \LabFillLine[4cm]   & 
+  表达式最大长度： & \LabFillLine[3.5cm]
+\end{tabular}
 
 \subsection{实验目的}
 
@@ -785,11 +786,11 @@ python Chapter-script-engine/parser_gen.py --advanced -o parser_adv.c
 \toprule
 表达式 & 期望结果 & 实际结果 & 错误码 \\
 \midrule
-\texttt{10 + 2 * 3} & 16 & \LabFillLine[2.8cm] & \LabFillLine[2.4cm] \\
-浮点表达式 & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] & \LabFillLine[2.4cm] \\
-变量与括号表达式 & \LabFillLine[2.8cm] & \LabFillLine[2.8cm] & \LabFillLine[2.4cm] \\
-非法语法表达式 & 返回语法错误 & \LabFillLine[2.8cm] & \LabFillLine[2.4cm] \\
-超长输入 & 触发长度保护 & \LabFillLine[2.8cm] & \LabFillLine[2.4cm] \\
+\texttt{10 + 2 * 3} & 16 & \LabFillBlack[2.8cm] & \LabFillBlack[2.4cm] \\
+浮点表达式 & \LabFillBlack[2.8cm] & \LabFillBlack[2.8cm] & \LabFillBlack[2.4cm] \\
+变量与括号表达式 & \LabFillBlack[2.8cm] & \LabFillBlack[2.8cm] & \LabFillBlack[2.4cm] \\
+非法语法表达式 & 返回语法错误 & \LabFillBlack[2.8cm] & \LabFillBlack[2.4cm] \\
+超长输入 & 触发长度保护 & \LabFillBlack[2.8cm] & \LabFillBlack[2.4cm] \\
 \bottomrule
 \end{tabularx}
 \end{table}

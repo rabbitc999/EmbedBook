@@ -303,11 +303,14 @@ FFT 包含较多乘法、三角函数和浮点数组。STM32 移植时应关注�
 
 \subsection{实验基本信息}
 
-MCU 型号：\LabFillLine[3.5cm] \quad 工作主频：\LabFillLine[3.5cm]
-
-采样频率：\LabFillLine[3.5cm] \quad FFT 点数：\LabFillLine[3.5cm]
-
-窗函数类型：\LabFillLine[3.5cm] \quad 模拟输入范围：\LabFillLine[3.5cm]
+\begin{tabular}{r l r l}
+  MCU 型号：     & \LabFillLine[3.5cm] & 
+  工作主频：     & \LabFillLine[3.5cm] \\[2pt]
+  采样频率：     & \LabFillLine[3.5cm] & 
+  FFT 点数：     & \LabFillLine[3.5cm] \\[2pt]
+  窗函数类型：   & \LabFillLine[3.5cm] & 
+  模拟输入范围： & \LabFillLine[3.5cm]
+\end{tabular}
 
 \subsection{实验目的}
 \begin{enumerate}
@@ -350,10 +353,10 @@ FFT 将时域采样序列转换到频域，其核心是基二时间抽取蝶形�
 \toprule
 信号频率 & 窗函数类型 & 峰值频点下标 & 实测频率 & 实测幅值 \\
 \midrule
-\LabFillLine[1.8cm] & 矩形窗 & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] \\
-\LabFillLine[1.8cm] & 汉宁窗 & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] \\
-\LabFillLine[1.8cm] & 海明窗 & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] \\
-\LabFillLine[1.8cm] & 布莱克曼窗 & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] \\
+\LabFillBlack[1.8cm] & 矩形窗 & \LabFillBlack[1.8cm] & \LabFillBlack[1.8cm] & \LabFillBlack[1.8cm] \\
+\LabFillBlack[1.8cm] & 汉宁窗 & \LabFillBlack[1.8cm] & \LabFillBlack[1.8cm] & \LabFillBlack[1.8cm] \\
+\LabFillBlack[1.8cm] & 海明窗 & \LabFillBlack[1.8cm] & \LabFillBlack[1.8cm] & \LabFillBlack[1.8cm] \\
+\LabFillBlack[1.8cm] & 布莱克曼窗 & \LabFillBlack[1.8cm] & \LabFillBlack[1.8cm] & \LabFillBlack[1.8cm] \\
 \bottomrule
 \end{tabularx}
 \end{table}

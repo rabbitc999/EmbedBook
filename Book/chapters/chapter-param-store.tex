@@ -296,10 +296,13 @@ void Param_MigrateV1ToV2(
 
 \subsection{实验基本信息}
 
-存储介质：\LabFillLine[3.5cm] \quad
-参数版本：\LabFillLine[3.5cm]
+\subsection{实验基本信息}
 
-存储地址：\LabFillLine[8cm]
+\begin{tabular}{r l r l}
+  存储介质：   & \LabFillLine[3.5cm] & 
+  参数版本：   & \LabFillLine[3.5cm] \\[2pt]
+  存储地址：   & \multicolumn{3}{l}{\LabFillLine[8cm]}
+\end{tabular}
 
 \subsection{实验目的}
 
@@ -345,11 +348,11 @@ void Param_MigrateV1ToV2(
 \toprule
 测试场景 & 写入值 & 重启值 & 校验结果 & 迁移结果 \\
 \midrule
-首次启动 & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] \\
-修改并保存 & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] \\
-断电恢复 & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] \\
-校验破坏 & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] \\
-版本迁移 & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] & \LabFillLine[2.3cm] \\
+首次启动 & \LabFillBlack[2.3cm] & \LabFillBlack[2.3cm] & \LabFillBlack[2.3cm] & \LabFillBlack[2.3cm] \\
+修改并保存 & \LabFillBlack[2.3cm] & \LabFillBlack[2.3cm] & \LabFillBlack[2.3cm] & \LabFillBlack[2.3cm] \\
+断电恢复 & \LabFillBlack[2.3cm] & \LabFillBlack[2.3cm] & \LabFillBlack[2.3cm] & \LabFillBlack[2.3cm] \\
+校验破坏 & \LabFillBlack[2.3cm] & \LabFillBlack[2.3cm] & \LabFillBlack[2.3cm] & \LabFillBlack[2.3cm] \\
+版本迁移 & \LabFillBlack[2.3cm] & \LabFillBlack[2.3cm] & \LabFillBlack[2.3cm] & \LabFillBlack[2.3cm] \\
 \bottomrule
 \end{tabularx}
 \end{table}

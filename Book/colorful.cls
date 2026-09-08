@@ -1057,10 +1057,11 @@
 
 % 实验报告横线占位宏，支持可选长度参数。
 \newcommand{\LabFillLine}[1][4cm]{\rule{#1}{0.4pt}}
+\newcommand{\LabFillBlack}[1][4cm]{\hspace{0.4pt}}
 % 图片或关键代码粘贴框：标题、填写提示和图标签分别作为三个参数。
 \newcommand{\LabPasteBox}[3]{%
   \begin{figure}[htbp]\centering
-    \fbox{\rule{0pt}{5cm}\rule{0.8\linewidth}{0pt}}%
+    \fbox{请在此粘贴图片}%
     \caption{#1：#2}\label{#3}%
   \end{figure}%
 }

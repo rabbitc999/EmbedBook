@@ -209,9 +209,12 @@ Thumb 指令的一般形式可以概括为：
 
 \subsection{实验基本信息}
 
-MCU 型号：\LabFillLine[3.5cm] \quad 调试器：\LabFillLine[3.5cm]
-
-开发环境：\LabFillLine[3.5cm] \quad 故障注入方式：\LabFillLine[3.5cm]
+\begin{tabular}{r l r l}
+  MCU 型号：     & \LabFillLine[3.5cm] & 
+  调试器：       & \LabFillLine[3.5cm] \\[2pt]
+  开发环境：     & \LabFillLine[3.5cm] & 
+  故障注入方式： & \LabFillLine[3.5cm]
+\end{tabular}
 
 \subsection{实验目的}
 \begin{enumerate}
@@ -253,9 +256,9 @@ Cortex-M 处理器发生不可恢复异常时进入 HardFault，硬件自动将 
 \toprule
 故障类型 & CFSR 关键位 & HFSR & BFAR/MMFAR & PC 地址对应函数 \\
 \midrule
-非法函数指针 & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] \\
-非对齐访问 & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] \\
-非法地址指针 & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] & \LabFillLine[2.0cm] \\
+非法函数指针 & \LabFillBlack[2.0cm] & \LabFillBlack[2.0cm] & \LabFillBlack[2.0cm] & \LabFillBlack[2.0cm] \\
+非对齐访问 & \LabFillBlack[2.0cm] & \LabFillBlack[2.0cm] & \LabFillBlack[2.0cm] & \LabFillBlack[2.0cm] \\
+非法地址指针 & \LabFillBlack[2.0cm] & \LabFillBlack[2.0cm] & \LabFillBlack[2.0cm] & \LabFillBlack[2.0cm] \\
 \bottomrule
 \end{tabularx}
 \end{table}

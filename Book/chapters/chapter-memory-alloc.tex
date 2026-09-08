@@ -419,10 +419,11 @@ void Memory_Zero4(uint32_t *pBuffer, uint32_t wordCount)
 
 \subsection{实验基本信息}
 
-内存池块大小：\LabFillLine[3cm] \quad
-内存池块数量：\LabFillLine[3cm]
-
-SRAM 配置：\LabFillLine[8cm]
+\begin{tabular}{r l r l}
+  内存池块大小： & \LabFillLine[3cm] & 
+  内存池块数量： & \LabFillLine[3cm] \\[2pt]
+  SRAM 配置：    & \multicolumn{3}{l}{\LabFillLine[8cm]}
+\end{tabular}
 
 \subsection{实验目的}
 
@@ -468,10 +469,10 @@ SRAM 配置：\LabFillLine[8cm]
 \toprule
 测试场景 & 成功次数 & 失败位置 & 峰值占用 & 异常现象 \\
 \midrule
-内存块耗尽 & \LabFillLine[1.8cm] & \LabFillLine[2.1cm] & \LabFillLine[2.1cm] & \LabFillLine[2.6cm] \\
-释放后复用 & \LabFillLine[1.8cm] & \LabFillLine[2.1cm] & \LabFillLine[2.1cm] & \LabFillLine[2.6cm] \\
-重复释放 & \LabFillLine[1.8cm] & \LabFillLine[2.1cm] & \LabFillLine[2.1cm] & \LabFillLine[2.6cm] \\
-压力循环 & \LabFillLine[1.8cm] & \LabFillLine[2.1cm] & \LabFillLine[2.1cm] & \LabFillLine[2.6cm] \\
+内存块耗尽 & \LabFillBlack[1.8cm] & \LabFillBlack[2.1cm] & \LabFillBlack[2.1cm] & \LabFillBlack[2.6cm] \\
+释放后复用 & \LabFillBlack[1.8cm] & \LabFillBlack[2.1cm] & \LabFillBlack[2.1cm] & \LabFillBlack[2.6cm] \\
+重复释放 & \LabFillBlack[1.8cm] & \LabFillBlack[2.1cm] & \LabFillBlack[2.1cm] & \LabFillBlack[2.6cm] \\
+压力循环 & \LabFillBlack[1.8cm] & \LabFillBlack[2.1cm] & \LabFillBlack[2.1cm] & \LabFillBlack[2.6cm] \\
 \bottomrule
 \end{tabularx}
 \end{table}

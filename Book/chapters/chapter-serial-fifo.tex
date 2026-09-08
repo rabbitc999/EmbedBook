@@ -449,13 +449,15 @@ void Cmd_SendHexData(uint16_t COMx, uint8_t CommandID, uint8_t *Data, uint16_t D
 
 \subsection{实验基本信息}
 
-MCU 型号：\LabFillLine[3.5cm] \quad 工作主频：\LabFillLine[3.5cm]
-
-串口号：\LabFillLine[3.5cm] \quad 波特率：\LabFillLine[3.5cm]
-
-帧格式（数据位/校验位/停止位）：\LabFillLine[3.5cm]
-
-FIFO 缓冲区大小（Rx/Tx）：\LabFillLine[3.5cm] \quad HEX 命令表项数：\LabFillLine[3.5cm]
+\begin{tabular}{r l r l}
+  MCU 型号：    & \LabFillLine[3.5cm] & 
+  工作主频：    & \LabFillLine[3.5cm] \\[2pt]
+  串口号：      & \LabFillLine[3.5cm] & 
+  波特率：      & \LabFillLine[3.5cm] \\[2pt]
+  帧格式（数据位/校验位/停止位）： & \multicolumn{3}{l}{\LabFillLine[3.5cm]} \\[2pt]
+  FIFO 缓冲区大小（Rx/Tx）： & \LabFillLine[3.5cm] & 
+  HEX 命令表项数： & \LabFillLine[3.5cm]
+\end{tabular}
 
 \subsection{实验目的}
 \begin{enumerate}
@@ -498,9 +500,9 @@ FIFO 缓冲区大小（Rx/Tx）：\LabFillLine[3.5cm] \quad HEX 命令表项数�
 \toprule
 测试场景 & 发送帧内容 & 期望应答 & 实际应答 & 命令执行结果 \\
 \midrule
-正确帧 & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] \\
-校验错误 & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] \\
-不定长数据 & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] & \LabFillLine[1.8cm] \\
+正确帧 & \LabFillBlack[1.8cm] & \LabFillBlack[1.8cm] & \LabFillBlack[1.8cm] & \LabFillBlack[1.8cm] \\
+校验错误 & \LabFillBlack[1.8cm] & \LabFillBlack[1.8cm] & \LabFillBlack[1.8cm] & \LabFillBlack[1.8cm] \\
+不定长数据 & \LabFillBlack[1.8cm] & \LabFillBlack[1.8cm] & \LabFillBlack[1.8cm] & \LabFillBlack[1.8cm] \\
 \bottomrule
 \end{tabularx}
 \end{table}

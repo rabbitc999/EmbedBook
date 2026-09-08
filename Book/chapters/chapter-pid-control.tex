@@ -228,13 +228,16 @@ $\alpha$ 越小，微分输出越平滑，但相位延迟也会增加。噪声�
 
 \subsection{实验基本信息}
 
-MCU 型号：\LabFillLine[3.5cm] \quad 工作主频：\LabFillLine[3.5cm]
-
-控制周期：\LabFillLine[3.5cm] \quad 被控对象类型：\LabFillLine[3.5cm]
-
-比例系数 $K_p$：\LabFillLine[3.5cm] \quad 积分系数 $K_i$：\LabFillLine[3.5cm]
-
-微分系数 $K_d$：\LabFillLine[3.5cm] \quad 输出限幅范围：\LabFillLine[3.5cm]
+\begin{tabular}{r l r l}
+  MCU 型号：         & \LabFillLine[3.5cm] & 
+  工作主频：         & \LabFillLine[3.5cm] \\[2pt]
+  控制周期：         & \LabFillLine[3.5cm] & 
+  被控对象类型：     & \LabFillLine[3.5cm] \\[2pt]
+  比例系数 $K_p$：   & \LabFillLine[3.5cm] & 
+  积分系数 $K_i$：   & \LabFillLine[3.5cm] \\[2pt]
+  微分系数 $K_d$：   & \LabFillLine[3.5cm] & 
+  输出限幅范围：     & \LabFillLine[3.5cm]
+\end{tabular}
 
 \subsection{实验目的}
 \begin{enumerate}
@@ -277,10 +280,10 @@ PID 控制器根据设定值与反馈值的偏差 $e[k]$ 计算控制量。位�
 \toprule
 测试场景 & $K_p$ / $K_i$ / $K_d$ & 上升时间(ms) & 超调量(\%) & 稳态误差 & 备注 \\
 \midrule
-纯比例 & \LabFillLine[1.8cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
-比例+积分 & \LabFillLine[1.8cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
-比例+积分+微分 & \LabFillLine[1.8cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
-负载扰动恢复 & \LabFillLine[1.8cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] & \LabFillLine[1.6cm] \\
+纯比例 & \LabFillBlack[1.8cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] \\
+比例+积分 & \LabFillBlack[1.8cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] \\
+比例+积分+微分 & \LabFillBlack[1.8cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] \\
+负载扰动恢复 & \LabFillBlack[1.8cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] & \LabFillBlack[1.6cm] \\
 \bottomrule
 \end{tabularx}
 \end{table}

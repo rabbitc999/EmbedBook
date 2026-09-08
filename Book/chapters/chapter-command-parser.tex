@@ -513,11 +513,14 @@ argv[5] = led      type = STRING
 
 \subsection{实验基本信息}
 
-实验日期：\LabFillLine[3.5cm] \quad
-开发板型号：\LabFillLine[4cm]
+\subsection{实验基本信息}
 
-开发环境：\LabFillLine[4cm] \quad
-串口波特率：\LabFillLine[3.5cm]
+\begin{tabular}{l l l l}
+  实验日期：   & \LabFillLine[3cm] & 
+  开发板型号： & \LabFillLine[3.5cm] \\[2pt]
+  开发环境：   & \LabFillLine[3.5cm] & 
+  串口波特率： & \LabFillLine[3cm]
+\end{tabular}
 
 \subsection{实验目的}
 
@@ -561,11 +564,11 @@ argv[5] = led      type = STRING
 \toprule
 发送命令 & 预期检查项 & 实际结果 \\
 \midrule
-\texttt{intcmd 7} & 整数参数与适配器调用 & \LabFillLine[4cm] \\
-\texttt{car 1.5 2.5 0.8} & 三个浮点参数解析 & \LabFillLine[4cm] \\
-\texttt{types 12 -3 0x10 3.5 led} & 动态类型识别 & \LabFillLine[4cm] \\
-未知命令 & 查表失败后的错误处理 & \LabFillLine[4cm] \\
-超长命令 & FIFO 与命令缓冲区边界保护 & \LabFillLine[4cm] \\
+\texttt{intcmd 7} & 整数参数与适配器调用 & \LabFillBlack[4cm] \\
+\texttt{car 1.5 2.5 0.8} & 三个浮点参数解析 & \LabFillBlack[4cm] \\
+\texttt{types 12 -3 0x10 3.5 led} & 动态类型识别 & \LabFillBlack[4cm] \\
+未知命令 & 查表失败后的错误处理 & \LabFillBlack[4cm] \\
+超长命令 & FIFO 与命令缓冲区边界保护 & \LabFillBlack[4cm] \\
 \bottomrule
 \end{tabularx}
 \end{table}

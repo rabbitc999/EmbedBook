@@ -851,11 +851,14 @@ CMake 的价值是“一处写 CMakeLists.txt，Windows、Linux 与单片机交�
 
 \subsection{实验基本信息}
 
-Linux 发行版：\LabFillLine[3.5cm] \quad 内核版本：\LabFillLine[3.5cm]
-
-虚拟机软件：\LabFillLine[3.5cm] \quad 分配内存/CPU：\LabFillLine[3.5cm]
-
-GCC 版本：\LabFillLine[3.5cm] \quad CMake 版本：\LabFillLine[3.5cm]
+\begin{tabular}{r l r l}
+  Linux 发行版：   & \LabFillLine[3.5cm] & 
+  内核版本：       & \LabFillLine[3.5cm] \\[2pt]
+  虚拟机软件：     & \LabFillLine[3.5cm] & 
+  分配内存/CPU：   & \LabFillLine[3.5cm] \\[2pt]
+  GCC 版本：       & \LabFillLine[3.5cm] & 
+  CMake 版本：     & \LabFillLine[3.5cm]
+\end{tabular}
 
 \subsection{实验目的}
 \begin{enumerate}
@@ -901,11 +904,11 @@ Linux 是嵌入式开发的重要平台，现代工具链（GCC、CMake、Git �
 \toprule
 \textbf{测试项目} & \textbf{输入命令/操作} & \textbf{预期结果} & \textbf{实际结果} \\
 \midrule
-文件操作 & \texttt{ls -la \string~} & 显示家目录所有文件 & \LabFillLine[2.8cm] \\
-文本搜索 & \texttt{grep -rn "main" .} & 显示含 main 的行 & \LabFillLine[2.8cm] \\
-GCC 编译 & \texttt{gcc hello.c -o hello} & 生成可执行文件 & \LabFillLine[2.8cm] \\
-Makefile & \texttt{make} & 自动编译生成目标 & \LabFillLine[2.8cm] \\
-CMake & \texttt{cmake --build build} & 构建成功 & \LabFillLine[2.8cm] \\
+文件操作 & \texttt{ls -la \string~} & 显示家目录所有文件 & \LabFillBlack[2.8cm] \\
+文本搜索 & \texttt{grep -rn "main" .} & 显示含 main 的行 & \LabFillBlack[2.8cm] \\
+GCC 编译 & \texttt{gcc hello.c -o hello} & 生成可执行文件 & \LabFillBlack[2.8cm] \\
+Makefile & \texttt{make} & 自动编译生成目标 & \LabFillBlack[2.8cm] \\
+CMake & \texttt{cmake --build build} & 构建成功 & \LabFillBlack[2.8cm] \\
 \bottomrule
 \end{tabularx}
 \end{table}
