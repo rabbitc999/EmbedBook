@@ -1,4 +1,4 @@
-\chapter{深入理解第 11 章的协程任务管理器} \label{app:coroutine-internals}
+\chapter{深入理解第~\ref{ch:coroutine-scheduler}~章的协程任务管理器} \label{app:coroutine-internals}
 
 第~\ref{ch:coroutine-scheduler}~章从使用者视角介绍了有栈协程：任务可以在 \texttt{Task\_Wait} 处暂停，时间到达以后再从下一行继续。本附录换到实现者视角，对照 \texttt{Chapter-coroutine-scheduler/协程调度器setjmp/} 中的源码，追踪任务控制块、循环链表、\texttt{setjmp}、\texttt{longjmp} 和任务栈之间的关系。
 
@@ -167,7 +167,7 @@
 
 \subsection{主动挂起}
 
-任务调用 \texttt{Task\_Wait(timeMs)} 时，函数先计算绝对唤醒时刻，把状态改为 \texttt{SUSPEND}，再执行 \texttt{setjmp(current->env)}。首次保存返回零，因此进入调度路径。
+任务调用 \texttt{Task\_Wait(timeMs)} 时，先计算唤醒时刻，把状态改为 \texttt{SUSPEND}，再执行 \texttt{setjmp(current->env)}。首次保存返回零，因此进入调度路径。
 
 \subsection{恢复执行}
 

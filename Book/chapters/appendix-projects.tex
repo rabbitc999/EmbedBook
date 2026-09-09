@@ -211,7 +211,7 @@
 物流管理系统采用传统 JSP 框架开发，作者在一周内完成了系统所有功能模块，同时在开发过程中做了以下抽象：
 
 \begin{enumerate}
-	\item 模型层抽象：引入 \texttt{@ModelClass} 和 \texttt{@ModelField} 注解，将数据库映射信息直接写在实体类字段上。\texttt{@ModelField} 的 \texttt{column} 属性被设为必填项，要求显式声明数据库列名，不依赖“驼峰转下划线”的自动推断。
+	\item 模型层抽象：引入 \texttt{@ModelClass} 和 \texttt{@ModelField} 注解，将数据库映射直接写在实体类字段上。\texttt{@ModelField} 的 \texttt{column} 属性被设为必填项，要求显式声明数据库列名，不依赖“驼峰转下划线”的自动推断。
 	
 	\item 视图层抽象：基于组合模式设计 \texttt{HtmlAtom}、\texttt{HtmlSet}、\texttt{HtmlSingle} 等组件类，将 HTML 页面拆解为可复用的组件树，最终递归渲染为完整页面，替代传统 JSP 中的脚本拼接。
 	
