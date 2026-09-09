@@ -103,7 +103,6 @@ xelatex book.tex        # 第二次编译生成正确目录与引用
 ## 贡献与反馈
 
 欢迎提交 Issue 或 Pull Request。  
-对于 `Untested_` 代码，若您完成测试并确认可用，请及时反馈，我们将合并验证并移除前缀。
 
 提交代码前请确保符合 `AGENTS.md` 中的编码规范。
 
