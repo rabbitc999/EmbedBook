@@ -1,0 +1,73 @@
+/* ============================================================
+ * 计算器文法 · 左递归版（SLR(1) / LALR(1) 都能用）
+ *
+ * 支持：+ - * / % 与括号、一元正负号、sqrt/abs/pow 函数、
+ *       X / Y / ans 三个变量与 := 赋值，多条语句用 ; 分隔，
+ *       整个输入的值就是最后一条语句的值。
+ * 语义动作里可以直接写 $1 + $3，生成代码会自动映射到 Var_Add /
+ * Var_Sub / Var_Mul / Var_Div / Var_Mod / Var_Neg / Var_Sqrt 等运行时调用；
+ * [$1] 表示按变量名查表，赋值写 [$1] = $3。
+ *
+ * 试用输入：
+ *   1+2*3             -> 7
+ *   (1+2)*3           -> 9
+ *   2-3-4             -> -5    （左结合）
+ *   7%4               -> 3
+ *   -3*2              -> -6    （一元负号）
+ *   sqrt(9)+1         -> 4
+ *   pow(2,10)         -> 1024
+ *   X:=3*4            -> 12    （赋值给已声明变量）
+ *   X:=3*4; X/2       -> 6     （多条语句，返回最后一条）
+ *   1/0               -> 语法通过但结果为空（Var_Div 除零返回 NULL）
+ * ============================================================ */
+
+%mode lalr
+%var_max_count 8
+
+%define PLUS    "+"
+%define MINUS   "-"
+%define STAR    "*"
+%define SLASH   "/"
+%define PERCENT "%"
+%define LPAREN  "("
+%define RPAREN  ")"
+%define COMMA   ","
+%define SEMI    ";"
+%define ASSIGN  ":="
+%define SQRT    "sqrt"
+%define ABS     "abs"
+%define POW     "pow"
+
+%var X   float = 0
+%var Y   float = 0
+%var ans float = 0
+
+%start stmt_list
+
+/* ---------- 语句表：左递归，用 ; 分隔，取最后一条语句的值 ---------- */
+stmt_list := stmt_list SEMI stmt { $$ = $3; }
+stmt_list := stmt { $$ = $1; }
+
+/* ---------- 语句：赋值或纯求值 ---------- */
+stmt := VARIABLE ASSIGN expr { [$1] = $3; $$ = [$1]; }
+stmt := expr { $$ = $1; }
+
+/* ---------- 表达式：左递归 + 优先级 ---------- */
+expr := expr PLUS term  { $$ = $1 + $3; }
+expr := expr MINUS term { $$ = $1 - $3; }
+expr := term { $$ = $1; }
+
+term := term STAR factor    { $$ = $1 * $3; }
+term := term SLASH factor   { $$ = $1 / $3; }
+term := term PERCENT factor { $$ = $1 % $3; }
+term := factor { $$ = $1; }
+
+/* ---------- 因子：数字 / 变量 / 括号 / 一元正负号 / 内建函数 ---------- */
+factor := NUMBER { $$ = $1; }
+factor := VARIABLE { $$ = [$1]; }
+factor := LPAREN expr RPAREN { $$ = $2; }
+factor := MINUS factor { $$ = -$2; }
+factor := PLUS factor { $$ = $2; }
+factor := SQRT LPAREN expr RPAREN { $$ = sqrt($3); }
+factor := ABS LPAREN expr RPAREN { $$ = abs($3); }
+factor := POW LPAREN expr COMMA expr RPAREN { $$ = pow($3, $5); }

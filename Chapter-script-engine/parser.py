@@ -1,123 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-parser_packed.py —— 单文件 Yacc 风格非递归解析器生成器的代码压缩版（LL(1) / SLR(1) / LALR(1)）
-
-一份 .gram 文法，三种生成模式（用 %mode 或 --mode 选择，缺省 LL(1)）：
-  LL(1)   预测分析表，适合已消除左递归、提取左公因子的 DSL 文法；
-  SLR(1)  LR(0) 项集 + FOLLOW 集合，可直接处理左递归文法；
-  LALR(1) LR(1) 项集 + 同心项集合并 lookahead，复用 SLR 的 LR 运行时与动作翻译。
-三种模式共用词法、.gram 加载、%define / %var / %ast_* 与语义动作翻译前端；
-SLR(1) / LALR(1) 的移进/归约、归约/归约冲突一律在生成期报错，不消解、不产出 C 代码。
-详细说明见下方“生成模式：LL(1)（默认）、SLR(1) 与 LALR(1)”一节。
-
------------------------
-语义动作写法与 Yacc 类似：
-  $$ : 本规则返回值
-  $1, $2 ... : 第 n 个右部符号的返回值
-  非终结符调用后返回 ParseResult_T.value；
-  NUMBER 终结符返回词法层填入的 TOKEN.value；
-  VAR/IDENT 终结符返回 Var_FindVariable() 查到的变量对象。
-
-动作里的算术/逻辑运算符（$1 + $2、$2 && $3、-$2 等）在生成 C 代码时会被自动
-改写为 Var_* 运行时调用；[$1] 表示按变量名解析（等价 Var_FindVariable）。
-
-动作表达式还支持：
-  - 任意括号与优先级，例如 ($1 + $2) * $3 / ($1 - $2)；
-  - 类型字段 $1.int32 / $1.float 读写数值（配合 $1.int32 = 表达式）；
-  - 类型构造 int32(0)、float(1.5) 等，替代手写 Var_CreateInt(...)；
-  - 未对运行时值定义的运算符（如 $1 ^ $2）会在生成时输出警告，
-    建议显式写成 $1.int32 ^ $2.int32 再参与 C 层运算。
-
-生成内容：
-  - Token 枚举
-  - ParserToken_T（携带 value / line / column）
-  - 默认 Lexer、预测分析表与显式分析栈
-  - 原 variable_runtime.c/h 的完整实现；输出 C 文件可直接单独编译
-  - 演示 main()：编译后运行可解析表达式并打印结果
-  - 可选 %tree：文法开头写 %tree 后，生成代码附带通用语法树 API
-  - 可选 %var_max_count N：设置生成代码中变量表的固定容量
-
-文法指令补充
-------------
-%ast_skip / %ast_fold / %ast_label：为 CST→AST 转换器声明节点去留。
-本工具只生成查询元数据（Parser_AstShouldSkip / Parser_AstShouldFold /
-Parser_AstShouldLabel），不实现转换本身，也不改动 CST 节点结构：
-  %ast_skip  expr term        节点消失，子节点直接提升到父节点（透明）
-  %ast_fold  expr_tail        节点消失，子树按左结合折叠成二叉树
-  %ast_label relational       节点消失，首个终结符子节点作为标签保留
-规则：名字以空格分隔，可换行续写；名字必须是已定义的非终结符；同一个名字
-只能出现在一条指令里（跨指令重复报错），同一条指令内重复静默去重；三条
-指令可以出现任意次且效果累加；不写就不生成任何标记元数据。
-
-无大括号语义动作（与 { ... } 等价，动作写到行尾）：
-  root := NUMBER $$ = $1;            // 单行动作
-  root := NUMBER $$ = $1; foo($2);   // 多语句，整行都是动作
-RHS 结束并进入动作解析的判定：
-  1. 当前 token 是 '{'；
-  2. 当前 token 是 ':='，报“规则 %s 缺少语义动作”；
-  3. 当前 token 是 def / delete（动作关键字）；
-  4. 当前 token 是标识符且下一个 token 是 '('（函数调用动作）；
-  5. 当前 token 既不是标识符也不是换行（例如 $$），视为动作开始；
-  6. 换行之后，若下一行是“新规则 / % 指令 / 文件结尾”，RHS 在此结束；
-     否则换行只当作续行，RHS 与动作都可以跨行书写。
-动作缺省时按空串保存，其合法性推迟到 parse() 末尾统一判定。
-
-动作与 %tree 至少选其一（逐条产生式判定）：
-  - 有非空 action：合法；
-  - 无 action 但文法启用了 %tree：合法（允许只有部分产生式写动作）；
-  - 无 action 且未启用 %tree：报错
-   “规则 %s 缺少语义动作；请写动作或启用 %tree”，只报第一条。
-
-生成模式：LL(1)（默认）、SLR(1) 与 LALR(1)
-------------------------------------------
-适用场景：
-  LL(1)   —— 默认模式，适合可以消掉左递归、提取左公因子的 DSL 文法；
-             产物小、预测表直观，仍是本工具的默认行为。
-  SLR(1)  —— 显式开启，适合含直接左递归的文法（例如四则运算优先级链），
-             不需要左递归消除，改由 LR(0) 项集 + FOLLOW 集合构造分析表。
-  LALR(1) —— 显式开启，复用 SLR 的 LR 运行时与栈结构，只把归约动作的
-             lookahead 从 FOLLOW 换成按项集传播/合并得到的 LALR lookahead，
-             可处理“LR(0) 项集相同但 lookahead 更精细”的文法（例如经典的
-             S := L EQ R | R; L := STAR R | ID; R := L）。
-
-%mode 用法：
-  %mode ll1 | %mode slr | %mode lalr   // 一行一条，位置任意，只能声明一次
-  python3 parser_gen.py --mode slr  --grammar-file pl0.gram -o pl0.c
-  python3 parser_gen.py --mode lalr --grammar-file calc.gram -o calc.c
-策略：命令行 --mode 与 .gram 里的 %mode 同时存在时必须一致，不一致直接
-报错，不做“命令行优先”的隐式覆盖；文法没写 %mode 时以命令行为准，缺省 ll1。
-
-SLR(1) / LALR(1) 的冲突处理：
-  移进/归约冲突与归约/归约冲突一律在生成期抛 GrammarLoadError，消息包含状态
-  编号、Token、已有/新增动作与涉及项集；不消解、不产出 C 代码。本工具不支持
-  %left / %right / %prec / %expect，也不做运算符优先级消解。LALR(1) 只做
-  同心项集合并，不实现完整 LR(1) 模式，也不实现 LALR 之外的任何变体。
-
-三种模式在语义动作上的差异（动作写法与翻译规则完全一致）：
-  - 执行时机：LL(1) 在展开产生式时执行；SLR(1) / LALR(1) 在归约时执行。
-  - $n 来源：LL(1) 取当前语义帧槽位 values[n] / names[n]；
-    SLR(1) / LALR(1) 取 LR 栈槽位 stack->values[stack->top - k + n - 1] /
-    stack->names[stack->top - k + n - 1]（k 为该产生式右部长度）。
-  - $$：三种模式都是 result.value。
-  - 所有权：SLR(1) / LALR(1) 归约时弹出右部 k 个值，$$ = $n 会转移所有权，
-    其余按 valueOwned 释放，失败路径释放栈上仍归运行时所有的值。
-  - LALR(1) 复用 SLR(1) 的 LR 运行时、栈结构、ACTION/GOTO 编码与动作翻译，
-    只有“表构造”一层不同。
-
-SLR(1) / LALR(1) 下 %tree 的处理（方案 A）：
-  %tree 只用于满足“动作与 %tree 至少选其一”的校验，不生成语法树 API；
-  即 SLR / LALR 文法里写 %tree 且不写动作是合法的，但 Parser_ParseTreeText /
-  Parser_TreePrint 等接口只属于 LL(1) 产物。
-"""
-
 import argparse
 import os
 import re
-import subprocess
 import sys
-import tempfile
 import warnings
+from collections import deque
 
 """
 .gram 文本文法加载模块
@@ -1965,6 +1853,29 @@ def _decode_string_literal(text):
     return "".join(result)
 
 
+def _decode_regex_literal(text):
+    """解析 %regex / %identifier 的正则字面量。
+
+    只把 `\\\\` 还原成单个反斜杠、`\\"` 还原成引号，其余转义（`\\d`、`\\*`、
+    `\\n`……）原样交给正则解析器，所以下面两种写法都表示“星号字面量”：
+      %regex MUL "\\*"      %regex MUL "\\\\*"
+    """
+    body = text[1:-1]
+    result = []
+    index = 0
+    while index < len(body):
+        ch = body[index]
+        if (ch == "\\") and (index + 1 < len(body)):
+            nxt = body[index + 1]
+            if nxt in ('"', "'", "\\"):
+                result.append(nxt)
+                index += 2
+                continue
+        result.append(ch)
+        index += 1
+    return "".join(result)
+
+
 class _GramTokenizer:
     """把 .gram 文本切成 token；注释被跳过，但保留换行以便指令按行结束。"""
 
@@ -2045,6 +1956,17 @@ class _GramParser:
         self.ast_skip = set()
         self.ast_fold = set()
         self.ast_label = set()
+        # 优先级声明：token -> 级别（后声明的行更高，行内自左向右递增）
+        self.precedence = {}
+        # 结合性：token -> "left" / "right" / "nonassoc"
+        self.associativity = {}
+        # %prec 覆盖：(lhs, prod_index) -> token
+        self.production_prec = {}
+        self.expect_conflicts = None
+        self._precedence_level = 0
+        # %regex：Token 名 -> 简单正则；%identifier：标识符正则
+        self.regex_defs = {}
+        self.identifier_pattern = None
 
     # ------------------------------------------------------------------
     def _peek(self, offset=0):
@@ -2103,6 +2025,14 @@ class _GramParser:
                 self._parse_name_list_directive(self.ast_fold)
             elif token == "%ast_label":
                 self._parse_name_list_directive(self.ast_label)
+            elif token in ("%left", "%right", "%nonassoc"):
+                self._parse_precedence_directive()
+            elif token == "%expect":
+                self._parse_expect_directive()
+            elif token == "%regex":
+                self._parse_regex_directive()
+            elif token == "%identifier":
+                self._parse_identifier_directive()
             elif (self._peek_kind() == "id" and
                   self._peek(1) == ":=" and
                   not token.startswith("%")):
@@ -2149,6 +2079,15 @@ class _GramParser:
                         "AST 标记 %s 不是已定义的非终结符" % name
                     )
 
+        # 校验：%prec 指定的 Token 必须已声明（%token / %define 或优先级指令）
+        for lhs, prod_index in sorted(self.production_prec):
+            token = self.production_prec[(lhs, prod_index)]
+            if token not in self.token_names:
+                raise GrammarLoadError(
+                    "规则 %s 的 %%prec 引用了未声明的 Token %s"
+                    % (lhs, token)
+                )
+
         # 校验：同一个非终结符不能同时出现在多条 %ast_* 指令里
         categories = (
             ("skip", self.ast_skip),
@@ -2186,6 +2125,12 @@ class _GramParser:
             "ast_skip": self.ast_skip,
             "ast_fold": self.ast_fold,
             "ast_label": self.ast_label,
+            "precedence": dict(self.precedence),
+            "associativity": dict(self.associativity),
+            "production_prec": dict(self.production_prec),
+            "expect_conflicts": self.expect_conflicts,
+            "regex_defs": dict(self.regex_defs),
+            "identifier_pattern": self.identifier_pattern,
         }
 
     # ------------------------------------------------------------------
@@ -2243,6 +2188,129 @@ class _GramParser:
             )
         target.update(names)
 
+    def _parse_precedence_directive(self):
+        """%left / %right / %nonassoc：声明 Token 的结合性与优先级。
+
+        行内从左到右优先级递增，后声明的行比先声明的行优先级更高。
+        列出的名字同时被当作 Token 声明（与 yacc 一致），所以可以只用来
+        给 %prec 当伪 Token（例如 UMINUS）。
+        """
+        keyword = self._peek()
+        self.pos += 1
+        assoc = {"%left": "left", "%right": "right",
+                 "%nonassoc": "nonassoc"}[keyword]
+        names = []
+        while self.pos < len(self.tokens):
+            token = self._peek()
+            if token == "\n":
+                self.pos += 1
+                break
+            if token == ",":
+                self.pos += 1
+                continue
+            if self._peek_kind() != "id" or token.startswith("%"):
+                raise GrammarLoadError(
+                    "%s 只能包含 Token 名，实际得到 '%s'" % (keyword, token)
+                )
+            names.append(token)
+            self.pos += 1
+        if not names:
+            raise GrammarLoadError("%s 至少需要一个 Token 名" % keyword)
+        for name in names:
+            if name in self.precedence:
+                raise GrammarLoadError(
+                    "Token %s 的优先级重复声明" % name
+                )
+            self._precedence_level += 1
+            self.precedence[name] = self._precedence_level
+            self.associativity[name] = assoc
+            if name not in self.token_names:
+                self.token_names.append(name)
+
+    def _parse_expect_directive(self):
+        """%expect N：声明预期保留的未消解冲突个数。"""
+        keyword = self._peek()
+        self.pos += 1
+        if self._peek_kind() != "num":
+            raise GrammarLoadError(
+                "%s 后应跟非负整数，实际得到 '%s'" % (keyword, self._peek())
+            )
+        value = int(float(self._peek()))
+        if value < 0:
+            raise GrammarLoadError("%expect 不能为负数")
+        if self.expect_conflicts is not None:
+            raise GrammarLoadError("%expect 只能声明一次")
+        self.expect_conflicts = value
+        self.pos += 1
+        if self._peek() == "\n":
+            self.pos += 1
+        elif self._peek() is not None:
+            raise GrammarLoadError(
+                "%%expect 后有多余内容 '%s'" % self._peek()
+            )
+
+    def _read_regex_literal(self, what):
+        """读取 %regex / %identifier 后面的正则字面量并做语法检查。"""
+        quoted = self._peek()
+        if (self._peek_kind() != "str") or (not quoted) or \
+                (quoted[0] not in "\"'"):
+            raise GrammarLoadError(
+                '%s 后应跟引号包起来的正则，例如 "[0-9]+"' % what
+            )
+        self.pos += 1
+        pattern = _decode_regex_literal(quoted)
+        try:
+            ast = _RegexParser(pattern).parse()
+        except _RegexSyntaxError as error:
+            raise GrammarLoadError(
+                "%s 的正则 %s 有误：%s" % (what, quoted, error)
+            )
+        class_sets = []
+        _regex_collect_class_sets(ast, class_sets)
+        cells, _ = _regex_char_classes(class_sets)
+        dfa = _regex_build_dfa(pattern, cells)
+        if dfa["start"] in dfa["accept"]:
+            raise GrammarLoadError(
+                "%s 的正则 %s 可以匹配空串，Lexer 无法前进" % (what, quoted)
+            )
+        if self._peek() == "\n":
+            self.pos += 1
+        elif self._peek() is not None:
+            raise GrammarLoadError(
+                "%s 后有多余内容 '%s'" % (what, self._peek())
+            )
+        return pattern
+
+    def _parse_regex_directive(self):
+        """%regex NAME "pattern"：用简单正则匹配的 Token。
+
+        正则支持字面量、转义（\\* \\d 等）、. 、[a-z]、[^...]、()、|、*、+、?
+        与 {m,n}；生成期编译成 DFA 写进 C，运行期不做正则解释。
+        """
+        self.pos += 1
+        if self._peek_kind() != "id" or self._peek().startswith("%"):
+            raise GrammarLoadError("%regex 后应跟 Token 名")
+        name = self._peek()
+        self.pos += 1
+        pattern = self._read_regex_literal("%regex " + name)
+        if (name in self.token_defs) or (name in self.regex_defs):
+            raise GrammarLoadError("Token %s 重复定义" % name)
+        if name not in self.token_names:
+            self.token_names.append(name)
+        self.regex_defs[name] = pattern
+
+    def _parse_identifier_directive(self):
+        """%identifier "pattern"：声明标识符正则。
+
+        生成代码会用这条正则扫描标识符，并在 token 模块里生成
+        Parser_TokenIsIdentifier / Parser_TokenIdentifierLength /
+        Parser_TokenKeyword 三个接口。
+        """
+        self.pos += 1
+        if self.identifier_pattern is not None:
+            raise GrammarLoadError("%identifier 只能声明一次")
+        self.identifier_pattern = self._read_regex_literal("%identifier")
+
     def _parse_define_directive(self):
         """解析固定字符串 Token；仅允许使用竖线表达多个候选。"""
         self.pos += 1
@@ -2255,7 +2323,7 @@ class _GramParser:
         literal_text = self._peek()
         self.pos += 1
         branches = self._split_define_literal(literal_text)
-        if token_name in self.token_defs:
+        if (token_name in self.token_defs) or (token_name in self.regex_defs):
             raise GrammarLoadError("Token %s 重复定义" % token_name)
         for literal in branches:
             owner = self.literal_owners.get(literal)
@@ -2637,6 +2705,7 @@ class _GramParser:
             self.first_rule = lhs
 
         rhs = []
+        prec_token = None
         while True:
             if self._peek() is None:
                 break
@@ -2652,6 +2721,17 @@ class _GramParser:
                     self.pos += 1
                     rhs = []
                     continue
+                if tok == "%prec":
+                    # %prec TOKEN 出现在右部末尾，覆盖产生式的优先级
+                    self.pos += 1
+                    if (self._peek_kind() != "id" or
+                            self._peek().startswith("%")):
+                        raise GrammarLoadError(
+                            "规则 %s 的 %%prec 后应跟 Token 名" % lhs
+                        )
+                    prec_token = self._peek()
+                    self.pos += 1
+                    break
                 if tok in ("def", "delete"):
                     break
                 if self._peek(1) == "(":
@@ -2690,10 +2770,13 @@ class _GramParser:
         else:
             action = self._read_inline_action(lhs)
 
+        production_index = len(self.rules.get(lhs, []))
         self.rules.setdefault(lhs, []).append({
             "rhs": rhs,
             "action": action,
         })
+        if prec_token is not None:
+            self.production_prec[(lhs, production_index)] = prec_token
 
     def _read_action_block(self):
         """读取 { ... } 动作，返回去掉外层花括号的原始文本。"""
@@ -2742,6 +2825,9 @@ class _GramParser:
 
 def load_grammar_text(text):
     """解析 .gram 文本，返回 parser.py 的输入字典。"""
+    # 容忍记事本等工具写出的 UTF-8 BOM
+    if text.startswith("\ufeff"):
+        text = text[1:]
     return _GramParser(text).parse()
 
 
@@ -3113,24 +3199,147 @@ def _slr_conflict_text(previous, value):
     return "接受动作冲突"
 
 
-def _slr_build_tables(automaton, rules, nonterms, terminals,
-                      first, follow, start):
-    """构造 ACTION / GOTO 表。
+# =====================================================================
+# 优先级与冲突消解（SLR(1) / LALR(1) 共用）
+#
+# 默认行为不变：文法不写 %left / %right / %nonassoc / %prec 时，冲突仍然
+# 在生成期报错。只有当冲突双方都能算出优先级（移进 Token 有优先级，且归约
+# 产生式能取到优先级）时才按 yacc 规则消解，并把消解理由记录下来。
+# =====================================================================
 
-    返回 {"action": {(state, terminal): ("shift", s) | ("reduce", p)
-                                        | ("accept", None)},
-          "goto": {(state, nonterm): s},
-          "conflicts": [冲突说明文本, ...]}
-    冲突只收集不消解，由调用方决定是否报错。
+
+def _priority_config(precedence=None, associativity=None,
+                     production_prec=None, expect_conflicts=None):
+    """把优先级元数据打包成一个字典，便于一路传到表构造。"""
+    return {
+        "precedence": dict(precedence or {}),
+        "associativity": dict(associativity or {}),
+        "production_prec": dict(production_prec or {}),
+        "expect_conflicts": expect_conflicts,
+    }
+
+
+def _priority_from_cfg(cfg):
+    """从 load_grammar_text 返回的 cfg 里取出优先级元数据。"""
+    return _priority_config(
+        cfg.get("precedence"), cfg.get("associativity"),
+        cfg.get("production_prec"), cfg.get("expect_conflicts")
+    )
+
+
+def _lex_spec_from_cfg(cfg):
+    """从 load_grammar_text 返回的 cfg 里取出 %regex / %identifier 声明。"""
+    return {
+        "regex": dict(cfg.get("regex_defs") or {}),
+        "identifier": cfg.get("identifier_pattern"),
+    }
+
+
+def _normalize_lex_spec(lex_spec):
+    """把 None / dict 统一成 {"regex": {...}, "identifier": 正则或 None}。"""
+    if not lex_spec:
+        return {"regex": {}, "identifier": None}
+    return {
+        "regex": dict(lex_spec.get("regex") or {}),
+        "identifier": lex_spec.get("identifier"),
+    }
+
+
+def _normalize_priority(priority):
+    """把 None / dict 统一成四键优先级配置。"""
+    if priority is None:
+        return _priority_config()
+    return _priority_config(
+        priority.get("precedence"), priority.get("associativity"),
+        priority.get("production_prec"), priority.get("expect_conflicts")
+    )
+
+
+def _compute_production_priority(rules, precedence, associativity,
+                                 production_prec):
+    """算出每条产生式的 (结合性, 优先级)。
+
+    优先级来源：%prec 指定的 Token；否则取右部最右终结符。
+    取不到优先级（或该 Token 没声明过优先级）的产生式不会出现在结果里，
+    它们在冲突里无法按优先级消解。返回 {(lhs, prod_index): (assoc, level)}。
     """
-    terminal_set = set(terminals)
-    nonterm_ids = {name: index for index, name in enumerate(nonterms)}
-    production_ids = _slr_production_ids(rules)
-    states = automaton["states"]
-    transitions = automaton["transitions"]
-    action = {}
-    goto = {}
-    conflicts = []
+    nonterms = set(rules)
+    result = {}
+    for lhs, productions in rules.items():
+        for prod_index, prod in enumerate(productions):
+            token = production_prec.get((lhs, prod_index))
+            if token is None:
+                for symbol in reversed(prod["rhs"]):
+                    if symbol not in nonterms:
+                        token = symbol
+                        break
+            if token is None:
+                continue
+            level = precedence.get(token)
+            if level is None:
+                continue
+            result[(lhs, prod_index)] = (
+                associativity.get(token, "left"), level
+            )
+    return result
+
+
+def _try_resolve_shift_reduce(previous, value, token,
+                              precedence, associativity,
+                              production_priority):
+    """按优先级 / 结合性消解一个移进/归约冲突。
+
+    previous / value：ACTION 表里已有的动作与新增动作；
+    production_priority：{产生式编号: (结合性, 优先级)}；
+    返回 (resolved, reason)：resolved 是 "shift" / "reduce" / None，
+    None 表示无法消解（缺优先级，或 %nonassoc 不允许链式使用）。
+    """
+    kinds = {previous[0], value[0]}
+    if kinds != {"shift", "reduce"}:
+        return None, None
+    reduce_action = previous if previous[0] == "reduce" else value
+    reduce_id = reduce_action[1]
+    shift_level = precedence.get(token)
+    reduce_conf = production_priority.get(reduce_id)
+    if (shift_level is None) or (reduce_conf is None):
+        return None, None
+    reduce_assoc, reduce_level = reduce_conf
+    assoc = associativity.get(token) or reduce_assoc
+    if shift_level > reduce_level:
+        return "shift", ("优先级（移进 %s 优先级 %d 高于产生式 P%d 的 %d）"
+                         % (token, shift_level, reduce_id, reduce_level))
+    if shift_level < reduce_level:
+        return "reduce", ("优先级（产生式 P%d 优先级 %d 高于移进 %s 的 %d）"
+                          % (reduce_id, reduce_level, token, shift_level))
+    if assoc == "left":
+        return "reduce", "%%left 结合性（%s）" % token
+    if assoc == "right":
+        return "shift", "%%right 结合性（%s）" % token
+    if assoc == "nonassoc":
+        return None, "%%nonassoc 不允许链式使用（%s）" % token
+    return None, None
+
+
+def _make_lr_action_recorder(label, states, state_text, rules,
+                             production_ids, action, priority):
+    """构造写 ACTION 表的闭包：能消解就消解，不能就记成未消解冲突。
+
+    返回 (record, resolutions, unresolved)：
+      record(key, value, state_id, token)：写表项并处理冲突；
+      resolutions：已消解的冲突（状态、Token、种类、理由、选择）；
+      unresolved：未消解的冲突（含种类与完整说明文本）。
+    未消解的移进/归约冲突按移进优先写表，交给调用方用 %expect 决定是否放行。
+    """
+    precedence = priority["precedence"]
+    associativity = priority["associativity"]
+    production_priority = {
+        production_ids[key]: value
+        for key, value in _compute_production_priority(
+            rules, precedence, associativity, priority["production_prec"]
+        ).items() if key in production_ids
+    }
+    resolutions = []
+    unresolved = []
 
     def record(key, value, state_id, token):
         previous = action.get(key)
@@ -3140,13 +3349,87 @@ def _slr_build_tables(automaton, rules, nonterms, terminals,
         if previous == value:
             # 同一个符号由多个项产生相同动作（GOTO 是确定性的），不是冲突
             return
-        conflicts.append(
-            "SLR 冲突（状态 %d，Token %s）：%s；已有 %s，新增 %s；涉及项集 %s"
-            % (state_id, token, _slr_conflict_text(previous, value),
-               _slr_action_text(previous, rules, production_ids),
-               _slr_action_text(value, rules, production_ids),
-               _slr_state_text(states[state_id], rules))
+        kind = _slr_conflict_text(previous, value)
+        resolved, reason = _try_resolve_shift_reduce(
+            previous, value, token, precedence, associativity,
+            production_priority
         )
+        if resolved == "shift":
+            action[key] = previous if previous[0] == "shift" else value
+            resolutions.append((state_id, token, kind, reason, "移进"))
+            return
+        if resolved == "reduce":
+            action[key] = previous if previous[0] == "reduce" else value
+            resolutions.append((state_id, token, kind, reason, "归约"))
+            return
+        text = ("%s 冲突（状态 %d，Token %s）：%s；已有 %s，新增 %s；涉及项集 %s"
+                % (label, state_id, token, kind,
+                   _slr_action_text(previous, rules, production_ids),
+                   _slr_action_text(value, rules, production_ids),
+                   state_text(states[state_id], rules)))
+        if reason is not None:
+            text += "；%s" % reason
+        elif kind == "移进/归约冲突":
+            action[key] = previous if previous[0] == "shift" else value
+            text += "；没有可用的优先级，默认移进优先（可用 %expect 放行）"
+        unresolved.append({
+            "kind": kind, "state": state_id, "token": token, "text": text,
+        })
+
+    return record, resolutions, unresolved
+
+
+def _check_unresolved_conflicts(label, unresolved, expect_conflicts):
+    """%expect 语义：允许保留预期数量的移进/归约冲突，其余一律报错。
+
+    未消解的移进/归约冲突可以靠 %expect 放行（表里已按移进优先写），
+    归约/归约冲突无论 %expect 写多少都直接报错。
+    """
+    if not unresolved:
+        return
+    for item in unresolved:
+        if item["kind"] == "归约/归约冲突":
+            raise GrammarLoadError(item["text"])
+    if expect_conflicts is None:
+        raise GrammarLoadError(unresolved[0]["text"])
+    if len(unresolved) != expect_conflicts:
+        raise GrammarLoadError(
+            "%s：%%expect %d 与实际未消解冲突数 %d 不一致；%s"
+            % (label, expect_conflicts, len(unresolved),
+               unresolved[0]["text"])
+        )
+    warnings.warn(
+        "%s：%d 个未消解冲突与 %%expect %d 一致，"
+        "移进/归约冲突按移进优先继续生成；%s"
+        % (label, len(unresolved), expect_conflicts,
+           "；".join(item["text"] for item in unresolved))
+    )
+
+
+def _slr_build_tables(automaton, rules, nonterms, terminals,
+                      first, follow, start, priority=None):
+    """构造 ACTION / GOTO 表。
+
+    返回 {"action": {(state, terminal): ("shift", s) | ("reduce", p)
+                                        | ("accept", None)},
+          "goto": {(state, nonterm): s},
+          "conflicts": [未消解冲突说明文本, ...],
+          "unresolved": [{kind, state, token, text}, ...],
+          "resolutions": [(state, token, 种类, 理由, 选择), ...]}
+    移进/归约冲突先按 %left / %right / %nonassoc / %prec 消解；
+    剩余的交给调用方（%expect）决定放行还是报错。
+    """
+    terminal_set = set(terminals)
+    nonterm_ids = {name: index for index, name in enumerate(nonterms)}
+    production_ids = _slr_production_ids(rules)
+    states = automaton["states"]
+    transitions = automaton["transitions"]
+    action = {}
+    goto = {}
+    record, resolutions, unresolved = _make_lr_action_recorder(
+        "SLR", states, _slr_state_text, rules, production_ids, action,
+        _normalize_priority(priority)
+    )
 
     for state_id, state_items in enumerate(states):
         for item in sorted(state_items):
@@ -3170,15 +3453,24 @@ def _slr_build_tables(automaton, rules, nonterms, terminals,
     for (state_id, symbol), target in transitions.items():
         if symbol not in terminal_set:
             goto[(state_id, nonterm_ids[symbol])] = target
-    return {"action": action, "goto": goto, "conflicts": conflicts}
+    return {
+        "action": action,
+        "goto": goto,
+        "conflicts": [item["text"] for item in unresolved],
+        "unresolved": unresolved,
+        "resolutions": resolutions,
+    }
 
 
-def _slr_analyze(grammar, tokens):
+def _slr_analyze(grammar, tokens, priority=None):
     """SLR(1) 模式的分析入口：构造 LR(0) 自动机与 ACTION / GOTO 表。
 
     与 prepare_grammar 不同，这里不做左递归消除，也不做 LL(1) 检查；
-    分析表冲突一律抛 GrammarLoadError（不消解、不产出 C 代码）。
+    移进/归约冲突先按 %left / %right / %nonassoc / %prec 消解；
+    未消解的冲突按 %expect 处理，没有 %expect 或数量不符时抛
+    GrammarLoadError（不产出 C 代码）。
     """
+    priority = _normalize_priority(priority)
     augmented = _slr_augment_grammar(grammar)
     rules = augmented["rules"]
     start = augmented["start"]
@@ -3190,10 +3482,10 @@ def _slr_analyze(grammar, tokens):
     follow = compute_follow(start, rules, terminals, nonterms, first)
     automaton = _slr_build_automaton(rules, nonterms, start)
     tables = _slr_build_tables(
-        automaton, rules, nonterms, terminals, first, follow, start
+        automaton, rules, nonterms, terminals, first, follow, start, priority
     )
-    if tables["conflicts"]:
-        raise GrammarLoadError(tables["conflicts"][0])
+    _check_unresolved_conflicts("SLR(1)", tables["unresolved"],
+                                priority["expect_conflicts"])
     productions = []
     for lhs, alternatives in rules.items():
         for prod in alternatives:
@@ -3214,6 +3506,9 @@ def _slr_analyze(grammar, tokens):
         "action": tables["action"],
         "goto": tables["goto"],
         "conflicts": tables["conflicts"],
+        "unresolved": tables["unresolved"],
+        "resolutions": tables["resolutions"],
+        "priority": priority,
     }
 
 
@@ -3382,15 +3677,13 @@ def _lalr_state_text(state_items, rules):
     return "[%s]" % ", ".join(parts)
 
 
-def _lalr_build_tables(automaton, rules, nonterms, terminals, first, start):
+def _lalr_build_tables(automaton, rules, nonterms, terminals, first, start,
+                       priority=None):
     """基于合并后的 LALR 项集构造 ACTION / GOTO 表。
 
-    返回结构与 _slr_build_tables 一致：
-    {"action": {(state, terminal): ("shift", s) | ("reduce", p)
-                                     | ("accept", None)},
-     "goto": {(state, nonterm): s},
-     "conflicts": [冲突说明文本, ...]}
-    与 SLR 的唯一区别：归约 lookahead 取项集里携带的集合，而不是 FOLLOW(lhs)。
+    返回结构与 _slr_build_tables 完全一致（含 resolutions / unresolved）：
+    与 SLR 的唯一区别是归约 lookahead 取项集里携带的集合，而不是 FOLLOW(lhs)；
+    冲突消解复用同一个 _make_lr_action_recorder。
     """
     terminal_set = set(terminals)
     nonterm_ids = {name: index for index, name in enumerate(nonterms)}
@@ -3399,23 +3692,10 @@ def _lalr_build_tables(automaton, rules, nonterms, terminals, first, start):
     transitions = automaton["transitions"]
     action = {}
     goto = {}
-    conflicts = []
-
-    def record(key, value, state_id, token):
-        previous = action.get(key)
-        if previous is None:
-            action[key] = value
-            return
-        if previous == value:
-            # 同一个符号由多个项产生相同动作（GOTO 是确定性的），不是冲突
-            return
-        conflicts.append(
-            "LALR 冲突（状态 %d，Token %s）：%s；已有 %s，新增 %s；涉及项集 %s"
-            % (state_id, token, _slr_conflict_text(previous, value),
-               _slr_action_text(previous, rules, production_ids),
-               _slr_action_text(value, rules, production_ids),
-               _lalr_state_text(states[state_id], rules))
-        )
+    record, resolutions, unresolved = _make_lr_action_recorder(
+        "LALR", states, _lalr_state_text, rules, production_ids, action,
+        _normalize_priority(priority)
+    )
 
     for state_id, state_items in enumerate(states):
         for (lhs, prod_index, dot), lookaheads in sorted(state_items.items()):
@@ -3438,16 +3718,23 @@ def _lalr_build_tables(automaton, rules, nonterms, terminals, first, start):
     for (state_id, symbol), target in transitions.items():
         if symbol not in terminal_set:
             goto[(state_id, nonterm_ids[symbol])] = target
-    return {"action": action, "goto": goto, "conflicts": conflicts}
+    return {
+        "action": action,
+        "goto": goto,
+        "conflicts": [item["text"] for item in unresolved],
+        "unresolved": unresolved,
+        "resolutions": resolutions,
+    }
 
 
-def _lalr_analyze(grammar, tokens):
+def _lalr_analyze(grammar, tokens, priority=None):
     """LALR(1) 模式的分析入口：LR(1) 项集 + 同心合并 + ACTION / GOTO 表。
 
-    与 SLR 一样不做左递归消除，也不做 LL(1) 检查；冲突一律抛
-    GrammarLoadError（不消解、不产出 C 代码）。返回结构与 _slr_analyze 对齐，
-    便于 generate_parser_c 复用同一套 LR 运行时。
+    与 SLR 一样不做左递归消除，也不做 LL(1) 检查；冲突消解与 %expect 处理
+    也完全一致（复用同一内部函数）。返回结构与 _slr_analyze 对齐，便于
+    generate_parser_c 复用同一套 LR 运行时。
     """
+    priority = _normalize_priority(priority)
     augmented = _lalr_augment_grammar(grammar)
     rules = augmented["rules"]
     start = augmented["start"]
@@ -3463,10 +3750,10 @@ def _lalr_analyze(grammar, tokens):
         transitions[(state_map[source], symbol)] = state_map[target]
     automaton = {"states": states, "transitions": transitions}
     tables = _lalr_build_tables(
-        automaton, rules, nonterms, terminals, first, start
+        automaton, rules, nonterms, terminals, first, start, priority
     )
-    if tables["conflicts"]:
-        raise GrammarLoadError(tables["conflicts"][0])
+    _check_unresolved_conflicts("LALR", tables["unresolved"],
+                                priority["expect_conflicts"])
     productions = []
     for lhs, alternatives in rules.items():
         for prod in alternatives:
@@ -3488,6 +3775,9 @@ def _lalr_analyze(grammar, tokens):
         "action": tables["action"],
         "goto": tables["goto"],
         "conflicts": tables["conflicts"],
+        "unresolved": tables["unresolved"],
+        "resolutions": tables["resolutions"],
+        "priority": priority,
     }
 
 
@@ -3530,6 +3820,13 @@ def _slr_entry_text(entry, analysis):
         return "移进 %d" % value
     if kind == "accept":
         return "接受"
+
+
+def _resolution_line(entry):
+    """把一条冲突消解记录渲染成一行文本。"""
+    state_id, token, kind, reason, chosen = entry
+    return ("状态 %d，Token %s：%s，按%s选择%s"
+            % (state_id, token, kind, reason, chosen))
     prod = analysis["productions"][value]
     rhs = " ".join(prod["rhs"]) if prod["rhs"] else "%empty"
     return "归约 P%d（%s -> %s）" % (value, prod["lhs"], rhs)
@@ -3574,6 +3871,20 @@ def format_slr_report(analysis):
     for (state_id, nonterm_id), target in sorted(analysis["goto"].items()):
         lines.append("GOTO[%d, %s] = %d"
                      % (state_id, analysis["nonterms"][nonterm_id], target))
+    lines.extend(["", "[冲突消解]"])
+    resolutions = analysis.get("resolutions") or []
+    if resolutions:
+        for entry in resolutions:
+            lines.append(_resolution_line(entry))
+    else:
+        lines.append("（无）")
+    lines.extend(["", "[未消解冲突]"])
+    unresolved = analysis.get("unresolved") or []
+    if unresolved:
+        for item in unresolved:
+            lines.append(item["text"])
+    else:
+        lines.append("（无）")
     return "\n".join(lines) + "\n"
 
 
@@ -3663,6 +3974,20 @@ def format_lalr_report(analysis):
     for (state_id, nonterm_id), target in sorted(analysis["goto"].items()):
         lines.append("GOTO[%d, %s] = %d"
                      % (state_id, analysis["nonterms"][nonterm_id], target))
+    lines.extend(["", "[冲突消解]"])
+    resolutions = analysis.get("resolutions") or []
+    if resolutions:
+        for entry in resolutions:
+            lines.append(_resolution_line(entry))
+    else:
+        lines.append("（无）")
+    lines.extend(["", "[未消解冲突]"])
+    unresolved = analysis.get("unresolved") or []
+    if unresolved:
+        for item in unresolved:
+            lines.append(item["text"])
+    else:
+        lines.append("（无）")
     return "\n".join(lines) + "\n"
 
 
@@ -3688,69 +4013,6 @@ def format_lalr_automaton(analysis):
 def format_lalr_tables(analysis):
     """渲染 LALR 的 ACTION / GOTO 矩阵（--dump-slr-tables）。"""
     return format_slr_tables(analysis)
-
-
-def _compiler_supports_sanitizer(temp_dir):
-    """探测当前 GCC 是否提供 ASan/UBSan 运行库，避免 MinGW 自测失败。"""
-    probe_path = os.path.join(temp_dir, "sanitizer_probe.c")
-    executable_path = os.path.join(temp_dir, "sanitizer_probe")
-    with open(probe_path, "w", encoding="utf-8") as file_handle:
-        file_handle.write("int main(void) { return 0; }\n")
-    probe_command = [
-        "gcc", "-fsanitize=address,undefined", "-fno-omit-frame-pointer",
-        probe_path, "-o", executable_path,
-    ]
-    result = subprocess.run(
-        probe_command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-    )
-    return result.returncode == 0
-
-
-def _compile_and_run_generated_test(generated_code, harness_code,
-                                    sanitize=False):
-    """在临时目录编译运行生成的 C，可选启用地址与泄漏检查。"""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    with tempfile.TemporaryDirectory(prefix="ll1_generator_") as temp_dir:
-        parser_path = os.path.join(temp_dir, "generated_parser.c")
-        harness_path = os.path.join(temp_dir, "generated_harness.c")
-        executable_path = os.path.join(temp_dir, "generated_harness")
-        with open(parser_path, "w", encoding="utf-8") as file_handle:
-            file_handle.write(generated_code)
-        # 中文注释：测试 harness 自带 main，先跳过生成代码里的演示 main
-        with open(harness_path, "w", encoding="utf-8") as file_handle:
-            file_handle.write("#define PARSER_SKIP_DEMO_MAIN\n" + harness_code)
-        compile_command = [
-            "gcc", "-std=c99", "-Wall", "-Wextra", "-Werror",
-            "-I", script_dir, harness_path,
-            "-lm", "-o", executable_path,
-        ]
-        # 中文注释：编译器不支持 ASan/UBSan 时自动降级，保证 Windows/MinGW 可自检
-        if sanitize and _compiler_supports_sanitizer(temp_dir):
-            compile_command[1:1] = [
-                "-fsanitize=address,undefined", "-fno-omit-frame-pointer"
-            ]
-        subprocess.run(compile_command, check=True)
-        environment = dict(os.environ)
-        if sanitize:
-            environment["ASAN_OPTIONS"] = "detect_leaks=1:halt_on_error=1"
-        subprocess.run([executable_path], check=True, env=environment)
-
-
-def _compile_and_run_generated_demo(generated_code, demo_arguments):
-    """编译并运行带演示 main() 的生成 C，验证产物可独立执行。"""
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    with tempfile.TemporaryDirectory(prefix="ll1_demo_") as temp_dir:
-        parser_path = os.path.join(temp_dir, "generated_parser.c")
-        executable_path = os.path.join(temp_dir, "generated_demo")
-        with open(parser_path, "w", encoding="utf-8") as file_handle:
-            file_handle.write(generated_code)
-        compile_command = [
-            "gcc", "-std=c99", "-Wall", "-Wextra", "-Werror",
-            "-I", script_dir, parser_path,
-            "-lm", "-o", executable_path,
-        ]
-        subprocess.run(compile_command, check=True)
-        subprocess.run([executable_path] + list(demo_arguments), check=True)
 
 
 # 变量标量类型 -> VarValue 构造函数
@@ -4859,6 +5121,758 @@ int32_t Parser_DeleteVariable(const char *pName)
         .replace("__INITIALIZERS__", init_text)
 
 
+# =====================================================================
+# 简单正则 → DFA
+#
+# 参考 lex.py 的做法：正则解析成 AST → Thompson 构造 NFA → 子集构造 DFA →
+# 划分法最小化。差别是符号用“字符类”表示（这样 [a-z]、\d 这类字符集也能
+# 参与），并且生成期就把 DFA 表算好，直接写进 C 代码，运行期不做正则解释。
+#
+# 支持：字面量、\ 转义（\n \r \t \0 \\ \. 等）、\d \w \s 及其大写取反、
+#       . 任意字符（不含换行）、[abc] [a-z] [^...]、( )、|、*、+、?，
+#       以及 {m} {m,} {m,n} 重复（展开实现，m/n 不超过 _REGEX_MAX_REPEAT）。
+# =====================================================================
+
+_REGEX_MAX_REPEAT = 32
+# 参与匹配的字符集合：1..255（不含 NUL，C 字符串里不会出现）
+_REGEX_ALL_CHARS = "".join(chr(code) for code in range(1, 256))
+_REGEX_DIGITS = frozenset(chr(code) for code in range(ord("0"), ord("9") + 1))
+_REGEX_WORDS = frozenset(
+    [ch for ch in _REGEX_ALL_CHARS if ch.isalnum()] + ["_"]
+)
+_REGEX_SPACES = frozenset(" \t\r\n\f\v")
+
+
+class _RegexSyntaxError(ValueError):
+    """简单正则表达式的语法错误。"""
+
+
+def _regex_escape_set(ch):
+    """\\d / \\w / \\s 一类转义返回字符集合，其余返回 None。"""
+    shorthand = {
+        "d": _REGEX_DIGITS,
+        "w": _REGEX_WORDS,
+        "s": _REGEX_SPACES,
+    }
+    lowered = ch.lower()
+    if lowered not in shorthand:
+        return None
+    chars = shorthand[lowered]
+    if ch.isupper():
+        return frozenset(_REGEX_ALL_CHARS) - chars
+    return chars
+
+
+def _regex_escape_char(ch):
+    """把 \\ 转义还原成一个字符。"""
+    return {"n": "\n", "r": "\r", "t": "\t", "f": "\f", "v": "\v",
+            "0": "\0", "\\": "\\", ".": ".", "*": "*", "+": "+",
+            "?": "?", "(": "(", ")": ")", "[": "[", "]": "]",
+            "{": "{", "}": "}", "|": "|", "^": "^", "-": "-",
+            "/": "/"}.get(ch, ch)
+
+
+def _regex_dot_set():
+    """`.` 的字符集合：除换行以外的任意字符。"""
+    return frozenset(ch for ch in _REGEX_ALL_CHARS if ch != "\n")
+
+
+class _RegexParser:
+    """把简单正则解析成 AST（元组形式，与 lex.py 一致）。"""
+
+    def __init__(self, pattern):
+        self.pattern = pattern
+        self.pos = 0
+        self.length = len(pattern)
+
+    def peek(self, offset=0):
+        index = self.pos + offset
+        if 0 <= index < self.length:
+            return self.pattern[index]
+        return None
+
+    def next(self):
+        ch = self.peek()
+        if ch is not None:
+            self.pos += 1
+        return ch
+
+    def parse(self):
+        """入口：解析整条正则。"""
+        if self.length == 0:
+            raise _RegexSyntaxError("正则表达式不能为空")
+        node = self.parse_alt()
+        if self.pos != self.length:
+            raise _RegexSyntaxError(
+                "位置 %d 处有多余字符 '%s'" % (self.pos, self.peek())
+            )
+        return node
+
+    def parse_alt(self):
+        """alt := concat ('|' concat)*"""
+        node = self.parse_concat()
+        while self.peek() == "|":
+            self.next()
+            node = ("alt", node, self.parse_concat())
+        return node
+
+    def parse_concat(self):
+        """concat := factor*"""
+        nodes = []
+        while (self.peek() is not None) and (self.peek() not in ("|", ")")):
+            nodes.append(self.parse_factor())
+        if not nodes:
+            return ("empty",)
+        node = nodes[0]
+        for item in nodes[1:]:
+            node = ("concat", node, item)
+        return node
+
+    def parse_factor(self):
+        """factor := base ('*' | '+' | '?' | '{m,n}')*"""
+        node = self.parse_base()
+        while True:
+            ch = self.peek()
+            if ch == "*":
+                self.next()
+                node = ("star", node)
+            elif ch == "+":
+                self.next()
+                node = ("plus", node)
+            elif ch == "?":
+                self.next()
+                node = ("opt", node)
+            elif ch == "{":
+                node = self.parse_repeat(node)
+            else:
+                break
+        return node
+
+    def parse_repeat(self, node):
+        """把 {m} / {m,} / {m,n} 展开成等价的连接与可选。"""
+        self.next()  # '{'
+        digits = ""
+        while (self.peek() is not None) and self.peek().isdigit():
+            digits += self.next()
+        minimum = int(digits) if digits else 0
+        maximum = minimum
+        if self.peek() == ",":
+            self.next()
+            digits = ""
+            while (self.peek() is not None) and self.peek().isdigit():
+                digits += self.next()
+            maximum = int(digits) if digits else None
+        if self.peek() != "}":
+            raise _RegexSyntaxError("重复次数缺少右花括号 }")
+        self.next()
+        if (maximum is not None) and (maximum < minimum):
+            raise _RegexSyntaxError("重复次数上限小于下限")
+        limit = minimum if maximum is None else maximum
+        if limit > _REGEX_MAX_REPEAT:
+            raise _RegexSyntaxError(
+                "重复次数不能超过 %d" % _REGEX_MAX_REPEAT
+            )
+        pieces = [node] * minimum
+        if maximum is None:
+            pieces.append(("star", node))
+        else:
+            pieces.extend([("opt", node)] * (maximum - minimum))
+        if not pieces:
+            raise _RegexSyntaxError("{0} 不匹配任何输入")
+        result = pieces[0]
+        for item in pieces[1:]:
+            result = ("concat", result, item)
+        return result
+
+    def parse_base(self):
+        """base := '(' alt ')' | '[' class ']' | 转义 | '.' | 普通字符"""
+        ch = self.peek()
+        if ch == "(":
+            self.next()
+            node = self.parse_alt()
+            if self.peek() != ")":
+                raise _RegexSyntaxError("缺少右括号 )")
+            self.next()
+            return node
+        if ch == "[":
+            return self.parse_class()
+        if ch == "\\":
+            self.next()
+            escaped = self.next()
+            if escaped is None:
+                raise _RegexSyntaxError("反斜杠后没有字符")
+            chars = _regex_escape_set(escaped)
+            if chars is not None:
+                return ("class", chars)
+            return ("class", frozenset([_regex_escape_char(escaped)]))
+        if ch == ".":
+            self.next()
+            return ("class", _regex_dot_set())
+        if ch is None or ch in ("|", ")", "*", "+", "?", "{"):
+            raise _RegexSyntaxError("意外的字符 '%s'" % ch)
+        self.next()
+        return ("class", frozenset([ch]))
+
+    def parse_class(self):
+        """class := '[' '^'? (字符 | 字符'-'字符)* ']'"""
+        self.next()  # '['
+        negate = False
+        if self.peek() == "^":
+            self.next()
+            negate = True
+        chars = set()
+        first = True
+        while True:
+            ch = self.peek()
+            if ch is None:
+                raise _RegexSyntaxError("字符集缺少右括号 ]")
+            if (ch == "]") and not first:
+                self.next()
+                break
+            first = False
+            if ch == "\\":
+                self.next()
+                escaped = self.next()
+                if escaped is None:
+                    raise _RegexSyntaxError("字符集里的反斜杠后没有字符")
+                shorthand = _regex_escape_set(escaped)
+                if shorthand is not None:
+                    chars |= shorthand
+                    continue
+                start = _regex_escape_char(escaped)
+            else:
+                self.next()
+                start = ch
+            if (self.peek() == "-") and (self.peek(1) not in (None, "]")):
+                self.next()
+                end_char = self.next()
+                if end_char == "\\":
+                    end_char = self.next()
+                    if end_char is None:
+                        raise _RegexSyntaxError("字符集区间不完整")
+                    end_char = _regex_escape_char(end_char)
+                if ord(start) > ord(end_char):
+                    raise _RegexSyntaxError(
+                        "字符集区间 %s-%s 顺序颠倒" % (start, end_char)
+                    )
+                chars |= set(chr(code)
+                             for code in range(ord(start), ord(end_char) + 1))
+            else:
+                chars.add(start)
+        if negate:
+            chars = set(_REGEX_ALL_CHARS) - chars
+        chars.discard("\0")
+        if not chars:
+            raise _RegexSyntaxError("字符集不能为空")
+        return ("class", frozenset(chars))
+
+
+def _regex_collect_class_sets(node, found):
+    """收集 AST 里出现过的所有字符集合（用于划分字符类）。"""
+    kind = node[0]
+    if kind == "class":
+        found.append(node[1])
+    elif kind in ("concat", "alt"):
+        _regex_collect_class_sets(node[1], found)
+        _regex_collect_class_sets(node[2], found)
+    elif kind in ("star", "plus", "opt"):
+        _regex_collect_class_sets(node[1], found)
+
+
+def _regex_char_classes(class_sets):
+    """把若干字符集合划分成互不相交的字符类。
+
+    返回 (cells, char_map)：
+      cells：[(代表字符, 字符集合), ...]，每个类一个代表字符；
+      char_map：长度 256 的列表，字符编码 -> 类编号。
+    同一个类里的字符对每个集合的“属于/不属于”完全一致，所以判断归属
+    只需要看代表字符。
+    """
+    groups = {}
+    for code in range(256):
+        ch = chr(code)
+        signature = tuple(ch in chars for chars in class_sets)
+        groups.setdefault(signature, []).append(ch)
+    cells = []
+    char_map = [0] * 256
+    for signature, chars in sorted(groups.items(),
+                                   key=lambda item: ord(item[1][0])):
+        index = len(cells)
+        cells.append((chars[0], frozenset(chars)))
+        for ch in chars:
+            char_map[ord(ch)] = index
+    return cells, char_map
+
+
+class _RegexNfa:
+    """Thompson 构造的 NFA；转移符号是字符类编号。"""
+
+    def __init__(self, cells):
+        self.cells = cells
+        self.trans = {}
+        self.eps = {}
+        self.start = None
+        self.accept = None
+        self.state_count = 0
+
+    def new_state(self):
+        state = self.state_count
+        self.state_count += 1
+        self.trans[state] = {}
+        self.eps[state] = set()
+        return state
+
+    def symbols_of(self, char_set):
+        """把字符集合映射成字符类编号集合。"""
+        return [index for index, (rep, _) in enumerate(self.cells)
+                if rep in char_set]
+
+    def build(self, ast):
+        self.start, self.accept = self._build(ast)
+        return self
+
+    def _build(self, node):
+        kind = node[0]
+        if kind == "class":
+            start = self.new_state()
+            end = self.new_state()
+            for symbol in self.symbols_of(node[1]):
+                self.trans[start].setdefault(symbol, set()).add(end)
+            return start, end
+        if kind == "empty":
+            start = self.new_state()
+            end = self.new_state()
+            self.eps[start].add(end)
+            return start, end
+        if kind == "concat":
+            start, mid = self._build(node[1])
+            mid2, end = self._build(node[2])
+            self.eps[mid].add(mid2)
+            return start, end
+        if kind == "alt":
+            left_start, left_end = self._build(node[1])
+            right_start, right_end = self._build(node[2])
+            start = self.new_state()
+            end = self.new_state()
+            self.eps[start].add(left_start)
+            self.eps[start].add(right_start)
+            self.eps[left_end].add(end)
+            self.eps[right_end].add(end)
+            return start, end
+        if kind == "star":
+            sub_start, sub_end = self._build(node[1])
+            start = self.new_state()
+            end = self.new_state()
+            self.eps[start].add(sub_start)
+            self.eps[start].add(end)
+            self.eps[sub_end].add(sub_start)
+            self.eps[sub_end].add(end)
+            return start, end
+        if kind == "plus":
+            sub_start, sub_end = self._build(node[1])
+            start = self.new_state()
+            end = self.new_state()
+            self.eps[start].add(sub_start)
+            self.eps[sub_end].add(sub_start)
+            self.eps[sub_end].add(end)
+            return start, end
+        if kind == "opt":
+            sub_start, sub_end = self._build(node[1])
+            start = self.new_state()
+            end = self.new_state()
+            self.eps[start].add(sub_start)
+            self.eps[start].add(end)
+            self.eps[sub_end].add(end)
+            return start, end
+        raise _RegexSyntaxError("未知的正则节点 %s" % kind)
+
+
+def _regex_epsilon_closure(nfa, states):
+    """ε 闭包。"""
+    stack = list(states)
+    closure = set(states)
+    while stack:
+        state = stack.pop()
+        for target in nfa.eps.get(state, ()):
+            if target not in closure:
+                closure.add(target)
+                stack.append(target)
+    return frozenset(closure)
+
+
+def _regex_subset_construction(nfa, alphabet):
+    """子集构造：NFA -> DFA（补齐陷阱状态，转移全覆盖）。"""
+    start_closure = _regex_epsilon_closure(nfa, {nfa.start})
+    state_map = {start_closure: 0}
+    transitions = {}
+    accept = set()
+    queue = deque([start_closure])
+    next_id = 1
+    while queue:
+        current = queue.popleft()
+        current_id = state_map[current]
+        if nfa.accept in current:
+            accept.add(current_id)
+        row = {}
+        for symbol in alphabet:
+            following = set()
+            for state in current:
+                if symbol in nfa.trans.get(state, {}):
+                    following.update(nfa.trans[state][symbol])
+            if not following:
+                continue
+            closure = _regex_epsilon_closure(nfa, following)
+            if closure not in state_map:
+                state_map[closure] = next_id
+                next_id += 1
+                queue.append(closure)
+            row[symbol] = state_map[closure]
+        transitions[current_id] = row
+    trap = next_id
+    transitions[trap] = dict((symbol, trap) for symbol in alphabet)
+    for state in range(next_id):
+        row = transitions.setdefault(state, {})
+        for symbol in alphabet:
+            row.setdefault(symbol, trap)
+    return transitions, 0, accept, trap
+
+
+def _regex_minimize(transitions, start, accept, trap, alphabet):
+    """划分法最小化（保留陷阱状态）。"""
+    reachable = set()
+    stack = [start]
+    while stack:
+        state = stack.pop()
+        if state in reachable:
+            continue
+        reachable.add(state)
+        for symbol in alphabet:
+            target = transitions[state][symbol]
+            if target not in reachable:
+                stack.append(target)
+    accept = accept & reachable
+    partitions = []
+    if reachable - accept:
+        partitions.append(reachable - accept)
+    if accept:
+        partitions.append(accept)
+    while True:
+        refined = []
+        for group in partitions:
+            buckets = {}
+            for state in group:
+                signature = tuple(
+                    next(index for index, part in enumerate(partitions)
+                         if transitions[state][symbol] in part)
+                    for symbol in alphabet
+                )
+                buckets.setdefault(signature, set()).add(state)
+            refined.extend(buckets.values())
+        if len(refined) == len(partitions):
+            break
+        partitions = refined
+    state_to_group = {}
+    for index, group in enumerate(partitions):
+        for state in group:
+            state_to_group[state] = index
+    new_transitions = {}
+    for index, group in enumerate(partitions):
+        representative = next(iter(group))
+        new_transitions[index] = dict(
+            (symbol, state_to_group[transitions[representative][symbol]])
+            for symbol in alphabet
+        )
+    new_accept = set(state_to_group[state] for state in accept)
+    return (new_transitions, state_to_group[start], new_accept,
+            state_to_group[trap], len(partitions))
+
+
+def _regex_build_dfa(pattern, cells):
+    """把一条正则编译成极小 DFA（转移按字符类编号）。"""
+    ast = _RegexParser(pattern).parse()
+    nfa = _RegexNfa(cells).build(ast)
+    alphabet = list(range(len(cells)))
+    transitions, start, accept, trap = _regex_subset_construction(nfa, alphabet)
+    transitions, start, accept, trap, count = _regex_minimize(
+        transitions, start, accept, trap, alphabet
+    )
+    return {
+        "pattern": pattern,
+        "stateCount": count,
+        "start": start,
+        "trap": trap,
+        "accept": accept,
+        "transitions": transitions,
+    }
+
+
+def _regex_compile_all(regex_defs):
+    """把 {名字: 正则} 全部编译成 DFA，共用一份字符类划分。
+
+    返回 (cells, char_map, [{name, pattern, dfa}, ...])。
+    """
+    asts = []
+    class_sets = []
+    for name, pattern in regex_defs:
+        ast = _RegexParser(pattern).parse()
+        asts.append((name, pattern, ast))
+        _regex_collect_class_sets(ast, class_sets)
+    cells, char_map = _regex_char_classes(class_sets)
+    compiled = []
+    for name, pattern, _ in asts:
+        compiled.append({
+            "name": name,
+            "pattern": pattern,
+            "dfa": _regex_build_dfa(pattern, cells),
+        })
+    return cells, char_map, compiled
+
+
+def _is_identifier_literal(text):
+    """字面量是否像标识符（字母/下划线开头，其余是字母数字下划线）。"""
+    if not text:
+        return False
+    if not (text[0].isalpha() or (text[0] == "_")):
+        return False
+    return all(ch.isalnum() or (ch == "_") for ch in text[1:])
+
+
+def _generator_keyword_c(token_defs, static_prefix=""):
+    """生成关键字表与 Parser_TokenKeyword（%define 里像标识符的字面量）。"""
+    keywords = []
+    for token_name, literals in token_defs.items():
+        for literal in literals:
+            if _is_identifier_literal(literal):
+                keywords.append((literal, token_name))
+    if not keywords:
+        return (
+            "/** @brief 关键字查表。 @param pText 文本。\n"
+            " *  @retval 关键字对应的 Token；不是关键字时返回 TOKEN_INVALID。 */\n"
+            "ParserTokenType_T Parser_TokenKeyword(const char *pText)\n"
+            "{\n"
+            "    (void)pText;\n"
+            "    return TOKEN_INVALID;\n"
+            "}\n\n"
+        )
+    rows = ",\n".join(
+        "    { %s, TOKEN_%s }" % (_var_c_string(text), token_name)
+        for text, token_name in keywords
+    ) or "    { NULL, TOKEN_INVALID }"
+    return (
+        "/* 关键字表：%%define / %%token 里像标识符的字面量 */\n"
+        "typedef struct ParserKeyword_T\n"
+        "{\n"
+        "    const char *pText;\n"
+        "    ParserTokenType_T type;\n"
+        "} ParserKeyword_T;\n"
+        "\n"
+        "#define PARSER_KEYWORD_COUNT %du\n"
+        "%sconst ParserKeyword_T s_ParserKeywords[] =\n"
+        "{\n"
+        "%s\n"
+        "};\n"
+        "\n"
+        "/** @brief 关键字查表。 @param pText 文本。\n"
+        " *  @retval 关键字对应的 Token；不是关键字时返回 TOKEN_INVALID。 */\n"
+        "ParserTokenType_T Parser_TokenKeyword(const char *pText)\n"
+        "{\n"
+        "    uint32_t index = 0u;\n"
+        "    if (pText == NULL) { return TOKEN_INVALID; }\n"
+        "    for (index = 0u; index < PARSER_KEYWORD_COUNT; index++) {\n"
+        "        if (strcmp(pText, s_ParserKeywords[index].pText) == 0) {\n"
+        "            return s_ParserKeywords[index].type;\n"
+        "        }\n"
+        "    }\n"
+        "    return TOKEN_INVALID;\n"
+        "}\n\n"
+        % (len(keywords), static_prefix, rows)
+    )
+
+
+def _generator_lex_dfa_c(token_defs, regex_defs, identifier_pattern):
+    """生成 %regex / %identifier 的 DFA 表、标识符识别与关键字接口。
+
+    返回 (decls, tables)：
+      decls：类型与函数声明（单文件布局内联在 token 模块，分文件布局同时
+             写进 parser_token.h）；tables：表定义与函数实现。
+    """
+    entries = list(regex_defs.items())
+    patterns = list(entries)
+    if identifier_pattern is not None:
+        patterns.append(("__identifier__", identifier_pattern))
+    decls = [
+        "#ifndef PARSER_LEX_DFA_DECLARED\n"
+        "#define PARSER_LEX_DFA_DECLARED\n\n"
+        "/* ============ 正则 Token 与标识符识别"
+        "（由 %regex / %identifier 生成） ============ */\n"
+        "/** @brief 关键字查表。 @param pText 文本。\n"
+        " *  @retval 关键字对应的 Token；不是关键字时返回 TOKEN_INVALID。 */\n"
+        "ParserTokenType_T Parser_TokenKeyword(const char *pText);\n"
+    ]
+    body = [_generator_keyword_c(token_defs)]
+    if patterns:
+        cells, char_map, compiled = _regex_compile_all(patterns)
+        class_count = len(cells)
+        decls.append(
+            "/** DFA 描述：转移表按“状态 × 字符类”展平。 */\n"
+            "typedef struct ParserLexDfa_T\n"
+            "{\n"
+            "    const uint16_t *pTrans;\n"
+            "    const uint8_t *pAccept;\n"
+            "    uint16_t stateCount;\n"
+            "    uint16_t startState;\n"
+            "    uint16_t trapState;\n"
+            "} ParserLexDfa_T;\n\n"
+            "/** @brief 用 DFA 做最长前缀匹配。 @param pDfa DFA。\n"
+            " *  @param pText 文本。 @retval 匹配到的字节数（0 表示不匹配）。 */\n"
+            "uint32_t Parser_LexDfaMatch(const ParserLexDfa_T *pDfa,"
+            " const char *pText);\n\n"
+            "extern const uint8_t s_ParserLexClassMap[256];\n"
+            "extern const uint16_t s_ParserLexClassCount;\n"
+        )
+        if entries:
+            decls.append(
+                "#define PARSER_REGEX_COUNT %du\n"
+                "extern const ParserLexDfa_T"
+                " s_ParserRegexDfas[PARSER_REGEX_COUNT];\n"
+                "extern const ParserTokenType_T"
+                " s_ParserRegexTypes[PARSER_REGEX_COUNT];\n"
+                % len(entries)
+            )
+        if identifier_pattern is not None:
+            decls.append(
+                "\n/** @brief 取最长标识符前缀长度。 @param pText 文本。\n"
+                " *  @retval 长度（0 表示不是标识符开头）。 */\n"
+                "uint32_t Parser_TokenIdentifierLength(const char *pText);\n\n"
+                "/** @brief 整串是否是标识符。 @param pText 文本。\n"
+                " *  @retval 1 是标识符。 */\n"
+                "uint8_t Parser_TokenIsIdentifier(const char *pText);\n"
+            )
+        # 字符类映射：字节 -> 类编号
+        rows = []
+        for start in range(0, 256, 16):
+            rows.append("    " + ", ".join(
+                "%du" % char_map[code]
+                for code in range(start, start + 16)
+            ))
+        body.append(
+            "/* 字符类划分：共 %d 类，'\\0' 之外的 256 个字节各归一类 */\n"
+            "const uint8_t s_ParserLexClassMap[256] =\n{\n%s\n};\n"
+            "const uint16_t s_ParserLexClassCount = %du;\n\n"
+            % (class_count, ",\n".join(rows), class_count)
+        )
+        descriptors = []
+        for item in compiled:
+            name = item["name"]
+            pattern = item["pattern"]
+            dfa = item["dfa"]
+            identifier = (name == "__identifier__")
+            prefix = ("s_ParserIdentifierDfa" if identifier
+                      else "s_ParserDfa" + name)
+            trans_name = prefix + "Trans"
+            accept_name = prefix + "Accept"
+            label = "标识符" if identifier else name
+            trans_rows = ",\n".join(
+                "    { %s }" % ", ".join(
+                    "%du" % dfa["transitions"][state][cls]
+                    for cls in range(class_count)
+                )
+                for state in range(dfa["stateCount"])
+            )
+            accept_row = ", ".join(
+                "1u" if state in dfa["accept"] else "0u"
+                for state in range(dfa["stateCount"])
+            )
+            body.append(
+                "/* %s：%s（%d 状态 × %d 字符类） */\n"
+                "static const uint16_t %s[%d][%d] =\n{\n%s\n};\n"
+                "static const uint8_t %s[%d] = { %s };\n\n"
+                % (label, pattern, dfa["stateCount"], class_count,
+                   trans_name, dfa["stateCount"], class_count, trans_rows,
+                   accept_name, dfa["stateCount"], accept_row)
+            )
+            descriptors.append((
+                name,
+                "{ &%s[0][0], %s, %du, %du, %du }"
+                % (trans_name, accept_name, dfa["stateCount"],
+                   dfa["start"], dfa["trap"])
+            ))
+
+        if entries:
+            regex_rows = ",\n".join(
+                "    " + text for name, text in descriptors
+                if name != "__identifier__"
+            )
+            type_rows = ",\n".join(
+                "    TOKEN_%s" % name for name, _ in entries
+            )
+            body.append(
+                "/* %%regex 声明的 Token DFA：与固定字面量一起做最长匹配 */\n"
+                "const ParserLexDfa_T"
+                " s_ParserRegexDfas[PARSER_REGEX_COUNT] =\n{\n%s\n};\n"
+                "const ParserTokenType_T"
+                " s_ParserRegexTypes[PARSER_REGEX_COUNT] =\n{\n%s\n};\n\n"
+                % (regex_rows, type_rows)
+            )
+        if identifier_pattern is not None:
+            identifier_desc = next(
+                text for name, text in descriptors
+                if name == "__identifier__"
+            )
+            body.append(
+                "/* %%identifier 声明的标识符 DFA */\n"
+                "static const ParserLexDfa_T s_ParserIdentifierDfa =\n"
+                "    %s;\n\n" % identifier_desc
+            )
+
+        body.append(
+            "/** @brief 用 DFA 做最长前缀匹配。 @param pDfa DFA。\n"
+            " *  @param pText 文本。 @retval 匹配到的字节数（0 表示不匹配）。 */\n"
+            "uint32_t Parser_LexDfaMatch(const ParserLexDfa_T *pDfa,"
+            " const char *pText)\n"
+            "{\n"
+            "    uint32_t length = 0u;\n"
+            "    uint32_t best = 0u;\n"
+            "    uint16_t state = 0u;\n"
+            "    if ((pDfa == NULL) || (pText == NULL)) { return 0u; }\n"
+            "    state = pDfa->startState;\n"
+            "    while (pText[length] != '\\0') {\n"
+            "        uint8_t cls ="
+            " s_ParserLexClassMap[(unsigned char)pText[length]];\n"
+            "        state = pDfa->pTrans[(uint32_t)state *"
+            " (uint32_t)s_ParserLexClassCount + cls];\n"
+            "        if (state == pDfa->trapState) { break; }\n"
+            "        length++;\n"
+            "        if (pDfa->pAccept[state] != 0u) { best = length; }\n"
+            "    }\n"
+            "    return best;\n"
+            "}\n\n"
+        )
+        if identifier_pattern is not None:
+            body.append(
+                "/** @brief 取最长标识符前缀长度。 @param pText 文本。\n"
+                " *  @retval 长度（0 表示不是标识符开头）。 */\n"
+                "uint32_t Parser_TokenIdentifierLength(const char *pText)\n"
+                "{\n"
+                "    if (pText == NULL) { return 0u; }\n"
+                "    return Parser_LexDfaMatch(&s_ParserIdentifierDfa,"
+                " pText);\n"
+                "}\n\n"
+                "/** @brief 整串是否是标识符。 @param pText 文本。\n"
+                " *  @retval 1 是标识符。 */\n"
+                "uint8_t Parser_TokenIsIdentifier(const char *pText)\n"
+                "{\n"
+                "    uint32_t length = 0u;\n"
+                "    if (pText == NULL) { return 0u; }\n"
+                "    length = Parser_TokenIdentifierLength(pText);\n"
+                "    return ((length > 0u) && (pText[length] == '\\0'))"
+                " ? 1u : 0u;\n"
+                "}\n\n"
+            )
+    decls.append("\n#endif /* PARSER_LEX_DFA_DECLARED */\n")
+    return "".join(decls), "".join(body)
+
+
 def _generator_lex_rules(token_defs):
     """生成按长度降序排列的固定字符串 Lexer 表。"""
     rules = []
@@ -4963,9 +5977,134 @@ def _generator_expand_cases(analysis, terminals, nonterm_ids):
     return "\n".join(cases)
 
 
-def _generator_lexer_c():
-    """返回生成式 Lexer 与 Token 前移函数的 C 模板。"""
-    return r'''
+def _generator_lexer_fixed_block_c(has_regex):
+    """Lexer 里“固定字面量（必要时与 %regex DFA 一起）最长匹配”的代码。"""
+    if has_regex:
+        # 声明了 %regex 时，字面量的匹配挪到正则块里一起做最长匹配
+        return ""
+    return r'''    /* 固定规则按最长候选优先，并在关键字末尾检查标识符边界。 */
+    for (index = 0u; index < (uint32_t)(sizeof(s_ParserLexRules) /
+                                        sizeof(s_ParserLexRules[0])); index++) {
+        const ParserLexRule_T *pRule = &s_ParserLexRules[index];
+        if ((pRule->pText != NULL) &&
+            (strncmp(pStart, pRule->pText, pRule->length) == 0)) {
+            unsigned char last = (unsigned char)pRule->pText[pRule->length - 1u];
+            unsigned char next = (unsigned char)pStart[pRule->length];
+            if (((isalnum(last) != 0) || (last == '_')) &&
+                ((isalnum(next) != 0) || (next == '_'))) {
+                continue;
+            }
+            for (length = 0u; length < pRule->length; length++) {
+                Parser_ReadChar(pCtx);
+            }
+            pToken->type = pRule->type;
+            return PARSER_OK;
+        }
+    }
+'''
+
+
+def _generator_lexer_regex_block_c(has_regex):
+    """Lexer 里 %regex 与固定字面量一起做最长匹配的代码（放在内建 NUMBER 之前）。"""
+    if not has_regex:
+        return ""
+    return r'''    /* 固定字面量与 %regex 的 DFA 一起做最长匹配，字面量优先。 */
+    {
+        uint32_t bestLength = 0u;
+        uint32_t regexIndex = 0u;
+        ParserTokenType_T bestType = TOKEN_INVALID;
+        uint8_t bestFromRegex = 0u;
+        for (index = 0u; index < (uint32_t)(sizeof(s_ParserLexRules) /
+                                            sizeof(s_ParserLexRules[0]));
+             index++) {
+            const ParserLexRule_T *pRule = &s_ParserLexRules[index];
+            if ((pRule->pText != NULL) &&
+                (strncmp(pStart, pRule->pText, pRule->length) == 0)) {
+                unsigned char last =
+                    (unsigned char)pRule->pText[pRule->length - 1u];
+                unsigned char next = (unsigned char)pStart[pRule->length];
+                if (((isalnum(last) != 0) || (last == '_')) &&
+                    ((isalnum(next) != 0) || (next == '_'))) {
+                    continue;
+                }
+                if ((uint32_t)pRule->length > bestLength) {
+                    bestLength = (uint32_t)pRule->length;
+                    bestType = pRule->type;
+                    bestFromRegex = 0u;
+                }
+            }
+        }
+        for (regexIndex = 0u; regexIndex < PARSER_REGEX_COUNT;
+             regexIndex++) {
+            uint32_t matched = Parser_LexDfaMatch(
+                &s_ParserRegexDfas[regexIndex], pStart);
+            if (matched > bestLength) {
+                bestLength = matched;
+                bestType = s_ParserRegexTypes[regexIndex];
+                bestFromRegex = 1u;
+            }
+        }
+        if (bestType != TOKEN_INVALID) {
+            if (bestLength >= sizeof(pCtx->lexeme)) { return PARSER_ERR_LEXER; }
+            for (length = 0u; length < bestLength; length++) {
+                Parser_ReadChar(pCtx);
+            }
+            pToken->type = bestType;
+            if (bestFromRegex != 0u) {
+                memcpy(pCtx->lexeme, pStart, bestLength);
+                pCtx->lexeme[bestLength] = '\0';
+                pToken->pName = pCtx->lexeme;
+            }
+            return PARSER_OK;
+        }
+    }
+'''
+
+
+def _generator_lexer_identifier_block_c(has_identifier):
+    """Lexer 里标识符（%identifier 的 DFA 或内建 C 标识符规则）的代码。"""
+    if not has_identifier:
+        return r'''    /* C 风格标识符默认映射到 VARIABLE。 */
+    if ((isalpha((unsigned char)*pStart) != 0) || (*pStart == '_')) {
+        while ((isalnum((unsigned char)pCtx->pText[pCtx->textPosition]) != 0) ||
+               (pCtx->pText[pCtx->textPosition] == '_')) {
+            if (length + 1u >= sizeof(pCtx->lexeme)) { return PARSER_ERR_LEXER; }
+            pCtx->lexeme[length++] = Parser_ReadChar(pCtx);
+        }
+        pCtx->lexeme[length] = '\0';
+        pToken->type = TOKEN_VARIABLE;
+        pToken->pName = pCtx->lexeme;
+        return PARSER_OK;
+    }
+'''
+    return r'''    /* 标识符：用 %identifier 的 DFA 扫描，再查关键字表。 */
+    {
+        uint32_t identLength = Parser_TokenIdentifierLength(pStart);
+        if (identLength > 0u) {
+            ParserTokenType_T keyword = TOKEN_INVALID;
+            if (identLength >= sizeof(pCtx->lexeme)) { return PARSER_ERR_LEXER; }
+            memcpy(pCtx->lexeme, pStart, identLength);
+            pCtx->lexeme[identLength] = '\0';
+            for (length = 0u; length < identLength; length++) {
+                Parser_ReadChar(pCtx);
+            }
+            keyword = Parser_TokenKeyword(pCtx->lexeme);
+            pToken->type = (keyword != TOKEN_INVALID) ? keyword
+                                                      : TOKEN_VARIABLE;
+            pToken->pName = pCtx->lexeme;
+            return PARSER_OK;
+        }
+    }
+'''
+
+
+def _generator_lexer_c(has_regex=False, has_identifier=False):
+    """返回生成式 Lexer 与 Token 前移函数的 C 模板。
+
+    has_regex：文法里声明了 %regex，固定字面量与 DFA 一起做最长匹配；
+    has_identifier：声明了 %identifier，标识符改由 DFA + 关键字表识别。
+    """
+    text = r'''
 /** @brief 从脚本文本产生 Token。 @param pCtx 上下文。 @param pToken 输出 Token。 @retval 状态码。 */
 static int32_t Parser_LexNext(ParserCtx_T *pCtx, ParserToken_T *pToken)
 {
@@ -5020,6 +6159,7 @@ static int32_t Parser_LexNext(ParserCtx_T *pCtx, ParserToken_T *pToken)
         return (pToken->pValue != NULL) ? PARSER_OK : VAR_RUNTIME_ERR_MEMORY;
     }
 
+__LEX_REGEX_BLOCK__
     /* 小数点和指数决定 float，后缀 d 决定 double。 */
     if ((isdigit((unsigned char)*pStart) != 0) ||
         ((*pStart == '.') && (isdigit((unsigned char)pStart[1]) != 0))) {
@@ -5098,39 +6238,8 @@ static int32_t Parser_LexNext(ParserCtx_T *pCtx, ParserToken_T *pToken)
         return (pToken->pValue != NULL) ? PARSER_OK : VAR_RUNTIME_ERR_MEMORY;
     }
 
-    /* 固定规则按最长候选优先，并在关键字末尾检查标识符边界。 */
-    for (index = 0u; index < (uint32_t)(sizeof(s_ParserLexRules) /
-                                        sizeof(s_ParserLexRules[0])); index++) {
-        const ParserLexRule_T *pRule = &s_ParserLexRules[index];
-        if ((pRule->pText != NULL) &&
-            (strncmp(pStart, pRule->pText, pRule->length) == 0)) {
-            unsigned char last = (unsigned char)pRule->pText[pRule->length - 1u];
-            unsigned char next = (unsigned char)pStart[pRule->length];
-            if (((isalnum(last) != 0) || (last == '_')) &&
-                ((isalnum(next) != 0) || (next == '_'))) {
-                continue;
-            }
-            for (length = 0u; length < pRule->length; length++) {
-                Parser_ReadChar(pCtx);
-            }
-            pToken->type = pRule->type;
-            return PARSER_OK;
-        }
-    }
-
-    /* C 风格标识符默认映射到 VARIABLE。 */
-    if ((isalpha((unsigned char)*pStart) != 0) || (*pStart == '_')) {
-        while ((isalnum((unsigned char)pCtx->pText[pCtx->textPosition]) != 0) ||
-               (pCtx->pText[pCtx->textPosition] == '_')) {
-            if (length + 1u >= sizeof(pCtx->lexeme)) { return PARSER_ERR_LEXER; }
-            pCtx->lexeme[length++] = Parser_ReadChar(pCtx);
-        }
-        pCtx->lexeme[length] = '\0';
-        pToken->type = TOKEN_VARIABLE;
-        pToken->pName = pCtx->lexeme;
-        return PARSER_OK;
-    }
-
+__LEX_FIXED_BLOCK__
+__LEX_IDENTIFIER_BLOCK__
     return PARSER_ERR_LEXER;
 }
 
@@ -5160,6 +6269,15 @@ static int32_t Parser_Advance(ParserCtx_T *pCtx)
     return PARSER_OK;
 }
 '''
+    text = text.replace(
+        "__LEX_REGEX_BLOCK__", _generator_lexer_regex_block_c(has_regex)
+    ).replace(
+        "__LEX_FIXED_BLOCK__", _generator_lexer_fixed_block_c(has_regex)
+    ).replace(
+        "__LEX_IDENTIFIER_BLOCK__",
+        _generator_lexer_identifier_block_c(has_identifier)
+    )
+    return text
 
 
 def _generator_parse_loop_c():
@@ -5384,10 +6502,12 @@ def _generator_ll_tables_c(analysis, terminals, nonterms):
     )
 
 
-def _generator_lr_stack_c(mode_label="SLR(1)", mode_arg="slr"):
+def _generator_lr_stack_c(mode_label="SLR(1)", mode_arg="slr", tree=False):
     """返回 LR 的状态栈 / 符号栈 / 语义值栈定义（SLR / LALR 共用）。
 
     默认参数保证 SLR 产物逐字节不变；LALR 只改注释里的模式名。
+    tree=True 时（%tree）额外给每个栈槽位挂一个 CST 节点指针，
+    移进时存叶子、归约时存父节点，供 Parser_ParseTreeText 取走根节点。
     """
     text = r'''
 /* ============ __LR_LABEL__ 运行时（由 %mode __LR_ARG__ 启用） ============ */
@@ -5398,11 +6518,16 @@ typedef struct __ParserLRStack_T
     VarValue_T *values[PARSER_MAX_STACK_DEPTH];
     uint8_t valueOwned[PARSER_MAX_STACK_DEPTH];
     char names[PARSER_MAX_STACK_DEPTH][PARSER_MAX_NAME_LENGTH];
+__LR_NODE_FIELD__
     uint16_t top;
 } ParserLRStack_T;
 '''
     return text.replace("__LR_LABEL__", mode_label).replace(
         "__LR_ARG__", mode_arg
+    ).replace(
+        "__LR_NODE_FIELD__",
+        ("    VarValue_T *nodes[PARSER_MAX_STACK_DEPTH];\n" if tree else
+         ""),
     )
 
 
@@ -5478,12 +6603,107 @@ def _generator_lr_action_cases(analysis):
     return "\n".join(cases)
 
 
-def _generator_lr_parse_loop_c(mode_label="SLR(1)", mode_name="SLR"):
+def _lr_tree_markers(tree):
+    """返回 LR 运行时模板里的 %tree 代码片段（tree=False 时全部为空串）。
+
+    片段以 __LR_*__ 标记注入 _generator_lr_parse_loop_c 的模板，
+    保证不开 %tree 时 SLR / LALR 的产物与既有版本逐字节一致。
+    """
+    values = dict.fromkeys([
+        "__LR_RELEASE_NODES__",
+        "__LR_SHIFT_MODE_PARAM__",
+        "__LR_SHIFT_LEAF_DECL__",
+        "__LR_SHIFT_LEAF_CREATE__",
+        "__LR_SHIFT_LEAF_FREE__",
+        "__LR_SHIFT_LEAF_STORE__",
+        "__LR_REDUCE_MODE_PARAM__",
+        "__LR_REDUCE_NODE_DECL__",
+        "__LR_REDUCE_FREE_NODE__",
+        "__LR_REDUCE_STORE_NODE__",
+        "__LR_LOOP_TREE_PARAM__",
+        "__LR_LOOP_TREE_DECL__",
+        "__LR_LOOP_TREE_INIT__",
+        "__LR_LOOP_MODE_ARG__",
+        "__LR_LOOP_ACCEPT__",
+        "__LR_LOOP_CALL__",
+    ], "")
+    values["__LR_REDUCE_BEGIN__"] = "    switch (production) {\n"
+    values["__LR_REDUCE_END__"] = ("        default: return PARSER_ERR_SYNTAX;\n"
+                                   "    }\n")
+    if not tree:
+        return values
+    values.update({
+        "__LR_RELEASE_NODES__": (
+            "        if (pStack->nodes[index] != NULL) {\n"
+            "            Var_Free(pStack->nodes[index]);\n"
+            "            pStack->nodes[index] = NULL;\n"
+            "        }\n"
+        ),
+        "__LR_SHIFT_MODE_PARAM__": ",\n                              uint8_t treeMode",
+        "__LR_SHIFT_LEAF_DECL__": "    VarValue_T *pLeaf = NULL;\n",
+        "__LR_SHIFT_LEAF_CREATE__": (
+            "    if ((treeMode != 0u) &&\n"
+            "        (Parser_TreeMakeLeaf(pCtx, &pLeaf) != PARSER_OK)) {\n"
+            "        Var_Free(pValue);\n"
+            "        return VAR_RUNTIME_ERR_MEMORY;\n"
+            "    }\n"
+        ),
+        "__LR_SHIFT_LEAF_FREE__": "        Var_Free(pLeaf);\n",
+        "__LR_SHIFT_LEAF_STORE__":
+            "    pStack->nodes[pStack->top - 1u] = pLeaf;\n",
+        "__LR_REDUCE_MODE_PARAM__": ",\n                               uint8_t treeMode",
+        "__LR_REDUCE_NODE_DECL__": "    VarValue_T *pNode = NULL;\n",
+        "__LR_REDUCE_BEGIN__": (
+            "    if (treeMode != 0u) {\n"
+            "        if (Parser_TreeMakeBranch(\n"
+            "                stack, lhs, base, length, &pNode) != PARSER_OK) {\n"
+            "            Parser_SetError(VAR_RUNTIME_ERR_MEMORY,\n"
+            "                            pCtx->current.line,\n"
+            "                            pCtx->current.column,\n"
+            "                            \"语法树创建失败\");\n"
+            "            return VAR_RUNTIME_ERR_MEMORY;\n"
+            "        }\n"
+            "    } else {\n"
+            "        switch (production) {\n"
+        ),
+        "__LR_REDUCE_END__": (
+            "        default: return PARSER_ERR_SYNTAX;\n"
+            "        }\n"
+            "    }\n"
+        ),
+        "__LR_REDUCE_FREE_NODE__": "        Var_Free(pNode);\n",
+        "__LR_REDUCE_STORE_NODE__":
+            "    stack->nodes[stack->top - 1u] = pNode;\n",
+        "__LR_LOOP_TREE_PARAM__":
+            ",\n                                     VarValue_T **ppTree",
+        "__LR_LOOP_TREE_DECL__": "    uint8_t treeMode = 0u;\n",
+        "__LR_LOOP_TREE_INIT__":
+            "    if (ppTree != NULL) { *ppTree = NULL; treeMode = 1u; }\n",
+        "__LR_LOOP_MODE_ARG__": ", treeMode",
+        "__LR_LOOP_ACCEPT__": (
+            "            if (ppTree != NULL) {\n"
+            "                *ppTree = stack.nodes[stack.top - 1u];\n"
+            "                stack.nodes[stack.top - 1u] = NULL;\n"
+            "            }\n"
+        ),
+        "__LR_LOOP_CALL__": ", NULL",
+    })
+    return values
+
+
+def _generator_lr_parse_loop_c(mode_label="SLR(1)", mode_name="SLR",
+                               tree=False):
     """返回 LR 主循环和 Parser_Run / Parser_RunText 的 C 模板。
 
-    SLR / LALR 共用同一份运行时；默认参数保证 SLR 产物逐字节不变，
-    LALR 只替换注释与错误消息里的模式名。
+    SLR / LALR 共用同一份运行时；tree=False（缺省）时只替换注释与错误消息
+    里的模式名，产物与既有版本逐字节一致。tree=True（%tree）时额外建 CST：
+      - 移进：为当前 Token 建叶子节点，和语义值一起压栈；
+      - 归约：把弹出的 k 个子节点合成左部节点，再随归约结果压栈；
+      - Parser_ParseLoopLR 增加出参 ppTree：非 NULL 表示“只建树”，不执行
+        语义动作，只把 CST 根节点交给 Parser_ParseTreeText，使 %tree 在
+        SLR / LALR 下的行为与 LL(1) 产物一致。
     """
+    markers = _lr_tree_markers(tree)
     text = r'''
 /** @brief LR 分析栈入栈。 @param pStack 分析栈。 @param state 新状态。
  *  @param symbol 文法符号编号。 @param pValue 语义值。
@@ -5521,19 +6741,19 @@ static void Parser_LRReleaseAll(ParserLRStack_T *pStack, VarValue_T *pKeep)
         }
         pStack->values[index] = NULL;
         pStack->valueOwned[index] = 0u;
-    }
+__LR_RELEASE_NODES__    }
     pStack->top = 0u;
 }
 
 /** @brief 移进：把当前 Token 的语义值克隆后压栈。 @retval 状态码。 */
 static int32_t Parser_LRShift(ParserCtx_T *pCtx, ParserLRStack_T *pStack,
-                              uint16_t state)
+                              uint16_t state__LR_SHIFT_MODE_PARAM__)
 {
     VarValue_T *pValue = NULL;
     uint8_t owned = 0u;
     const char *pName = (pCtx->current.pName != NULL) ?
                         pCtx->current.pName : pCtx->current.name;
-    if (pCtx->current.pValue != NULL) {
+__LR_SHIFT_LEAF_DECL__    if (pCtx->current.pValue != NULL) {
         pValue = Var_CloneValue(pCtx->current.pValue);
         if (pValue == NULL) { return VAR_RUNTIME_ERR_MEMORY; }
         owned = 1u;
@@ -5542,19 +6762,19 @@ static int32_t Parser_LRShift(ParserCtx_T *pCtx, ParserLRStack_T *pStack,
         if (pValue == NULL) { return VAR_RUNTIME_ERR_MEMORY; }
         owned = 1u;
     }
-    if (Parser_LRPush(pStack, state, (uint16_t)pCtx->current.type,
+__LR_SHIFT_LEAF_CREATE__    if (Parser_LRPush(pStack, state, (uint16_t)pCtx->current.type,
                       pValue, owned, pName) != PARSER_OK) {
         Var_Free(pValue);
-        return PARSER_ERR_STACK;
+__LR_SHIFT_LEAF_FREE__        return PARSER_ERR_STACK;
     }
-    return PARSER_OK;
+__LR_SHIFT_LEAF_STORE__    return PARSER_OK;
 }
 
 /** @brief 归约：弹出 k 个符号，执行语义动作，再按 GOTO 压回结果。
  *  @param pCtx 上下文。 @param stack 分析栈（动作里的 $n 直接读它的槽位）。
  *  @param production 产生式编号。 @retval 状态码。 */
 static int32_t Parser_LRReduce(ParserCtx_T *pCtx, ParserLRStack_T *stack,
-                               uint16_t production)
+                               uint16_t production__LR_REDUCE_MODE_PARAM__)
 {
     uint32_t length = s_ParserProductionLength[production];
     uint16_t lhs = s_ParserProductionLhs[production];
@@ -5565,16 +6785,13 @@ static int32_t Parser_LRReduce(ParserCtx_T *pCtx, ParserLRStack_T *stack,
     uint8_t resultOwned = 0u;
     ParseResult_T result = { 0 };
     int32_t actionStatus = PARSER_OK;
-    (void)base;
+__LR_REDUCE_NODE_DECL__    (void)base;
 
     if ((uint32_t)stack->top < length) { return PARSER_ERR_STACK; }
     base = (uint32_t)stack->top - length;
     (void)base;
-    switch (production) {
-__LR_ACTION_CASES__
-        default: return PARSER_ERR_SYNTAX;
-    }
-    if (actionStatus != PARSER_OK) {
+__LR_REDUCE_BEGIN____LR_ACTION_CASES__
+__LR_REDUCE_END__    if (actionStatus != PARSER_OK) {
         for (index = 0u; index < length; index++) {
             uint32_t slot = base + index;
             if ((stack->valueOwned[slot] != 0u) &&
@@ -5616,30 +6833,30 @@ __LR_ACTION_CASES__
     stack->top = (uint16_t)base;
     if (stack->top == 0u) {
         Var_Free(pResult);
-        return PARSER_ERR_STACK;
+__LR_REDUCE_FREE_NODE__        return PARSER_ERR_STACK;
     }
     state = s_ParserGoto[stack->states[stack->top - 1u]][lhs];
     if (state == UINT16_MAX) {
         Var_Free(pResult);
-        Parser_SetError(PARSER_ERR_SYNTAX, pCtx->current.line,
+__LR_REDUCE_FREE_NODE__        Parser_SetError(PARSER_ERR_SYNTAX, pCtx->current.line,
                         pCtx->current.column, "__LR_NAME__ GOTO 表没有匹配项");
         return PARSER_ERR_SYNTAX;
     }
     if (Parser_LRPush(stack, state, lhs, pResult, resultOwned, NULL)
         != PARSER_OK) {
         Var_Free(pResult);
-        return PARSER_ERR_STACK;
+__LR_REDUCE_FREE_NODE__        return PARSER_ERR_STACK;
     }
-    return PARSER_OK;
+__LR_REDUCE_STORE_NODE__    return PARSER_OK;
 }
 
 /** @brief __LR_LABEL__ 主循环：移进 / 归约 / 接受。 @param pCtx 上下文。 @retval 结果或 NULL。 */
-static VarValue_T *Parser_ParseLoopLR(ParserCtx_T *pCtx)
+static VarValue_T *Parser_ParseLoopLR(ParserCtx_T *pCtx__LR_LOOP_TREE_PARAM__)
 {
     ParserLRStack_T stack;
     VarValue_T *pResult = NULL;
-    memset(&stack, 0, sizeof(stack));
-    if (Parser_LRPush(&stack, 0u, PARSER_INVALID_INDEX, NULL, 0u, NULL)
+__LR_LOOP_TREE_DECL__    memset(&stack, 0, sizeof(stack));
+__LR_LOOP_TREE_INIT__    if (Parser_LRPush(&stack, 0u, PARSER_INVALID_INDEX, NULL, 0u, NULL)
         != PARSER_OK) {
         return NULL;
     }
@@ -5657,11 +6874,11 @@ static VarValue_T *Parser_ParseLoopLR(ParserCtx_T *pCtx)
         if (action == INT32_MAX) {
             pResult = stack.values[stack.top - 1u];
             stack.valueOwned[stack.top - 1u] = 0u;
-            Parser_LRReleaseAll(&stack, pResult);
+__LR_LOOP_ACCEPT__            Parser_LRReleaseAll(&stack, pResult);
             return pResult;
         }
         if (action > 0) {
-            if (Parser_LRShift(pCtx, &stack, (uint16_t)(action - 1))
+            if (Parser_LRShift(pCtx, &stack, (uint16_t)(action - 1)__LR_LOOP_MODE_ARG__)
                 != PARSER_OK) {
                 Parser_SetError(PARSER_ERR_STACK, pCtx->current.line,
                                 pCtx->current.column, "__LR_NAME__ 分析栈已满");
@@ -5673,7 +6890,7 @@ static VarValue_T *Parser_ParseLoopLR(ParserCtx_T *pCtx)
                 return NULL;
             }
         } else if (action < 0) {
-            if (Parser_LRReduce(pCtx, &stack, (uint16_t)(-action - 1))
+            if (Parser_LRReduce(pCtx, &stack, (uint16_t)(-action - 1)__LR_LOOP_MODE_ARG__)
                 != PARSER_OK) {
                 Parser_LRReleaseAll(&stack, NULL);
                 return NULL;
@@ -5699,7 +6916,7 @@ VarValue_T *Parser_Run(const ParserToken_T *pTokens, uint32_t count)
     pContext->line = 1u;
     pContext->column = 1u;
     if (Parser_Advance(pContext) != PARSER_OK) { return NULL; }
-    pResult = Parser_ParseLoopLR(pContext);
+    pResult = Parser_ParseLoopLR(pContext__LR_LOOP_CALL__);
     return pResult;
 }
 
@@ -5716,7 +6933,7 @@ VarValue_T *Parser_RunText(const char *pText)
     pContext->line = 1u;
     pContext->column = 1u;
     if (Parser_Advance(pContext) != PARSER_OK) { return NULL; }
-    pResult = Parser_ParseLoopLR(pContext);
+    pResult = Parser_ParseLoopLR(pContext__LR_LOOP_CALL__);
     if ((pContext->ownsCurrentValue != 0u) &&
         (pContext->current.pValue != NULL)) {
         Var_Free(pContext->current.pValue);
@@ -5724,71 +6941,15 @@ VarValue_T *Parser_RunText(const char *pText)
     return pResult;
 }
 '''
+    for marker, value in markers.items():
+        text = text.replace(marker, value)
     return text.replace("__LR_LABEL__", mode_label).replace(
         "__LR_NAME__", mode_name
     )
 
 
-def _generator_tree_code(analysis, terminals, nonterms, tree_enabled):
-    """生成通用语法树元数据与 Parser_ParseTreeText 等 API。"""
-    if not tree_enabled:
-        return ""
-    terminal_set = set(terminals)
-    nonterm_ids = {name: index for index, name in enumerate(nonterms)}
-    term_count = len(terminals)
-    prod_starts = []
-    prod_lengths = []
-    prod_symbols = []
-    for prod in analysis["productions"]:
-        prod_starts.append(len(prod_symbols))
-        prod_lengths.append(len(prod["rhs"]))
-        for symbol in prod["rhs"]:
-            if symbol in terminal_set:
-                prod_symbols.append(terminals.index(symbol))
-            else:
-                prod_symbols.append(term_count + nonterm_ids[symbol])
-    if not prod_symbols:
-        prod_symbols.append(0)
-    token_names = ",\n".join(
-        "    %s" % _var_c_string(token) for token in terminals
-    )
-    nonterm_names = ",\n".join(
-        "    %s" % _var_c_string(name) for name in nonterms
-    )
-    starts_text = ",\n".join(
-        "    %du" % value for value in prod_starts
-    )
-    lengths_text = ",\n".join(
-        "    %du" % value for value in prod_lengths
-    )
-    symbols_text = ",\n".join(
-        "    %du" % value for value in prod_symbols
-    )
-    return r'''/* ============ 通用语法树 API（由 %tree 指令启用） ============ */
-
-/* 终结符与语法树元数据 */
-static const char *const s_ParserTreeTokenNames[] =
-{
-__TREE_TOKEN_NAMES__
-};
-static const char *const s_ParserTreeNontermNames[] =
-{
-__TREE_NONTERM_NAMES__
-};
-static const uint16_t s_ParserTreeProdStart[] =
-{
-__TREE_PROD_STARTS__
-};
-static const uint16_t s_ParserTreeProdLength[] =
-{
-__TREE_PROD_LENGTHS__
-};
-static const uint16_t s_ParserTreeProdSymbols[] =
-{
-__TREE_PROD_SYMBOLS__
-};
-
-/** @brief 创建语法树节点。 @param pName 节点名。 @param pText 终结符文本。 @retval 新节点。 */
+# 三种模式共用的 CST 节点工具：建节点 / 挂子节点 / 读取当前 Token 文本
+_TREE_NODE_HELPERS_C = r'''/** @brief 创建语法树节点。 @param pName 节点名。 @param pText 终结符文本。 @retval 新节点。 */
 static VarValue_T *Parser_TreeCreateNode(const char *pName, const char *pText)
 {
     VarValue_T *pNode = NULL;
@@ -5828,7 +6989,204 @@ static int32_t Parser_TreeAttach(VarValue_T *pParent, VarValue_T *pChild)
     return Var_ArrayPush(pChildren, pChild);
 }
 
-/** @brief 打开一个语法树节点。 @retval 状态码。 */
+'''
+
+# 三种模式共用的 CST 查询接口：名字 / 文本 / 子节点 / 打印 / 释放
+_TREE_ACCESSOR_FUNCTIONS_C = r'''/** @brief 返回语法树节点的 children 数组。 @retval 数组指针。 */
+VarValue_T *Parser_TreeGetChildren(const VarValue_T *pNode)
+{
+    if (pNode == NULL) { return NULL; }
+    return Var_StructGetField((VarValue_T *)pNode, "children");
+}
+
+/** @brief 返回语法树节点的名字。 @retval 只读字符串。 */
+const char *Parser_TreeGetName(const VarValue_T *pNode)
+{
+    VarValue_T *pField = NULL;
+    const char *pResult = NULL;
+    if (pNode == NULL) { return NULL; }
+    pField = Var_StructGetField((VarValue_T *)pNode, "name");
+    if (pField == NULL) { return NULL; }
+    if (Var_GetString(pField, &pResult) != VAR_RUNTIME_OK) { return NULL; }
+    return pResult;
+}
+
+/** @brief 返回终结符文本。 @retval 只读字符串。 */
+const char *Parser_TreeGetText(const VarValue_T *pNode)
+{
+    VarValue_T *pField = NULL;
+    const char *pResult = NULL;
+    if (pNode == NULL) { return NULL; }
+    pField = Var_StructGetField((VarValue_T *)pNode, "text");
+    if (pField == NULL) { return NULL; }
+    if (Var_GetString(pField, &pResult) != VAR_RUNTIME_OK) { return NULL; }
+    return pResult;
+}
+
+/** @brief 递归打印语法树。 @param pNode 当前节点。 @param depth 缩进深度。 */
+static void Parser_TreePrintRecursive(const VarValue_T *pNode, uint32_t depth)
+{
+    VarValue_T *pChildren = NULL;
+    const char *pName = NULL;
+    const char *pText = NULL;
+    uint32_t index = 0u;
+    uint32_t childCount = 0u;
+    if (pNode == NULL) { return; }
+    pName = Parser_TreeGetName(pNode);
+    pText = Parser_TreeGetText(pNode);
+    for (index = 0u; index < depth; index++) { printf("  "); }
+    printf("%s", (pName != NULL) ? pName : "?");
+    if ((pText != NULL) && (pText[0] != '\0')) {
+        printf("(%s)", pText);
+    }
+    printf("\n");
+    pChildren = Parser_TreeGetChildren(pNode);
+    if (pChildren == NULL) { return; }
+    childCount = (uint32_t)pChildren->u.array.length;
+    for (index = 0u; index < childCount; index++) {
+        Parser_TreePrintRecursive(
+            Var_ArrayGet(pChildren, (size_t)index), depth + 1u);
+    }
+}
+
+/** @brief 打印语法树根节点。 @param pRoot 根节点。 @retval 无。 */
+void Parser_TreePrint(const VarValue_T *pRoot)
+{
+    Parser_TreePrintRecursive(pRoot, 0u);
+}
+
+/** @brief 释放语法树。 @param pRoot 根节点。 @retval 无。 */
+void Parser_TreeFree(VarValue_T *pRoot)
+{
+    Var_Free(pRoot);
+}
+
+'''
+
+# Token 名称表与文本辅助：分文件布局下进 parser_token.c，单文件产物行内展开
+_TOKEN_IMPL_C = r'''/* Token 名称表：下标与 ParserTokenType_T 枚举一一对应 */
+static const char *const s_ParserTokenNames[] =
+{
+__TOKEN_NAMES__
+};
+
+/** @brief 取 Token 枚举名。 @param type Token 类型。 @retval 只读名字或 NULL。 */
+const char *Parser_TokenName(ParserTokenType_T type)
+{
+    uint32_t index = (uint32_t)type;
+    if (index >= (uint32_t)(sizeof(s_ParserTokenNames) /
+                            sizeof(s_ParserTokenNames[0]))) {
+        return NULL;
+    }
+    return s_ParserTokenNames[index];
+}
+
+/** @brief 把 Token 的文本写进缓冲区。 @param pToken Token。
+ *  @param pBuffer 输出缓冲区。 @param size 缓冲区容量。 @retval 无。 */
+void Parser_TokenText(const ParserToken_T *pToken, char *pBuffer,
+                      uint32_t size)
+{
+    const char *pName = NULL;
+    if ((pToken == NULL) || (pBuffer == NULL) || (size == 0u)) { return; }
+    pBuffer[0] = '\0';
+    if (pToken->pName != NULL) {
+        snprintf(pBuffer, size, "%s", pToken->pName);
+        return;
+    }
+    if (pToken->pValue != NULL) {
+        switch (pToken->pValue->type) {
+            case VAR_TYPE_INT:
+                snprintf(pBuffer, size, "%d", pToken->pValue->u.intValue);
+                return;
+            case VAR_TYPE_UINT32:
+                snprintf(pBuffer, size, "%u",
+                         (unsigned int)pToken->pValue->u.uint32Value);
+                return;
+            case VAR_TYPE_FLOAT:
+                snprintf(pBuffer, size, "%g",
+                         (double)pToken->pValue->u.floatValue);
+                return;
+            case VAR_TYPE_DOUBLE:
+                snprintf(pBuffer, size, "%g",
+                         pToken->pValue->u.doubleValue);
+                return;
+            case VAR_TYPE_STRING:
+                snprintf(pBuffer, size, "\"%s\"",
+                         pToken->pValue->u.stringValue);
+                return;
+            default: break;
+        }
+    }
+    if (pToken->name != NULL) {
+        snprintf(pBuffer, size, "%s", pToken->name);
+        return;
+    }
+    pName = Parser_TokenName(pToken->type);
+    if (pName != NULL) { snprintf(pBuffer, size, "%s", pName); }
+}
+
+__LEX_DFA_DECLS__'''
+
+
+_TOKEN_DFA_TABLES_C = r'''__LEX_DFA_TABLES__'''
+
+
+def _generator_tree_code(analysis, terminals, nonterms, tree_enabled):
+    """生成通用语法树元数据与 Parser_ParseTreeText 等 API（LL(1)）。"""
+    if not tree_enabled:
+        return ""
+    terminal_set = set(terminals)
+    nonterm_ids = {name: index for index, name in enumerate(nonterms)}
+    term_count = len(terminals)
+    prod_starts = []
+    prod_lengths = []
+    prod_symbols = []
+    for prod in analysis["productions"]:
+        prod_starts.append(len(prod_symbols))
+        prod_lengths.append(len(prod["rhs"]))
+        for symbol in prod["rhs"]:
+            if symbol in terminal_set:
+                prod_symbols.append(terminals.index(symbol))
+            else:
+                prod_symbols.append(term_count + nonterm_ids[symbol])
+    if not prod_symbols:
+        prod_symbols.append(0)
+    token_names = ",\n".join(
+        "    %s" % _var_c_string(token) for token in terminals
+    )
+    nonterm_names = ",\n".join(
+        "    %s" % _var_c_string(name) for name in nonterms
+    )
+    starts_text = ",\n".join(
+        "    %du" % value for value in prod_starts
+    )
+    lengths_text = ",\n".join(
+        "    %du" % value for value in prod_lengths
+    )
+    symbols_text = ",\n".join(
+        "    %du" % value for value in prod_symbols
+    )
+    return r'''/* ============ 通用语法树 API（由 %tree 指令启用） ============ */
+
+__SEC_TREE_TABLES_BEGIN__/* 语法树元数据：非终结符名表 + 产生式右部符号表 */
+static const char *const s_ParserTreeNontermNames[] =
+{
+__TREE_NONTERM_NAMES__
+};
+static const uint16_t s_ParserTreeProdStart[] =
+{
+__TREE_PROD_STARTS__
+};
+static const uint16_t s_ParserTreeProdLength[] =
+{
+__TREE_PROD_LENGTHS__
+};
+static const uint16_t s_ParserTreeProdSymbols[] =
+{
+__TREE_PROD_SYMBOLS__
+};
+__SEC_TREE_TABLES_END__
+__TREE_NODE_HELPERS__/** @brief 打开一个语法树节点。 @retval 状态码。 */
 static int32_t Parser_TreeOpen(ParserCtx_T *pCtx, const char *pName)
 {
     VarValue_T *pNode = NULL;
@@ -5879,51 +7237,6 @@ static int32_t Parser_TreeAddTerminal(ParserCtx_T *pCtx,
     return PARSER_OK;
 }
 
-/** @brief 读取当前 Token 的文本。 @param pCtx 上下文。 @param pBuffer 输出。 @param size 容量。 */
-static void Parser_TreeTokenText(ParserCtx_T *pCtx, char *pBuffer,
-                                 uint32_t size)
-{
-    if ((pBuffer == NULL) || (size == 0u)) { return; }
-    pBuffer[0] = '\0';
-    if (pCtx->current.pName != NULL) {
-        snprintf(pBuffer, size, "%s", pCtx->current.pName);
-        return;
-    }
-    if (pCtx->current.pValue != NULL) {
-        switch (pCtx->current.pValue->type) {
-            case VAR_TYPE_INT:
-                snprintf(pBuffer, size, "%d",
-                         pCtx->current.pValue->u.intValue);
-                return;
-            case VAR_TYPE_UINT32:
-                snprintf(pBuffer, size, "%u",
-                         (unsigned int)pCtx->current.pValue->u.uint32Value);
-                return;
-            case VAR_TYPE_FLOAT:
-                snprintf(pBuffer, size, "%g",
-                         (double)pCtx->current.pValue->u.floatValue);
-                return;
-            case VAR_TYPE_DOUBLE:
-                snprintf(pBuffer, size, "%g",
-                         pCtx->current.pValue->u.doubleValue);
-                return;
-            case VAR_TYPE_STRING:
-                snprintf(pBuffer, size, "\"%s\"",
-                         pCtx->current.pValue->u.stringValue);
-                return;
-            default: break;
-        }
-    }
-    if (pCtx->current.name != NULL) {
-        snprintf(pBuffer, size, "%s", pCtx->current.name);
-        return;
-    }
-    if ((uint16_t)pCtx->current.type < __TERMINAL_COUNT__u) {
-        snprintf(pBuffer, size, "%s",
-                 s_ParserTreeTokenNames[pCtx->current.type]);
-    }
-}
-
 /** @brief 语法树解析主循环。 @param pCtx 上下文。 @retval 根节点或 NULL。 */
 static VarValue_T *Parser_TreeParseLoop(ParserCtx_T *pCtx)
 {
@@ -5941,11 +7254,11 @@ static VarValue_T *Parser_TreeParseLoop(ParserCtx_T *pCtx)
                                 pCtx->current.column, "终结符不匹配");
                 return NULL;
             }
-            Parser_TreeTokenText(pCtx, textBuffer,
-                                 (uint32_t)sizeof(textBuffer));
+            Parser_TokenText(&pCtx->current, textBuffer,
+                             (uint32_t)sizeof(textBuffer));
             if (Parser_TreeAddTerminal(
                     pCtx,
-                    s_ParserTreeTokenNames[pCtx->current.type],
+                    Parser_TokenName(pCtx->current.type),
                     textBuffer) != PARSER_OK) {
                 Parser_SetError(PARSER_ERR_STACK, pCtx->current.line,
                                 pCtx->current.column, "语法树创建失败");
@@ -6055,81 +7368,131 @@ VarValue_T *Parser_ParseTreeText(const char *pText)
     return pTree;
 }
 
-/** @brief 返回语法树节点的 children 数组。 @retval 数组指针。 */
-VarValue_T *Parser_TreeGetChildren(const VarValue_T *pNode)
-{
-    if (pNode == NULL) { return NULL; }
-    return Var_StructGetField((VarValue_T *)pNode, "children");
-}
-
-/** @brief 返回语法树节点的名字。 @retval 只读字符串。 */
-const char *Parser_TreeGetName(const VarValue_T *pNode)
-{
-    VarValue_T *pField = NULL;
-    const char *pResult = NULL;
-    if (pNode == NULL) { return NULL; }
-    pField = Var_StructGetField((VarValue_T *)pNode, "name");
-    if (pField == NULL) { return NULL; }
-    if (Var_GetString(pField, &pResult) != VAR_RUNTIME_OK) { return NULL; }
-    return pResult;
-}
-
-/** @brief 返回终结符文本。 @retval 只读字符串。 */
-const char *Parser_TreeGetText(const VarValue_T *pNode)
-{
-    VarValue_T *pField = NULL;
-    const char *pResult = NULL;
-    if (pNode == NULL) { return NULL; }
-    pField = Var_StructGetField((VarValue_T *)pNode, "text");
-    if (pField == NULL) { return NULL; }
-    if (Var_GetString(pField, &pResult) != VAR_RUNTIME_OK) { return NULL; }
-    return pResult;
-}
-
-/** @brief 递归打印语法树。 @param pNode 当前节点。 @param depth 缩进深度。 */
-static void Parser_TreePrintRecursive(const VarValue_T *pNode, uint32_t depth)
-{
-    VarValue_T *pChildren = NULL;
-    const char *pName = NULL;
-    const char *pText = NULL;
-    uint32_t index = 0u;
-    uint32_t childCount = 0u;
-    if (pNode == NULL) { return; }
-    pName = Parser_TreeGetName(pNode);
-    pText = Parser_TreeGetText(pNode);
-    for (index = 0u; index < depth; index++) { printf("  "); }
-    printf("%s", (pName != NULL) ? pName : "?");
-    if ((pText != NULL) && (pText[0] != '\0')) {
-        printf("(%s)", pText);
-    }
-    printf("\n");
-    pChildren = Parser_TreeGetChildren(pNode);
-    if (pChildren == NULL) { return; }
-    childCount = (uint32_t)pChildren->u.array.length;
-    for (index = 0u; index < childCount; index++) {
-        Parser_TreePrintRecursive(
-            Var_ArrayGet(pChildren, (size_t)index), depth + 1u);
-    }
-}
-
-/** @brief 打印语法树根节点。 @param pRoot 根节点。 @retval 无。 */
-void Parser_TreePrint(const VarValue_T *pRoot)
-{
-    Parser_TreePrintRecursive(pRoot, 0u);
-}
-
-/** @brief 释放语法树。 @param pRoot 根节点。 @retval 无。 */
-void Parser_TreeFree(VarValue_T *pRoot)
-{
-    Var_Free(pRoot);
-}
-
-/* ============ 通用语法树 API 结束 ============ */
-''' .replace("__TREE_TOKEN_NAMES__", token_names) \
+__TREE_ACCESSORS__/* ============ 通用语法树 API 结束 ============ */
+''' .replace("__TREE_NODE_HELPERS__", _TREE_NODE_HELPERS_C) \
+      .replace("__TREE_ACCESSORS__", _TREE_ACCESSOR_FUNCTIONS_C) \
+      .replace("__TREE_TOKEN_NAMES__", token_names) \
       .replace("__TREE_NONTERM_NAMES__", nonterm_names) \
       .replace("__TREE_PROD_STARTS__", starts_text) \
       .replace("__TREE_PROD_LENGTHS__", lengths_text) \
       .replace("__TREE_PROD_SYMBOLS__", symbols_text)
+
+
+# SLR(1) / LALR(1) 的 CST 名字表：移进给叶子取名，归约给左部节点取名
+# Token 名表由 parser_token 模块提供，这里只需要非终结符名表
+_LR_TREE_HEADER_C = """/* ============ 通用语法树 API（由 %tree 指令启用） ============ */
+
+__SEC_TREE_TABLES_BEGIN__/* 语法树元数据：非终结符名表 */
+static const char *const s_ParserTreeNontermNames[] =
+{
+__TREE_NONTERM_NAMES__
+};
+__SEC_TREE_TABLES_END__
+"""
+
+# LR 建树钩子：节点随栈槽位维护，因此不需要产生式右部符号表
+_LR_TREE_BODY_C = r'''/** @brief 移进：为当前 Token 建叶子节点。 @param pCtx 上下文。
+ *  @param ppLeaf 输出叶子节点。 @retval 状态码。 */
+static int32_t Parser_TreeMakeLeaf(ParserCtx_T *pCtx, VarValue_T **ppLeaf)
+{
+    char textBuffer[96];
+    VarValue_T *pLeaf = NULL;
+    if ((pCtx == NULL) || (ppLeaf == NULL)) { return VAR_RUNTIME_ERR_TYPE; }
+    Parser_TokenText(&pCtx->current, textBuffer,
+                     (uint32_t)sizeof(textBuffer));
+    pLeaf = Parser_TreeCreateNode(Parser_TokenName(pCtx->current.type),
+                                  textBuffer);
+    if (pLeaf == NULL) { return VAR_RUNTIME_ERR_MEMORY; }
+    *ppLeaf = pLeaf;
+    return PARSER_OK;
+}
+
+/** @brief 归约：把弹出的 k 个子节点合成左部节点。 @param pStack LR 分析栈。
+ *  @param lhs 左部非终结符编号。 @param base 首个右部符号的槽位。
+ *  @param length 右部长度。 @param ppNode 输出父节点。 @retval 状态码。 */
+static int32_t Parser_TreeMakeBranch(ParserLRStack_T *pStack, uint16_t lhs,
+                                     uint32_t base, uint32_t length,
+                                     VarValue_T **ppNode)
+{
+    VarValue_T *pNode = NULL;
+    uint32_t index = 0u;
+    if (ppNode == NULL) { return VAR_RUNTIME_ERR_TYPE; }
+    pNode = Parser_TreeCreateNode(s_ParserTreeNontermNames[lhs], NULL);
+    if (pNode == NULL) { return VAR_RUNTIME_ERR_MEMORY; }
+    for (index = 0u; index < length; index++) {
+        VarValue_T *pChild = pStack->nodes[base + index];
+        if (pChild == NULL) { continue; }
+        if (Parser_TreeAttach(pNode, pChild) != PARSER_OK) {
+            Var_Free(pNode);
+            return VAR_RUNTIME_ERR_MEMORY;
+        }
+        pStack->nodes[base + index] = NULL;
+    }
+    *ppNode = pNode;
+    return PARSER_OK;
+}
+
+'''
+
+# LR 的树入口放在 LR 运行时之后：它要用 Parser_ParseLoopLR 取 CST 根节点
+_LR_TREE_API_C = r'''/** @brief 直接解析脚本文本并返回语法树根节点（LR 模式）。
+ *  @param pText 输入。 @retval 根节点或 NULL。 */
+VarValue_T *Parser_ParseTreeText(const char *pText)
+{
+    ParserCtx_T *pContext = &s_ParserContext;
+    VarValue_T *pTree = NULL;
+    VarValue_T *pValue = NULL;
+    if (pText == NULL) { return NULL; }
+    memset(pContext, 0, sizeof(*pContext));
+    memset(&s_ParserLastError, 0, sizeof(s_ParserLastError));
+    pContext->pText = pText;
+    pContext->textMode = 1u;
+    pContext->line = 1u;
+    pContext->column = 1u;
+    if (Parser_Advance(pContext) != PARSER_OK) { return NULL; }
+    pValue = Parser_ParseLoopLR(pContext, &pTree);
+    if (pValue != NULL) { Var_Free(pValue); }
+    if ((pContext->ownsCurrentValue != 0u) &&
+        (pContext->current.pValue != NULL)) {
+        Var_Free(pContext->current.pValue);
+        pContext->current.pValue = NULL;
+        pContext->ownsCurrentValue = 0u;
+    }
+    if (pTree == NULL) { return NULL; }
+    return pTree;
+}
+
+'''
+
+
+def _generator_lr_tree_code(analysis, terminals, nonterms, tree_enabled):
+    """生成 SLR(1) / LALR(1) 的 CST 名字表与建树钩子（%tree）。
+
+    在 LR 运行时之前发射，供 Parser_LRShift / Parser_LRReduce 调用。
+    """
+    if not tree_enabled:
+        return ""
+    token_names = ",\n".join(
+        "    %s" % _var_c_string(token) for token in terminals
+    )
+    nonterm_names = ",\n".join(
+        "    %s" % _var_c_string(name) for name in nonterms
+    )
+    return (_LR_TREE_HEADER_C
+            .replace("__TREE_TOKEN_NAMES__", token_names)
+            .replace("__TREE_NONTERM_NAMES__", nonterm_names)
+            + _TREE_NODE_HELPERS_C
+            + _LR_TREE_BODY_C)
+
+
+def _generator_lr_tree_api_c(tree_enabled):
+    """生成 SLR(1) / LALR(1) 的 Parser_ParseTreeText 与查询接口（%tree）。
+
+    在 LR 运行时之后发射：树入口依赖 Parser_ParseLoopLR。
+    """
+    if not tree_enabled:
+        return ""
+    return _LR_TREE_API_C + _TREE_ACCESSOR_FUNCTIONS_C
 
 
 def _generator_ast_markers_c(ast_skip, ast_fold, ast_label):
@@ -6204,9 +7567,15 @@ uint8_t Parser_AstShouldLabel(const char *pName)
                array_text("s_ParserAstLabelNames", ast_label))
 
 
-def _generator_demo_main_c():
-    """生成带 main() 的演示程序，编译后可直接解析表达式并打印结果。"""
-    return r'''
+def _generator_demo_main_c(standalone=False, tree=False):
+    """生成带 main() 的演示程序，编译后可直接解析表达式并打印结果。
+
+    standalone=True（分文件布局的 main.c）时去掉 PARSER_SKIP_DEMO_MAIN 包裹：
+    演示代码独占一个文件，不需要再用宏跳过。
+    tree=True（%tree 文法）时，如果文法不写语义动作、Parser_RunText 没有可
+    打印的求值结果，就改打印语法树，保证演示程序照样有输出。
+    """
+    text = r'''
 #ifndef PARSER_SKIP_DEMO_MAIN
 
 #ifndef PARSER_DEMO_INPUT
@@ -6271,7 +7640,7 @@ int main(int argc, char **argv)
 {
     const char *pInput = NULL;
     VarValue_T *pResult = NULL;
-    const ParserError_T *pError = NULL;
+__DEMO_TREE_DECL__    const ParserError_T *pError = NULL;
 
     if (argc > 1) {
         pInput = argv[1];
@@ -6281,7 +7650,12 @@ int main(int argc, char **argv)
     printf("解析输入: %s\n", pInput);
     pResult = Parser_RunText(pInput);
     if (pResult == NULL) {
-        pError = Parser_GetLastError();
+__DEMO_TREE_FALLBACK__        pError = Parser_GetLastError();
+        if (pError->code == PARSER_OK) {
+            printf("解析成功，但没有可返回的值"
+                   "（文法未写语义动作，或运算结果为空，例如除以 0）\n");
+            return 0;
+        }
         printf("解析失败: code=%d line=%u column=%u message=%s\n",
                pError->code, pError->line, pError->column, pError->message);
         return 1;
@@ -6295,21 +7669,135 @@ int main(int argc, char **argv)
 
 #endif /* PARSER_SKIP_DEMO_MAIN */
 '''
+    if tree:
+        text = text.replace(
+            "__DEMO_TREE_DECL__", "    VarValue_T *pTree = NULL;\n"
+        ).replace(
+            "__DEMO_TREE_FALLBACK__",
+            "        if (Parser_GetLastError()->code == PARSER_OK) {\n"
+            "            /* %tree 文法可以不写语义动作：没有结果时打印语法树 */\n"
+            "            pTree = Parser_ParseTreeText(pInput);\n"
+            "            if (pTree != NULL) {\n"
+            "                printf(\"语法树:\\n\");\n"
+            "                Parser_TreePrint(pTree);\n"
+            "                Parser_TreeFree(pTree);\n"
+            "                return 0;\n"
+            "            }\n"
+            "        }\n"
+        )
+    else:
+        text = text.replace("__DEMO_TREE_DECL__", "").replace(
+            "__DEMO_TREE_FALLBACK__", ""
+        )
+    if not standalone:
+        return text
+    return text.replace("#ifndef PARSER_SKIP_DEMO_MAIN\n\n", "").replace(
+        "\n#endif /* PARSER_SKIP_DEMO_MAIN */\n", "\n"
+    )
 
 
-def generate_parser_c(grammar, tokens, variables=None, token_defs=None,
-                      tree=False, var_max_count=32,
-                      ast_skip=None, ast_fold=None, ast_label=None,
-                      mode="ll1"):
-    """生成带默认 Lexer 的表驱动非递归 LL(1) / SLR(1) / LALR(1) C 解析器。
+def _generator_token_names_c(terminals):
+    """Token 名称表内容：与 ParserTokenType_T 枚举同序，末尾补 INVALID。"""
+    names = list(terminals) + ["INVALID"]
+    return ",\n".join("    %s" % _var_c_string(name) for name in names)
 
-    mode="ll1"（默认）走预测分析表；mode="slr" 走 LR(0) 项集 + FOLLOW 的
-    SLR(1) 分析表；mode="lalr" 走 LR(1) 项集 + 同心合并的 LALR(1) 分析表。
-    SLR / LALR 复用同一套 LR 运行时与栈结构，可直接处理左递归文法，
-    但冲突一律报错（不消解、不产出 C 代码）。
+
+# 分文件布局的分段标记名；单文件布局里这些标记全部替换成空串
+_SECTION_NAMES = (
+    "RUNTIME_H", "RUNTIME_C", "DEFINES", "TOKEN_TYPES", "TOKEN_IMPL",
+    "ERROR_TYPE", "RESULT_TYPE", "TABLES", "TREE_TABLES", "DEMO",
+)
+
+
+def _section_marker(name, edge):
+    """拼出一个分段标记，例如 __SEC_TABLES_BEGIN__。"""
+    return "__SEC_%s_%s__" % (name, edge)
+
+
+def _apply_markers(text, replacements):
+    """按标记替换表展开拼装结果（每个产物文件各展开一次）。"""
+    for marker, value in replacements.items():
+        text = text.replace(marker, value)
+    return text
+
+
+def _replace_section(text, name, replacement):
+    """把 __SEC_<name>_BEGIN__…__SEC_<name>_END__ 整段换成 replacement。"""
+    begin = _section_marker(name, "BEGIN")
+    end = _section_marker(name, "END")
+    if begin not in text:
+        return text
+    start = text.index(begin)
+    stop = text.index(end, start) + len(end)
+    return text[:start] + replacement + text[stop:]
+
+
+def _extract_section(text, name):
+    """取 __SEC_<name>_BEGIN__…__SEC_<name>_END__ 之间的内容（不含标记）。"""
+    begin = _section_marker(name, "BEGIN")
+    end = _section_marker(name, "END")
+    start = text.index(begin) + len(begin)
+    return text[start:text.index(end, start)]
+
+
+def _parser_analysis(grammar, tokens, mode, priority=None):
+    """按生成模式构造分析结果：LL(1) 预测表 / SLR(1) / LALR(1) 表。"""
+    if mode == "lalr":
+        return _lalr_analyze(grammar, tokens, priority)
+    if mode == "slr":
+        return _slr_analyze(grammar, tokens, priority)
+    return prepare_grammar(grammar, tokens)
+
+
+# 分配器配置：默认走 C 运行库，用户可在 parser_config.h 里换成自己的实现
+_ALLOCATOR_MACROS_C = r'''#ifndef PARSER_MALLOC
+#define PARSER_MALLOC(size) malloc(size)
+#endif
+#ifndef PARSER_CALLOC
+#define PARSER_CALLOC(count, size) calloc((count), (size))
+#endif
+#ifndef PARSER_REALLOC
+#define PARSER_REALLOC(pointer, size) realloc((pointer), (size))
+#endif
+#ifndef PARSER_FREE
+#define PARSER_FREE(pointer) free((pointer))
+#endif
+'''
+
+
+def _with_allocator_macros(text):
+    """把运行时里的 malloc/calloc/realloc/free 全部换成 PARSER_* 配置宏。
+
+    只做函数调用形式的替换，Var_Free / Var_FreeContent 这类名字不受影响。
+    """
+    return (text.replace("malloc(", "PARSER_MALLOC(")
+                .replace("calloc(", "PARSER_CALLOC(")
+                .replace("realloc(", "PARSER_REALLOC(")
+                .replace("free(", "PARSER_FREE("))
+
+
+def _with_allocator_include(text):
+    """在 variable_runtime.h 里补上 #include "parser_config.h"。"""
+    marker = "#include <stddef.h>\n"
+    if marker in text:
+        return text.replace(
+            marker, marker + '\n#include "parser_config.h"\n', 1
+        )
+    return text
+
+
+def _assemble_parser_code(grammar, tokens, variables=None, token_defs=None,
+                          tree=False, var_max_count=32,
+                          ast_skip=None, ast_fold=None, ast_label=None,
+                          mode="ll1", priority=None, lex_spec=None):
+    """拼装产物源码，返回 (带 __ 标记的源码, 标记替换表)。
+
+    单文件与分文件布局共用这一份拼装逻辑：分文件布局按 __SEC_*__ 分段标记
+    切片，单文件布局把所有标记替换成空串后直接输出。
     """
     variables = variables or {}
     token_defs = token_defs or {}
+    lex_spec = _normalize_lex_spec(lex_spec)
     mode = str(mode or "ll1").lower()
     if mode not in ("ll1", "slr", "lalr"):
         raise GrammarLoadError(
@@ -6319,12 +7807,7 @@ def generate_parser_c(grammar, tokens, variables=None, token_defs=None,
     ast_fold = set(ast_fold or ())
     ast_label = set(ast_label or ())
     var_max_count = max(1, int(var_max_count if var_max_count else 32))
-    if mode == "lalr":
-        analysis = _lalr_analyze(grammar, tokens)
-    elif mode == "slr":
-        analysis = _slr_analyze(grammar, tokens)
-    else:
-        analysis = prepare_grammar(grammar, tokens)
+    analysis = _parser_analysis(grammar, tokens, mode, priority)
     terminals = analysis["terminals"]
     nonterms = analysis["nonterms"]
     nonterm_ids = {name: index for index, name in enumerate(nonterms)}
@@ -6338,7 +7821,7 @@ def generate_parser_c(grammar, tokens, variables=None, token_defs=None,
     lr_name = "LALR" if mode == "lalr" else "SLR"
     if mode in ("slr", "lalr"):
         mode_item_types = (
-            _generator_lr_stack_c(lr_label, mode).lstrip("\n") + "\n"
+            _generator_lr_stack_c(lr_label, mode, tree).lstrip("\n") + "\n"
         )
         ctx_mode_fields = ""
         mode_tables = _generator_lr_tables_c(analysis) + "\n"
@@ -6365,8 +7848,24 @@ def generate_parser_c(grammar, tokens, variables=None, token_defs=None,
         "__LR_ACTION_CASES__": _generator_lr_action_cases(analysis),
         "__START_ID__": str(nonterm_ids[analysis["grammar"]["start"]]),
         "__RUNTIME_HEADER__": VARIABLE_RUNTIME_HEADER,
-        "__RUNTIME_SOURCE__": VARIABLE_RUNTIME_SOURCE_EMBEDDED,
+        "__RUNTIME_SOURCE__": _with_allocator_macros(
+            VARIABLE_RUNTIME_SOURCE_EMBEDDED
+        ),
+        "__RUNTIME_ALLOCATOR_CONFIG__": _ALLOCATOR_MACROS_C,
     }
+    # %regex / %identifier：DFA 表与标识符识别接口
+    lex_decls, lex_tables = _generator_lex_dfa_c(
+        token_defs, lex_spec["regex"], lex_spec["identifier"]
+    )
+    # 分文件布局用的 token 模块与分段标记；单文件布局里标记一律替换成空串
+    replacements["__TOKEN_IMPL__"] = _TOKEN_IMPL_C + _TOKEN_DFA_TABLES_C
+    replacements["__TOKEN_NAMES__"] = _generator_token_names_c(terminals)
+    # 注意顺序：DFA 占位符在 __TOKEN_IMPL__ 展开之后才能被替换到
+    replacements["__LEX_DFA_DECLS__"] = lex_decls
+    replacements["__LEX_DFA_TABLES__"] = lex_tables
+    for section_name in _SECTION_NAMES:
+        replacements[_section_marker(section_name, "BEGIN")] = ""
+        replacements[_section_marker(section_name, "END")] = ""
     code = r'''/* 由 Chapter-script-engine/parser.py 自动生成：内嵌 variable_runtime 且含演示 main 的非递归 __MODE_NAME__ 解析器 */
 
 #include <ctype.h>
@@ -6377,15 +7876,19 @@ def generate_parser_c(grammar, tokens, variables=None, token_defs=None,
 #include <stdlib.h>
 #include <string.h>
 
-/* ============ 嵌入式 variable_runtime.h 开始 ============ */
+__SEC_RUNTIME_H_BEGIN__/* ============ 嵌入式 variable_runtime.h 开始 ============ */
 __RUNTIME_HEADER__
 /* ============ 嵌入式 variable_runtime.h 结束 ============ */
+__SEC_RUNTIME_H_END__
 
-/* ============ 嵌入式 variable_runtime.c 开始 ============ */
+__SEC_RUNTIME_C_BEGIN__/* ============ 嵌入式 variable_runtime.c 开始 ============ */
+/* ============ 分配器配置（分文件布局里对应 parser_config.h） ============ */
+__RUNTIME_ALLOCATOR_CONFIG__
 __RUNTIME_SOURCE__
 /* ============ 嵌入式 variable_runtime.c 结束 ============ */
+__SEC_RUNTIME_C_END__
 
-#ifndef PARSER_MAX_STACK_DEPTH
+__SEC_DEFINES_BEGIN__#ifndef PARSER_MAX_STACK_DEPTH
 #define PARSER_MAX_STACK_DEPTH 64u
 #endif
 #ifndef PARSER_MAX_NAME_LENGTH
@@ -6409,8 +7912,9 @@ __RUNTIME_SOURCE__
 #else
 #define PARSER_UNUSED
 #endif
+__SEC_DEFINES_END__
 
-typedef enum __ParserTokenType_T { __TOKEN_ENUM__ } ParserTokenType_T;
+__SEC_TOKEN_TYPES_BEGIN__typedef enum __ParserTokenType_T { __TOKEN_ENUM__ } ParserTokenType_T;
 
 typedef struct __ParserToken_T
 {
@@ -6422,19 +7926,23 @@ typedef struct __ParserToken_T
     uint32_t line;
     uint32_t column;
 } ParserToken_T;
+__SEC_TOKEN_TYPES_END__
 
-typedef struct __ParserError_T
+__SEC_TOKEN_IMPL_BEGIN____TOKEN_IMPL____SEC_TOKEN_IMPL_END__
+__SEC_ERROR_TYPE_BEGIN__typedef struct __ParserError_T
 {
     int32_t code;
     uint32_t line;
     uint32_t column;
     char message[96];
 } ParserError_T;
+__SEC_ERROR_TYPE_END__
 
-typedef struct __ParseResult_T
+__SEC_RESULT_TYPE_BEGIN__typedef struct __ParseResult_T
 {
     VarValue_T *value;
 } ParseResult_T;
+__SEC_RESULT_TYPE_END__
 
 __MODE_ITEM_TYPES__typedef struct __ParserCtx_T
 {
@@ -6464,7 +7972,7 @@ typedef struct __ParserLexRule_T
 
 static ParserError_T s_ParserLastError;
 static ParserCtx_T s_ParserContext;
-__MODE_TABLES__static const ParserLexRule_T s_ParserLexRules[] =
+__SEC_TABLES_BEGIN____MODE_TABLES____SEC_TABLES_END__static const ParserLexRule_T s_ParserLexRules[] =
 {
 __LEX_RULES__
 };
@@ -6560,10 +8068,14 @@ static char Parser_ReadChar(ParserCtx_T *pCtx)
     return ch;
 }
 '''
-    code += _generator_lexer_c()
+    code += _generator_lexer_c(
+        bool(lex_spec["regex"]), lex_spec["identifier"] is not None
+    )
     if mode in ("slr", "lalr"):
-        # SLR / LALR：LR 栈运行时自带归约动作与 Parser_Run / Parser_RunText
-        code += _generator_lr_parse_loop_c(lr_label, lr_name)
+        # SLR / LALR：%tree 时先发名字表与建树钩子，再发 LR 运行时，
+        # 最后发依赖 Parser_ParseLoopLR 的 Parser_ParseTreeText
+        code += _generator_lr_tree_code(analysis, terminals, nonterms, tree)
+        code += _generator_lr_parse_loop_c(lr_label, lr_name, tree)
     else:
         code += r'''
 /** @brief 压入分析项目。 @retval 状态码。 */
@@ -6743,15 +8255,476 @@ static int32_t Parser_CaptureTerminal(ParserCtx_T *pCtx,
 '''
         code += _generator_parse_loop_c()
     if mode == "ll1":
-        # SLR / LALR 不生成语法树 API（%tree 在 LR 模式下只用于二选一校验）
         code += _generator_tree_code(
             analysis, terminals, nonterms, tree
         )
+    else:
+        # SLR / LALR 的树入口与查询接口，和 LL(1) 产物同名同语义
+        code += _generator_lr_tree_api_c(tree)
     code += _generator_ast_markers_c(ast_skip, ast_fold, ast_label)
-    code += _generator_demo_main_c()
-    for marker, value in replacements.items():
-        code = code.replace(marker, value)
-    return code
+    code += ("__SEC_DEMO_BEGIN__" + _generator_demo_main_c(tree=tree) +
+             "__SEC_DEMO_END__")
+    return code, replacements
+
+
+def generate_parser_c(grammar, tokens, variables=None, token_defs=None,
+                      tree=False, var_max_count=32,
+                      ast_skip=None, ast_fold=None, ast_label=None,
+                      mode="ll1", priority=None, lex_spec=None):
+    """生成单文件、内嵌 variable_runtime 且含演示 main 的解析器 C 代码。
+
+    mode="ll1"（默认）走预测分析表；mode="slr" 走 LR(0) 项集 + FOLLOW 的
+    SLR(1) 分析表；mode="lalr" 走 LR(1) 项集 + 同心合并的 LALR(1) 分析表。
+    SLR / LALR 复用同一套 LR 运行时与栈结构，可直接处理左递归文法，
+    冲突先按 %left / %right / %nonassoc / %prec 消解；剩余冲突按 %expect
+    处理，没有 %expect 或数量不符时报错（不产出 C 代码）。
+    priority 是 load_grammar_text 的优先级元数据（_priority_from_cfg(cfg)）。
+    """
+    code, replacements = _assemble_parser_code(
+        grammar, tokens, variables, token_defs, tree, var_max_count,
+        ast_skip, ast_fold, ast_label, mode, priority, lex_spec
+    )
+    return _apply_markers(code, replacements)
+
+
+# =====================================================================
+# 分文件布局产物：parser.h / parser.c / parser_token.h / parser_token.c /
+# variable_runtime.h / variable_runtime.c / parser_table.c / main.c /
+# RESULT.md，与 out/ 目录下的固定结构一一对应。
+# =====================================================================
+
+PROJECT_FILES = (
+    "parser_config.h",
+    "parser.h", "parser.c", "parser_token.h", "parser_token.c",
+    "variable_runtime.h", "variable_runtime.c", "parser_table.c",
+    "main.c", "RESULT.md",
+)
+
+
+def _collapse_blank_lines(text):
+    """把连续 3 个以上的换行压成一个空行（去掉分段留下的空档）。"""
+    return re.sub(r"\n{3,}", "\n\n", text)
+
+
+def _file_banner(file_name, brief):
+    """分文件产物的统一抬头。"""
+    return ("/* %s —— %s\n"
+            " * 由 Chapter-script-engine/parser.py 自动生成（__MODE_NAME__）；"
+            "请勿手工修改。\n"
+            " */\n\n" % (file_name, brief))
+
+
+def _generator_parser_config_h_c():
+    """生成 parser_config.h：用户可自定义的分配器宏。"""
+    return (
+        "/* parser_config.h —— 分配器配置（自动生成，可直接手工修改）\n"
+        " *\n"
+        " * 运行时与解析器的所有动态内存都走下面四个宏，默认是 C 运行库的\n"
+        " * malloc/calloc/realloc/free。换成自己的分配器（静态池、内存统计、\n"
+        " * RTOS 堆、带对齐的分配器……）时只改这四个宏，parser.c 不用动。\n"
+        " *\n"
+        " * 推荐写法：分配器实现放在你自己的 .c 里，这里只写声明和宏：\n"
+        " *\n"
+        " *   void *MyPool_Alloc(size_t size);\n"
+        " *   void *MyPool_Calloc(size_t count, size_t size);\n"
+        " *   void *MyPool_Realloc(void *ptr, size_t size);\n"
+        " *   void  MyPool_Free(void *pointer);\n"
+        " *\n"
+        " *   #define PARSER_MALLOC(size)        MyPool_Alloc((size))\n"
+        " *   #define PARSER_CALLOC(count, size) MyPool_Calloc((count), (size))\n"
+        " *   #define PARSER_REALLOC(ptr, size)  MyPool_Realloc((ptr), (size))\n"
+        " *   #define PARSER_FREE(pointer)       MyPool_Free((pointer))\n"
+        " *\n"
+        " * 四个宏必须配套：PARSER_CALLOC / PARSER_REALLOC 返回的块要能被\n"
+        " * PARSER_FREE 释放。只想换一部分也可以，其余宏有 #ifndef 兜底。\n"
+        " * 本头文件会被多个 .c 包含：直接写在头里的辅助函数要用 static inline，\n"
+        " * 否则要么报 -Wunused-function，要么多个 .c 重复定义。\n"
+        " * 解析栈深等其他开关在 parser.h 里用 -D 覆盖。\n"
+        " */\n\n"
+        "#ifndef PARSER_CONFIG_H\n"
+        "#define PARSER_CONFIG_H\n\n"
+        "#include <stdlib.h>\n"
+        "\n"
+        + _ALLOCATOR_MACROS_C +
+        "\n#endif /* PARSER_CONFIG_H */\n"
+    )
+
+
+def _generator_table_decls_c(mode, analysis):
+    """parser.c 对 parser_table.c 里那几张表的外部声明（分文件布局）。"""
+    terminals = analysis["terminals"]
+    nonterms = analysis["nonterms"]
+    if mode in ("slr", "lalr"):
+        return (
+            "/* 分析表定义在 parser_table.c，由链接器解析 */\n"
+            "extern const int32_t s_ParserAction[%d][%d];\n"
+            "extern const uint16_t s_ParserGoto[%d][%d];\n"
+            "extern const uint16_t s_ParserProductionLength[];\n"
+            "extern const uint16_t s_ParserProductionLhs[];\n"
+            % (len(analysis["states"]), len(terminals),
+               len(analysis["states"]), len(nonterms))
+        )
+    return (
+        "/* 预测分析表定义在 parser_table.c，由链接器解析 */\n"
+        "extern const int16_t s_ParserTable[%d][%d];\n"
+        "extern const uint8_t s_ParserProductionIsLeftEmpty[];\n"
+        % (len(nonterms), len(terminals))
+    )
+
+
+def _generator_tree_table_decls_c(mode, tree_enabled):
+    """parser.c 对 parser_table.c 里树元数据表的外部声明。"""
+    if not tree_enabled:
+        return ""
+    lines = [
+        "/* 树元数据表定义在 parser_table.c，由链接器解析 */",
+        "extern const char *const s_ParserTreeNontermNames[];",
+    ]
+    if mode == "ll1":
+        lines += [
+            "extern const uint16_t s_ParserTreeProdStart[];",
+            "extern const uint16_t s_ParserTreeProdLength[];",
+            "extern const uint16_t s_ParserTreeProdSymbols[];",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def _generator_parser_h_c(defines, error_type, tree, ast_enabled):
+    """生成 parser.h：公开 API（解析入口 / 错误 / 树 / AST 元数据）。"""
+    text = _file_banner(
+        "parser.h", "公开 API：Parser_Run / Parser_RunText / Tree / Ast / Error"
+    )
+    text += "#ifndef PARSER_H\n#define PARSER_H\n\n"
+    text += "#include <stdint.h>\n\n"
+    text += '#include "variable_runtime.h"\n#include "parser_token.h"\n\n'
+    text += defines + "\n"
+    text += error_type + "\n"
+    text += (
+        "/** @brief 解析 Token 数组。 @param pTokens Token 数组。\n"
+        " *  @param count 数量。 @retval 结果或 NULL。 */\n"
+        "VarValue_T *Parser_Run(const ParserToken_T *pTokens,"
+        " uint32_t count);\n\n"
+        "/** @brief 解析脚本文本。 @param pText 输入文本。\n"
+        " *  @retval 结果或 NULL。 */\n"
+        "VarValue_T *Parser_RunText(const char *pText);\n\n"
+        "/** @brief 取最近一次错误。 @retval 只读错误结构。 */\n"
+        "const ParserError_T *Parser_GetLastError(void);\n"
+    )
+    if tree:
+        text += (
+            "\n/* ============ 通用语法树 API（由 %tree 指令启用） ============ */\n"
+            "/** @brief 解析文本并返回语法树根节点。 @param pText 输入。\n"
+            " *  @retval 根节点或 NULL。 */\n"
+            "VarValue_T *Parser_ParseTreeText(const char *pText);\n\n"
+            "/** @brief 取节点的 children 数组。 @retval 数组指针。 */\n"
+            "VarValue_T *Parser_TreeGetChildren(const VarValue_T *pNode);\n\n"
+            "/** @brief 取节点名。 @retval 只读字符串。 */\n"
+            "const char *Parser_TreeGetName(const VarValue_T *pNode);\n\n"
+            "/** @brief 取终结符文本。 @retval 只读字符串。 */\n"
+            "const char *Parser_TreeGetText(const VarValue_T *pNode);\n\n"
+            "/** @brief 打印语法树。 @param pRoot 根节点。 @retval 无。 */\n"
+            "void Parser_TreePrint(const VarValue_T *pRoot);\n\n"
+            "/** @brief 释放语法树。 @param pRoot 根节点。 @retval 无。 */\n"
+            "void Parser_TreeFree(VarValue_T *pRoot);\n"
+        )
+    if ast_enabled:
+        text += (
+            "\n/* ============ AST 标记查询（由 %ast_* 指令启用） ============ */\n"
+            "/** @brief 该节点是否在 AST 中消失并提升子节点。"
+            " @retval 1 需要。 */\n"
+            "uint8_t Parser_AstShouldSkip(const char *pName);\n\n"
+            "/** @brief 该节点是否折叠成左结合二叉树。 @retval 1 需要。 */\n"
+            "uint8_t Parser_AstShouldFold(const char *pName);\n\n"
+            "/** @brief 该节点是否取首个终结符子节点作标签。"
+            " @retval 1 需要。 */\n"
+            "uint8_t Parser_AstShouldLabel(const char *pName);\n"
+        )
+    text += "\n#endif /* PARSER_H */\n"
+    return text
+
+
+def _generator_parser_token_h_c(token_types, lex_decls=""):
+    """生成 parser_token.h：Token 枚举、ParserToken_T 与名称接口。"""
+    text = _file_banner(
+        "parser_token.h", "Token 枚举、ParserToken_T 与 Token 名称接口"
+    )
+    text += "#ifndef PARSER_TOKEN_H\n#define PARSER_TOKEN_H\n\n"
+    text += "#include <stdint.h>\n\n"
+    text += '#include "variable_runtime.h"\n\n'
+    text += token_types + "\n"
+    text += (
+        "/** @brief 取 Token 枚举名。 @param type Token 类型。\n"
+        " *  @retval 只读名字或 NULL。 */\n"
+        "const char *Parser_TokenName(ParserTokenType_T type);\n\n"
+        "/** @brief 把 Token 的文本写进缓冲区。 @param pToken Token。\n"
+        " *  @param pBuffer 输出缓冲区。 @param size 容量。 @retval 无。 */\n"
+        "void Parser_TokenText(const ParserToken_T *pToken, char *pBuffer,\n"
+        "                      uint32_t size);\n"
+    )
+    if lex_decls:
+        text += "\n" + lex_decls
+    text += "\n#endif /* PARSER_TOKEN_H */\n"
+    return text
+
+
+def _generator_parser_token_c(token_impl):
+    """生成 parser_token.c：Token 名称表与 Token 文本辅助函数。"""
+    text = _file_banner(
+        "parser_token.c", "Token 名称表与 Token 文本辅助函数"
+    )
+    text += "#include <stdio.h>\n#include <string.h>\n\n"
+    text += '#include "parser_token.h"\n\n'
+    text += token_impl
+    return text
+
+
+def _generator_parser_table_c(tree, table_text, tree_tables_text):
+    """生成 parser_table.c：分析表 / 产生式表 / 树元数据表。"""
+    text = _file_banner(
+        "parser_table.c",
+        "预测分析表 / ACTION / GOTO / 产生式表 / 树元数据表"
+    )
+    text += "#include <stdint.h>\n\n"
+    text += '#include "parser.h"\n\n'
+    # 分文件布局下表不再是 static：parser.c 通过 extern 引用它们
+    text += re.sub(r"(?m)^static const ", "const ", table_text)
+    if tree:
+        text += "\n"
+        text += re.sub(r"(?m)^static const ", "const ", tree_tables_text)
+    return text
+
+
+def _generator_main_c(tree=False):
+    """生成 main.c：调用 Parser_RunText 的独立演示程序。"""
+    text = _file_banner("main.c", "演示 main，调用 Parser_RunText")
+    text += "#include <stdio.h>\n\n"
+    text += '#include "parser.h"\n'
+    text += _generator_demo_main_c(standalone=True, tree=tree)
+    return text
+
+
+def _generator_result_md(mode, tree, ast_skip, ast_fold, ast_label,
+                         source_name, report_text, var_max_count,
+                         analysis=None, lex_spec=None):
+    """生成 RESULT.md：生成信息、产物清单、编译运行说明与分析报告。"""
+    mode_label = {"slr": "SLR(1)", "lalr": "LALR(1)"}.get(mode, "LL(1)")
+    ast_names = []
+    for name, values in (("skip", ast_skip), ("fold", ast_fold),
+                         ("label", ast_label)):
+        if values:
+            ast_names.append("%s: %s" % (name, " ".join(sorted(values))))
+    priority = (analysis or {}).get("priority") or {}
+    lex_spec = _normalize_lex_spec(lex_spec)
+    precedence = priority.get("precedence") or {}
+    associativity = priority.get("associativity") or {}
+    prec_text = "；".join(
+        "%%%s %s" % (
+            {"left": "left", "right": "right",
+             "nonassoc": "nonassoc"}.get(associativity.get(token), "left"),
+            token,
+        )
+        for token in sorted(precedence, key=lambda name: (precedence[name],
+                                                          name))
+    )
+    lines = [
+        "# 生成结果",
+        "",
+        "## 生成信息",
+        "",
+        "| 项目 | 值 |",
+        "| --- | --- |",
+        "| 生成器 | Chapter-script-engine/parser.py（单文件 "
+        "LL(1) / SLR(1) / LALR(1) 生成器） |",
+        "| 源文法 | %s |" % (source_name or "(命令行内联文法)"),
+        "| 生成模式 | %s |" % mode_label,
+        "| %%tree | %s |" % ("启用" if tree else "未启用"),
+        "| %%ast_* | %s |" % ("；".join(ast_names) if ast_names else "未启用"),
+        "| 变量表容量 | %d |" % int(var_max_count),
+        "| 优先级指令 | %s |" % (prec_text or "未使用"),
+        "| %%expect | %s |" % (
+            priority.get("expect_conflicts")
+            if priority.get("expect_conflicts") is not None else "未使用"
+        ),
+        "| %%regex | %s |" % ("；".join(
+            "%s: %s" % (name, pattern)
+            for name, pattern in lex_spec["regex"].items()
+        ) or "未使用"),
+        "| %%identifier | %s |" % (lex_spec["identifier"] or "未使用"),
+        "",
+        "## 产物文件",
+        "",
+    ]
+    for name in PROJECT_FILES:
+        lines.append("- `%s`" % name)
+    lines += [
+        "",
+        "## 编译运行",
+        "",
+        "```sh",
+        "# 在 out/ 目录下整体编译（main.c 是演示程序，不需要时删掉即可）",
+        "gcc -std=c99 -Wall -Wextra -O2 *.c -lm -o parser_demo",
+        "./parser_demo                 # 用默认输入",
+        './parser_demo "<你的输入>"    # 用命令行输入',
+        "```",
+        "",
+        "只当解析库用时去掉 `main.c`；链接时 parser.c 需要 parser_token.c、",
+        "parser_table.c、variable_runtime.c 一起编译。",
+        "",
+        "## 自定义分配器",
+        "",
+        "运行时与解析器的所有动态内存都走 `parser_config.h` 里的四个宏，",
+        "默认是 C 运行库的 malloc/calloc/realloc/free：",
+        "",
+        "```c",
+        "#define PARSER_MALLOC(size)        MyPool_Alloc((size))",
+        "#define PARSER_CALLOC(count, size) MyPool_Calloc((count), (size))",
+        "#define PARSER_REALLOC(ptr, size)  MyPool_Realloc((ptr), (size))",
+        "#define PARSER_FREE(pointer)       MyPool_Free((pointer))",
+        "```",
+        "",
+        "改成自己的分配器后重新编译即可，parser.c / variable_runtime.c 不用动。",
+        "",
+    ]
+    if tree:
+        lines += [
+            "文法是纯 `%tree`（不写语义动作）时 `Parser_RunText` 没有求值结果，"
+            "演示程序会自动改打印语法树。直接用 API 拿 CST：",
+            "",
+            "```c",
+            'VarValue_T *pTree = Parser_ParseTreeText("...");',
+            "if (pTree != NULL) { Parser_TreePrint(pTree); }",
+            "Parser_TreeFree(pTree);",
+            "```",
+            "",
+        ]
+    lines += [
+        "## 冲突消解",
+        "",
+    ]
+    resolutions = (analysis or {}).get("resolutions") or []
+    if resolutions:
+        for entry in resolutions:
+            lines.append("- %s" % _resolution_line(entry))
+    else:
+        lines.append("（无）")
+    lines += [
+        "",
+        "## 未消解冲突",
+        "",
+    ]
+    unresolved = (analysis or {}).get("unresolved") or []
+    if unresolved:
+        for item in unresolved:
+            lines.append("- %s" % item["text"])
+    else:
+        lines.append("（无）")
+    lines += [""]
+    lines += ["## 文法分析报告", "", "```text",
+              report_text.rstrip(), "```", ""]
+    return "\n".join(lines)
+
+
+def generate_parser_project(grammar, tokens, variables=None, token_defs=None,
+                            tree=False, var_max_count=32,
+                            ast_skip=None, ast_fold=None, ast_label=None,
+                            mode="ll1", source_name=None, report_text="",
+                            priority=None, lex_spec=None):
+    """生成分文件工程，返回 {文件名: 文本}（顺序与 out/ 目录一致）。
+
+    与 generate_parser_c 共用同一份拼装逻辑，这里按 __SEC_*__ 分段标记把
+    Token 模块、分析表、树元数据表、演示 main 拆到各自文件，
+    parser.c 只留词法器、上下文、语义动作、主循环与树 / AST 实现。
+    """
+    mode = str(mode or "ll1").lower()
+    if mode not in ("ll1", "slr", "lalr"):
+        raise GrammarLoadError(
+            "未知的生成模式：%s（只支持 ll1、slr 或 lalr）" % mode
+        )
+    tree = bool(tree)
+    ast_skip = set(ast_skip or ())
+    ast_fold = set(ast_fold or ())
+    ast_label = set(ast_label or ())
+    raw, replacements = _assemble_parser_code(
+        grammar, tokens, variables, token_defs, tree, var_max_count,
+        ast_skip, ast_fold, ast_label, mode, priority, lex_spec
+    )
+    analysis = _parser_analysis(grammar, tokens, mode, priority)
+    defines = _extract_section(raw, "DEFINES")
+    token_types = _extract_section(raw, "TOKEN_TYPES")
+    token_impl = _extract_section(raw, "TOKEN_IMPL")
+    error_type = _extract_section(raw, "ERROR_TYPE")
+    # 表先展开再进 parser_table.c：定义在分文件布局里不再是 static
+    tables = _apply_markers(_extract_section(raw, "TABLES"), replacements)
+    tree_tables = _apply_markers(
+        _extract_section(raw, "TREE_TABLES"), replacements
+    ) if tree else ""
+    ast_enabled = bool(ast_skip or ast_fold or ast_label)
+
+    # parser.c：去掉 Token 模块、表与演示 main，换成对 parser_table.c 的声明
+    body = raw[raw.index(_section_marker("RUNTIME_H", "BEGIN")):]
+    parser_c = _replace_section(body, "RUNTIME_H", "")
+    parser_c = _replace_section(parser_c, "RUNTIME_C", "")
+    parser_c = _replace_section(parser_c, "DEFINES", "")
+    parser_c = _replace_section(parser_c, "TOKEN_TYPES", "")
+    parser_c = _replace_section(parser_c, "TOKEN_IMPL", "")
+    parser_c = _replace_section(parser_c, "ERROR_TYPE", "")
+    parser_c = _replace_section(
+        parser_c, "TABLES", _generator_table_decls_c(mode, analysis)
+    )
+    parser_c = _replace_section(
+        parser_c, "TREE_TABLES", _generator_tree_table_decls_c(mode, tree)
+    )
+    parser_c = _replace_section(parser_c, "DEMO", "")
+    parser_c = (
+        _file_banner(
+            "parser.c",
+            "词法器、ParserCtx_T、语义动作、主循环、树 API、AST 元数据"
+        )
+        + "#include <ctype.h>\n#include <errno.h>\n#include <math.h>\n"
+        + "#include <stdint.h>\n#include <stdio.h>\n#include <stdlib.h>\n"
+        + "#include <string.h>\n\n"
+        + '#include "parser.h"\n#include "parser_token.h"\n'
+        + parser_c
+    )
+
+    project = {
+        "parser_config.h": _generator_parser_config_h_c(),
+        "parser.h": _generator_parser_h_c(defines, error_type, tree,
+                                          ast_enabled),
+        "parser.c": parser_c,
+        "parser_token.h": _generator_parser_token_h_c(
+            token_types,
+            _apply_markers(replacements.get("__LEX_DFA_DECLS__", ""),
+                           replacements),
+        ),
+        "parser_token.c": _generator_parser_token_c(token_impl),
+        "variable_runtime.h": _with_allocator_include(VARIABLE_RUNTIME_HEADER),
+        "variable_runtime.c": _with_allocator_macros(VARIABLE_RUNTIME_SOURCE),
+        "parser_table.c": _generator_parser_table_c(
+            tree, tables, tree_tables
+        ),
+        "main.c": _generator_main_c(tree),
+        "RESULT.md": _generator_result_md(
+            mode, tree, ast_skip, ast_fold, ast_label,
+            source_name, report_text, var_max_count, analysis, lex_spec
+        ),
+    }
+    return {name: _collapse_blank_lines(_apply_markers(project[name],
+                                                       replacements))
+            for name in PROJECT_FILES}
+
+
+def write_parser_project(out_dir, project):
+    """把 generate_parser_project 的产物写进 out_dir（UTF-8，自动建目录）。"""
+    if not os.path.isdir(out_dir):
+        os.makedirs(out_dir)
+    written = []
+    for name in PROJECT_FILES:
+        path = os.path.join(out_dir, name)
+        with io.open(path, "w", encoding="utf-8", newline="\n") as file_handle:
+            file_handle.write(project[name])
+        written.append(path)
+    return written
 
 
 def main():
@@ -6760,6 +8733,14 @@ def main():
     )
     parser.add_argument("-o", "--output", default="parser.c",
                         help="输出 C 文件名")
+    parser.add_argument("--out-dir", default=None,
+                        help="按分文件布局输出到该目录：parser_config.h / "
+                             "parser.h / parser.c / parser_token.h / "
+                             "parser_token.c / "
+                             "variable_runtime.h / variable_runtime.c / "
+                             "parser_table.c / main.c / RESULT.md")
+    parser.add_argument("--split", action="store_true",
+                        help="等价于 --out-dir out（分文件布局）")
     parser.add_argument("--grammar-file", default=None,
                         help="文法文件（仅支持 .gram 文本格式）")
     parser.add_argument("--report", default=None,
@@ -6767,1467 +8748,10 @@ def main():
     parser.add_argument("--mode", choices=("ll1", "slr", "lalr"), default=None,
                         help="生成模式（默认 ll1；与 .gram 的 %%mode 冲突时报错）")
     parser.add_argument("--dump-lr-automaton", action="store_true",
-                        help="打印 SLR(1) 的 LR(0) 状态、项集与转移")
+                        help="打印 SLR(1) 的 LR(0) / LALR(1) 的状态、项集与转移")
     parser.add_argument("--dump-slr-tables", action="store_true",
-                        help="打印 SLR(1) 的 ACTION / GOTO 表")
-    parser.add_argument("--self-test", action="store_true",
-                        help="运行生成器内置回归测试")
+                        help="打印 SLR(1) / LALR(1) 的 ACTION / GOTO 表")
     args = parser.parse_args()
-
-    # 内置测试不生成用户文件，便于单文件工具随时自检
-    if args.self_test:
-        cfg = load_grammar_text(
-            '%define EQ "==|="\n'
-            '%start root\n'
-            'root := NUMBER { $$ = $1; }\n'
-        )
-        assert cfg["tokens"][:3] == [
-            "STRING", "NUMBER", "VARIABLE"
-        ]
-        assert cfg["token_defs"]["EQ"] == ["==", "="]
-        analysis = prepare_grammar(cfg["grammar"], cfg["tokens"])
-        report = format_grammar_report(analysis)
-        assert "[最终产生式]" in report
-        assert "FIRST(root) = { NUMBER }" in report
-        assert "FOLLOW(root) = { END }" in report
-        assert "M[root, NUMBER]" in report
-        try:
-            load_grammar_text(
-                '%define A "+"\n%define B "+"\n'
-                '%start root\nroot := NUMBER { $$ = $1; }\n'
-            )
-            raise AssertionError("重复固定字面量没有被拒绝")
-        except GrammarLoadError:
-            pass
-        nullable_cycle_cfg = load_grammar_text(
-            '%start a\n'
-            'a := b c { $$ = $2; }\n'
-            'b := %empty { $$ = int32(0); }\n'
-            'c := a { $$ = $1; }\n'
-        )
-        try:
-            prepare_grammar(
-                nullable_cycle_cfg["grammar"], nullable_cycle_cfg["tokens"]
-            )
-            raise AssertionError("可空前缀后的间接左递归没有被拒绝")
-        except ValueError as error:
-            assert "间接左递归" in str(error)
-        limited_cfg = load_grammar_text(
-            '%define ASSIGN ":="\n'
-            '%var_max_count 2\n'
-            '%start root\n'
-            'root := VARIABLE ASSIGN NUMBER '
-            '{ def[$1, int32] = $3; $$ = [$1]; }\n'
-        )
-        assert limited_cfg["var_max_count"] == 2
-        limited_code = generate_parser_c(
-            limited_cfg["grammar"], limited_cfg["tokens"], {},
-            limited_cfg["token_defs"], var_max_count=2
-        )
-        assert "#define PARSER_MAX_VARIABLES 2u" in limited_code
-        _compile_and_run_generated_test(limited_code, r'''
-/** @file generated_harness.c @brief 验证声明与 %var_max_count 容量。 */
-#include "generated_parser.c"
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pValue = Parser_RunText("a:=1");
-    int32_t result = 0;
-    if ((pValue == NULL) ||
-        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
-        (result != 1)) { return 1; }
-    Var_Free(pValue);
-    pValue = Parser_RunText("b:=2");
-    if (pValue == NULL) { return 2; }
-    Var_Free(pValue);
-    if (Parser_RunText("c:=3") != NULL) { return 3; }
-    if (Parser_GetLastError()->code != VAR_RUNTIME_ERR_MEMORY) { return 4; }
-    return 0;
-}
-''')
-        assign_cfg = load_grammar_text(
-            '%define ASSIGN ":="\n'
-            '%var_max_count 2\n'
-            '%var X int32 = 0\n'
-            '%start root\n'
-            'root := VARIABLE ASSIGN NUMBER '
-            '{ [$1] = $3; $$ = [$1]; }\n'
-        )
-        assign_code = generate_parser_c(
-            assign_cfg["grammar"], assign_cfg["tokens"],
-            assign_cfg["variables"], assign_cfg["token_defs"],
-            var_max_count=2
-        )
-        _compile_and_run_generated_test(assign_code, r'''
-/** @file generated_harness.c @brief 验证已有变量固定类型赋值。 */
-#include "generated_parser.c"
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pValue = Parser_RunText("X:=42");
-    int32_t result = 0;
-    if ((pValue == NULL) ||
-        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
-        (result != 42)) { return 1; }
-    Var_Free(pValue);
-    if (Parser_RunText("Y:=1") != NULL) { return 2; }
-    if (Parser_GetLastError()->code != PARSER_ERR_UNDEFINED) { return 3; }
-    if (Parser_DeleteVariable("X") != PARSER_ERR_SYSTEM) { return 4; }
-    return 0;
-}
-''')
-        generated_code = generate_parser_c(
-            cfg["grammar"], cfg["tokens"], {}, cfg["token_defs"]
-        )
-        assert "Parser_ParseLoop" in generated_code
-        assert "static ParseResult_T Parse_" not in generated_code
-        assert "Parser_RunText" in generated_code
-        assert "static ParserCtx_T s_ParserContext;" in generated_code
-        assert "ParserCtx_T context;" not in generated_code
-        assert '#include "variable_runtime.h"' not in generated_code
-        assert "Var_CreateInt" in generated_code
-        assert "Var_TypeName" in generated_code
-        assert "int main(" in generated_code
-        assert "#ifndef PARSER_SKIP_DEMO_MAIN" in generated_code
-        tree_generated_code = generate_parser_c(
-            cfg["grammar"], cfg["tokens"], {}, cfg["token_defs"], tree=True
-        )
-        assert "Parser_ParseTreeText" in tree_generated_code
-        assert "s_ParserTreeProdStart" in tree_generated_code
-        _compile_and_run_generated_test(tree_generated_code, r'''
-/** @file generated_harness.c @brief 验证 %tree 生成的通用语法树 API。 */
-#include <string.h>
-#include "generated_parser.c"
-
-/** @brief 解析文本并检查根节点。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pTree = Parser_ParseTreeText("1");
-    VarValue_T *pChildren = NULL;
-    if (pTree == NULL) { return 1; }
-    if (strcmp(Parser_TreeGetName(pTree), "root") != 0) { return 2; }
-    pChildren = Parser_TreeGetChildren(pTree);
-    if ((pChildren == NULL) || (pChildren->u.array.length != 1u)) {
-        return 3;
-    }
-    if (strcmp(Parser_TreeGetName(Var_ArrayGet(pChildren, 0u)),
-               "NUMBER") != 0) { return 4; }
-    Parser_TreeFree(pTree);
-    return 0;
-}
-''')
-        _compile_and_run_generated_test(generated_code, r'''
-/**
- * @file    generated_harness.c
- * @brief   验证生成式 Lexer 的数字动态类型。
- */
-#include "generated_parser.c"
-
-/** @brief 执行动态数字测试。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pValue = Parser_RunText("1");
-    if ((pValue == NULL) || (pValue->type != VAR_TYPE_INT)) { return 1; }
-    Var_Free(pValue);
-    pValue = Parser_RunText("1u");
-    if ((pValue == NULL) || (pValue->type != VAR_TYPE_UINT32)) { return 2; }
-    Var_Free(pValue);
-    pValue = Parser_RunText("1.2");
-    if ((pValue == NULL) || (pValue->type != VAR_TYPE_FLOAT)) { return 3; }
-    Var_Free(pValue);
-    pValue = Parser_RunText("1e3d");
-    if ((pValue == NULL) || (pValue->type != VAR_TYPE_DOUBLE)) { return 4; }
-    Var_Free(pValue);
-    if (Parser_RunText("1.2u") != NULL) { return 5; }
-    if ((Parser_GetLastError()->code != PARSER_ERR_LEXER) ||
-        (Parser_GetLastError()->line != 1u) ||
-        (Parser_GetLastError()->column != 1u)) { return 6; }
-    return 0;
-}
-''')
-        _compile_and_run_generated_test(generated_code, r'''
-/** @file generated_harness.c @brief 验证旧版 Token 数组源码兼容性。 */
-#include "generated_parser.c"
-/** @brief 使用旧 value/name 字段解析数字。 @retval 0 表示通过。 */
-int main(void)
-{
-    ParserToken_T tokens[1] = { 0 };
-    VarValue_T *pValue = NULL;
-    int32_t result = 0;
-    tokens[0].type = TOKEN_NUMBER;
-    tokens[0].value = 7;
-    tokens[0].name = "legacy";
-    pValue = Parser_Run(tokens, 1u);
-    if ((pValue == NULL) ||
-        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
-        (result != 7)) { return 1; }
-    Var_Free(pValue);
-    return 0;
-}
-''')
-        expression_cfg = load_grammar_text(
-            '%define PLUS "+"\n'
-            '%define EQ "==|="\n'
-            '%start expr\n'
-            'expr := expr PLUS atom { $$ = $1 + $3; }\n'
-            'expr := atom { $$ = $1; }\n'
-            'atom := NUMBER { $$ = $1; }\n'
-        )
-        expression_code = generate_parser_c(
-            expression_cfg["grammar"], expression_cfg["tokens"], {},
-            expression_cfg["token_defs"]
-        )
-        _compile_and_run_generated_test(expression_code, r'''
-/** @file generated_harness.c @brief 验证直接左递归的非递归执行。 */
-#include "generated_parser.c"
-
-/** @brief 执行表达式测试。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pValue = Parser_RunText("1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1+1");
-    int32_t result = 0;
-    if ((pValue == NULL) ||
-        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
-        (result != 200)) { return 1; }
-    Var_Free(pValue);
-    return 0;
-}
-''', sanitize=True)
-        _compile_and_run_generated_demo(expression_code, ["1+1+1+1+1"])
-        left_assoc_cfg = load_grammar_text(
-            '%define PLUS "+"\n'
-            '%define MINUS "-"\n'
-            '%define STAR "*"\n'
-            '%define SLASH "/"\n'
-            '%define LPAREN "("\n'
-            '%define RPAREN ")"\n'
-            '%start expr\n'
-            'expr := expr PLUS term { $$ = $1 + $3; }\n'
-            'expr := expr MINUS term { $$ = $1 - $3; }\n'
-            'expr := term { $$ = $1; }\n'
-            'term := term STAR factor { $$ = $1 * $3; }\n'
-            'term := term SLASH factor { $$ = $1 / $3; }\n'
-            'term := factor { $$ = $1; }\n'
-            'factor := NUMBER { $$ = $1; }\n'
-            'factor := LPAREN expr RPAREN { $$ = $2; }\n'
-        )
-        left_assoc_code = generate_parser_c(
-            left_assoc_cfg["grammar"], left_assoc_cfg["tokens"], {},
-            left_assoc_cfg["token_defs"]
-        )
-        assert "Parser_ParseLoop" in left_assoc_code
-        assert "static ParseResult_T Parse_" not in left_assoc_code
-        _compile_and_run_generated_test(left_assoc_code, r'''
-/** @file generated_harness.c @brief 验证多级左递归与嵌套括号的左结合。 */
-#include "generated_parser.c"
-
-/** @brief 解析文本并核对整型结果。 @param pText 输入。 @param expected 期望值。 @retval 0 表示通过。 */
-static int RunLeftAssocCase(const char *pText, int32_t expected)
-{
-    VarValue_T *pValue = Parser_RunText(pText);
-    int32_t result = 0;
-    if ((pValue == NULL) ||
-        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
-        (result != expected)) { return 1; }
-    Var_Free(pValue);
-    return 0;
-}
-
-/** @brief 执行左结合测试。 @retval 0 表示通过。 */
-int main(void)
-{
-    if (RunLeftAssocCase("10-3-2", 5) != 0) { return 1; }
-    if (RunLeftAssocCase("100-20/5", 96) != 0) { return 2; }
-    if (RunLeftAssocCase("(10-3)*2", 14) != 0) { return 3; }
-    if (RunLeftAssocCase("2*(10-3)", 14) != 0) { return 4; }
-    if (RunLeftAssocCase("(10-3)-(4-2)", 5) != 0) { return 5; }
-    if (RunLeftAssocCase("2*3+4*5", 26) != 0) { return 6; }
-    return 0;
-}
-''', sanitize=True)
-        string_cfg = load_grammar_text(
-            '%start root\nroot := STRING { $$ = $1; }\n'
-        )
-        string_code = generate_parser_c(
-            string_cfg["grammar"], string_cfg["tokens"], {},
-            string_cfg["token_defs"]
-        )
-        _compile_and_run_generated_test(string_code, r'''
-/** @file generated_harness.c @brief 验证默认字符串 Token。 */
-#include <string.h>
-#include "generated_parser.c"
-
-/** @brief 执行字符串测试。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pValue = Parser_RunText("\"a\\n\"");
-    const char *pText = NULL;
-    if ((pValue == NULL) ||
-        (Var_GetString(pValue, &pText) != VAR_RUNTIME_OK) ||
-        (strcmp(pText, "a\n") != 0)) { return 1; }
-    Var_Free(pValue);
-    if (Parser_RunText("\"a\\0b\"") != NULL) { return 2; }
-    if (Parser_GetLastError()->code != PARSER_ERR_LEXER) { return 3; }
-    return 0;
-}
-''')
-        define_cfg = load_grammar_text(
-            '%define ASSIGN ":="\n'
-            '%start root\n'
-            'root := VARIABLE ASSIGN NUMBER '
-            '{ def[$1] = $3; $$ = [$1]; }\n'
-        )
-        define_code = generate_parser_c(
-            define_cfg["grammar"], define_cfg["tokens"], {},
-            define_cfg["token_defs"]
-        )
-        _compile_and_run_generated_test(define_code, r'''
-/** @file generated_harness.c @brief 验证普通变量重定义/覆盖类型/删除。 */
-#include "generated_parser.c"
-
-/** @brief 执行变量定义测试。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pValue = Parser_RunText("x:=1.9");
-    float floatResult = 0.0f;
-    int32_t result = 0;
-    if ((pValue == NULL) || (pValue->type != VAR_TYPE_FLOAT) ||
-        (Var_GetFloat(pValue, &floatResult) != VAR_RUNTIME_OK) ||
-        (floatResult != 1.9f)) { return 1; }
-    Var_Free(pValue);
-    pValue = Parser_RunText("x:=2");
-    if ((pValue == NULL) || (pValue->type != VAR_TYPE_INT) ||
-        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
-        (result != 2)) { return 2; }
-    Var_Free(pValue);
-    if (Parser_DeleteVariable("x") != PARSER_OK) { return 3; }
-    pValue = Parser_RunText("x:=3.5");
-    if ((pValue == NULL) || (pValue->type != VAR_TYPE_FLOAT)) { return 4; }
-    Var_Free(pValue);
-    return 0;
-}
-''')
-        assign_cfg = load_grammar_text(
-            '%define ASSIGN ":="\n'
-            '%start root\n'
-            '%var x int32 = 0\n'
-            'root := VARIABLE ASSIGN NUMBER '
-            '{ [$1] = $3; $$ = [$1]; }\n'
-        )
-        assign_code = generate_parser_c(
-            assign_cfg["grammar"], assign_cfg["tokens"],
-            assign_cfg["variables"], assign_cfg["token_defs"]
-        )
-        _compile_and_run_generated_test(assign_code, r'''
-/** @file generated_harness.c @brief 验证固定类型赋值。 */
-#include "generated_parser.c"
-
-/** @brief 执行固定类型赋值测试。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pValue = Parser_RunText("x:=2.8");
-    int32_t result = 0;
-    if ((pValue == NULL) || (pValue->type != VAR_TYPE_INT) ||
-        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
-        (result != 2)) { return 1; }
-    if (Parser_RunText("y:=2") != NULL) { return 2; }
-    if (Parser_GetLastError()->code != PARSER_ERR_UNDEFINED) { return 3; }
-    return 0;
-}
-''')
-        action_error_cfg = load_grammar_text(
-            '%start root\n%var x int32 = 0\n'
-            'root := VARIABLE NUMBER '
-            '{ def[$1] = $2; [$1] = $2; $$ = [$1]; }\n'
-        )
-        action_error_code = generate_parser_c(
-            action_error_cfg["grammar"], action_error_cfg["tokens"],
-            action_error_cfg["variables"], action_error_cfg["token_defs"]
-        )
-        _compile_and_run_generated_test(action_error_code, r'''
-/** @file generated_harness.c @brief 验证语义动作保留首个错误。 */
-#include "generated_parser.c"
-/** @brief 执行多动作错误测试。 @retval 0 表示通过。 */
-int main(void)
-{
-    if (Parser_RunText("x 2") != NULL) { return 1; }
-    if (Parser_GetLastError()->code != PARSER_ERR_SYSTEM) { return 2; }
-    return 0;
-}
-''')
-        delete_cfg = load_grammar_text(
-            '%start root\n'
-            '%var x int32 = 0\n'
-            'root := VARIABLE '
-            '{ delete[$1]; $$ = int32(1); }\n'
-        )
-        delete_code = generate_parser_c(
-            delete_cfg["grammar"], delete_cfg["tokens"],
-            delete_cfg["variables"], delete_cfg["token_defs"]
-        )
-        _compile_and_run_generated_test(delete_code, r'''
-/** @file generated_harness.c @brief 验证脚本 delete 不能删除系统变量。 */
-#include "generated_parser.c"
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    if (Parser_RunText("x") != NULL) { return 1; }
-    if (Parser_GetLastError()->code != PARSER_ERR_SYSTEM) { return 2; }
-    return 0;
-}
-''')
-        complex_cfg = load_grammar_text(
-            '%start root\n'
-            '%var a struct { kp float } = { kp: 2.0 }\n'
-            '%var b struct { kp float } = { kp: 5.0 }\n'
-            'root := VARIABLE var_ref var_ref '
-            '{ def[$1, $2] = $3; $$ = [$1]; }\n'
-            'var_ref := VARIABLE { $$ = [$1]; }\n'
-        )
-        complex_code = generate_parser_c(
-            complex_cfg["grammar"], complex_cfg["tokens"],
-            complex_cfg["variables"], complex_cfg["token_defs"]
-        )
-        _compile_and_run_generated_test(complex_code, r'''
-/** @file generated_harness.c @brief 验证脚本层复杂结构体类型定义。 */
-#include "generated_parser.c"
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pValue = Parser_RunText("x a b");
-    VarValue_T *pField = NULL;
-    float kp = 0.0f;
-    if ((pValue == NULL) || (pValue->type != VAR_TYPE_STRUCT)) { return 1; }
-    pField = Var_StructGetField(pValue, "kp");
-    if ((pField == NULL) ||
-        (Var_GetFloat(pField, &kp) != VAR_RUNTIME_OK) ||
-        (kp != 5.0f)) { return 2; }
-    Var_Free(pValue);
-    return 0;
-}
-''')
-        longest_cfg = load_grammar_text(
-            '%define EQ "==|="\n%start root\n'
-            'root := NUMBER EQ NUMBER { $$ = $1; }\n'
-        )
-        longest_code = generate_parser_c(
-            longest_cfg["grammar"], longest_cfg["tokens"], {},
-            longest_cfg["token_defs"]
-        )
-        _compile_and_run_generated_test(longest_code, r'''
-/** @file generated_harness.c @brief 验证固定运算符最长匹配。 */
-#include "generated_parser.c"
-/** @brief 执行最长匹配测试。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pFirst = Parser_RunText("1==2");
-    VarValue_T *pSecond = Parser_RunText("1=2");
-    if ((pFirst == NULL) || (pSecond == NULL)) { return 1; }
-    Var_Free(pFirst);
-    Var_Free(pSecond);
-    return 0;
-}
-''')
-        keyword_cfg = load_grammar_text(
-            '%define IF "if"\n%start root\n'
-            'root := IF { $$ = int32(1); }\n'
-        )
-        keyword_code = generate_parser_c(
-            keyword_cfg["grammar"], keyword_cfg["tokens"], {},
-            keyword_cfg["token_defs"]
-        )
-        _compile_and_run_generated_test(keyword_code, r'''
-/** @file generated_harness.c @brief 验证关键字优先级与标识符边界。 */
-#include "generated_parser.c"
-/** @brief 执行关键字边界测试。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pValue = Parser_RunText("if");
-    if (pValue == NULL) { return 1; }
-    Var_Free(pValue);
-    if (Parser_RunText("ifx") != NULL) { return 2; }
-    if (Parser_GetLastError()->code != PARSER_ERR_SYNTAX) { return 3; }
-    return 0;
-}
-''')
-        type_copy_cfg = load_grammar_text(
-            '%start root\n'
-            'root := VARIABLE NUMBER NUMBER '
-            '{ def[$1, $2] = $3; $$ = [$1]; }\n'
-        )
-        type_copy_code = generate_parser_c(
-            type_copy_cfg["grammar"], type_copy_cfg["tokens"], {},
-            type_copy_cfg["token_defs"]
-        )
-        _compile_and_run_generated_test(type_copy_code, r'''
-/** @file generated_harness.c @brief 验证从语义值复制类型。 */
-#include "generated_parser.c"
-/** @brief 执行类型复制测试。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pValue = Parser_RunText("typed 0.0 2");
-    float result = 0.0f;
-    if ((pValue == NULL) || (pValue->type != VAR_TYPE_FLOAT) ||
-        (Var_GetFloat(pValue, &result) != VAR_RUNTIME_OK) ||
-        (result != 2.0f)) { return 1; }
-    return 0;
-}
-''')
-        array_cfg = load_grammar_text(
-            '%token SOURCE\n%start root\n'
-            'root := VARIABLE SOURCE '
-            '{ def[$1, int32[2]] = $2; $$ = [$1]; }\n'
-        )
-        array_code = generate_parser_c(
-            array_cfg["grammar"], array_cfg["tokens"], {},
-            array_cfg["token_defs"]
-        )
-        _compile_and_run_generated_test(array_code, r'''
-/** @file generated_harness.c @brief 验证显式数组类型定义。 */
-#include "generated_parser.c"
-/** @brief 执行数组类型测试。 @retval 0 表示通过。 */
-int main(void)
-{
-    ParserToken_T tokens[2] = { 0 };
-    VarValue_T *pSource = Var_CreateArray();
-    VarValue_T *pResult = NULL;
-    int32_t first = 0;
-    Var_ArrayPush(pSource, Var_CreateFloat(1.8f));
-    Var_ArrayPush(pSource, Var_CreateFloat(2.2f));
-    tokens[0].type = TOKEN_VARIABLE;
-    tokens[0].pName = "arrayValue";
-    tokens[1].type = TOKEN_SOURCE;
-    tokens[1].pValue = pSource;
-    pResult = Parser_Run(tokens, 2u);
-    if ((pResult == NULL) || (pResult->type != VAR_TYPE_ARRAY) ||
-        (Var_GetInt32(Var_ArrayGet(pResult, 0u), &first) != VAR_RUNTIME_OK) ||
-        (first != 1)) { return 1; }
-    Var_Free(pSource);
-    return 0;
-}
-''')
-        calc_cfg = load_grammar_text(DEFALUT_LOAD_TEXT)
-        calc_code = generate_parser_c(
-            calc_cfg["grammar"], calc_cfg["tokens"], calc_cfg["variables"],
-            calc_cfg["token_defs"]
-        )
-        _compile_and_run_generated_test(calc_code, r'''
-/** @file generated_harness.c @brief 验证正式示例的优先级与变量读取。 */
-#include "generated_parser.c"
-/** @brief 执行正式示例测试。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pValue = Parser_RunText("X+2*3");
-    int32_t result = 0;
-    if ((pValue == NULL) ||
-        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
-        (result != 6)) { return 1; }
-    Var_Free(pValue);
-    pValue = Parser_RunText("X");
-    if ((pValue == NULL) ||
-        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
-        (result != 0)) { return 2; }
-    Var_Free(pValue);
-    pValue = Parser_RunText("X");
-    if ((pValue == NULL) ||
-        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
-        (result != 0)) { return 3; }
-    Var_Free(pValue);
-    return 0;
-}
-''')
-        # T2：省略大括号的单行动作与 { ... } 完全等价
-        brace_cfg = load_grammar_text(
-            '%start root\n'
-            'root := NUMBER { $$ = $1; }\n'
-        )
-        inline_cfg = load_grammar_text(
-            '%start root\n'
-            'root := NUMBER $$ = $1;\n'
-        )
-        assert (brace_cfg["grammar"]["rules"] ==
-                inline_cfg["grammar"]["rules"])
-        statement_cfg = load_grammar_text(
-            '%start root\n'
-            'root := NUMBER $$ = $1; foo($2);\n'
-        )
-        assert (statement_cfg["grammar"]["rules"]["root"][0]["action"] ==
-                "$$ = $1; foo($2);")
-        multiline_cfg = load_grammar_text(
-            '%define PLUS "+"\n'
-            '%start root\n'
-            'root := NUMBER\n'
-            '        PLUS\n'
-            '        NUMBER\n'
-            '        $$ = $1 + $3;\n'
-        )
-        multiline_prod = multiline_cfg["grammar"]["rules"]["root"][0]
-        assert multiline_prod["rhs"] == ["NUMBER", "PLUS", "NUMBER"]
-        assert multiline_prod["action"] == "$$ = $1 + $3;"
-        nested_cfg = load_grammar_text(
-            '%start root\n'
-            'root := NUMBER {\n'
-            '    if ($1) { $$ = int32(1); }\n'
-            '    $$ = int32(2);\n'
-            '}\n'
-        )
-        assert ("int32(2)" in
-                nested_cfg["grammar"]["rules"]["root"][0]["action"])
-        # T3：每条产生式都要有动作，除非文法启用了 %tree
-        try:
-            load_grammar_text(
-                '%start root\n'
-                'root := NUMBER\n'
-            )
-            raise AssertionError("缺少语义动作的规则没有被拒绝")
-        except GrammarLoadError as error:
-            assert "缺少语义动作" in str(error)
-        try:
-            load_grammar_text(
-                '%start root\n'
-                'root := NUMBER { }\n'
-            )
-            raise AssertionError("空动作块没有被拒绝")
-        except GrammarLoadError as error:
-            assert "缺少语义动作" in str(error)
-        tree_empty_cfg = load_grammar_text(
-            '%tree\n'
-            '%start root\n'
-            'root := NUMBER\n'
-        )
-        assert tree_empty_cfg["grammar"]["rules"]["root"][0]["action"] == ""
-        tree_partial_cfg = load_grammar_text(
-            '%tree\n'
-            '%start root\n'
-            'root := NUMBER\n'
-            'stmt := NUMBER $$ = $1;\n'
-        )
-        assert (tree_partial_cfg["grammar"]["rules"]["root"][0]["action"]
-                == "")
-        assert (tree_partial_cfg["grammar"]["rules"]["stmt"][0]["action"]
-                == "$$ = $1;")
-        ast_cfg = load_grammar_text(
-            '%tree\n'
-            '%ast_skip  expr term factor sign\n'
-            '%ast_fold  expr_tail term_tail\n'
-            '%ast_label relational\n'
-            '%start root\n'
-            'root := expr { $$ = $1; }\n'
-            'expr := term expr_tail { $$ = $1; }\n'
-            'expr_tail := %empty { $$ = int32(0); }\n'
-            'term := factor term_tail { $$ = $1; }\n'
-            'term_tail := %empty { $$ = int32(0); }\n'
-            'factor := NUMBER { $$ = $1; }\n'
-            'sign := %empty { $$ = int32(0); }\n'
-            'relational := NUMBER { $$ = $1; }\n'
-        )
-        assert ast_cfg["ast_skip"] == {"expr", "term", "factor", "sign"}
-        assert ast_cfg["ast_fold"] == {"expr_tail", "term_tail"}
-        assert ast_cfg["ast_label"] == {"relational"}
-        ast_code = generate_parser_c(
-            ast_cfg["grammar"], ast_cfg["tokens"], {},
-            ast_cfg["token_defs"],
-            ast_skip=ast_cfg["ast_skip"],
-            ast_fold=ast_cfg["ast_fold"],
-            ast_label=ast_cfg["ast_label"],
-        )
-        assert "s_ParserAstSkipNames[]" in ast_code
-        assert "Parser_AstShouldSkip" in ast_code
-        assert "Parser_AstShouldFold" in ast_code
-        assert "Parser_AstShouldLabel" in ast_code
-        _compile_and_run_generated_test(ast_code, r'''
-/** @file generated_harness.c @brief 验证 %ast_* 元数据查询接口。 */
-#include "generated_parser.c"
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    if (Parser_AstShouldSkip("expr") != 1u) { return 1; }
-    if (Parser_AstShouldSkip("sign") != 1u) { return 2; }
-    if (Parser_AstShouldSkip("root") != 0u) { return 3; }
-    if (Parser_AstShouldFold("term_tail") != 1u) { return 4; }
-    if (Parser_AstShouldFold("expr") != 0u) { return 5; }
-    if (Parser_AstShouldLabel("relational") != 1u) { return 6; }
-    if (Parser_AstShouldLabel("expr") != 0u) { return 7; }
-    if (Parser_AstShouldSkip(NULL) != 0u) { return 8; }
-    return 0;
-}
-''')
-        # 未写 %ast_* 时不应产生任何标记元数据
-        assert "Parser_AstShouldSkip" not in generated_code
-        assert "Parser_AstShouldSkip" not in tree_generated_code
-        # 只写 %ast_skip 时，fold / label 名表为空且查询恒为 0
-        ast_empty_cfg = load_grammar_text(
-            '%ast_skip root\n'
-            '%start root\n'
-            'root := NUMBER { $$ = $1; }\n'
-        )
-        ast_empty_code = generate_parser_c(
-            ast_empty_cfg["grammar"], ast_empty_cfg["tokens"], {},
-            ast_empty_cfg["token_defs"],
-            ast_skip=ast_empty_cfg["ast_skip"],
-        )
-        assert "s_ParserAstFoldNames[] = { NULL };" in ast_empty_code
-        _compile_and_run_generated_test(ast_empty_code, r'''
-/** @file generated_harness.c @brief 验证空 AST 标记表的查询结果。 */
-#include "generated_parser.c"
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    if (Parser_AstShouldSkip("root") != 1u) { return 1; }
-    if (Parser_AstShouldFold("root") != 0u) { return 2; }
-    if (Parser_AstShouldLabel("root") != 0u) { return 3; }
-    return 0;
-}
-''')
-        # %ast_* 名字列表允许换行续写，效果与单行一致
-        wrapped_ast_cfg = load_grammar_text(
-            '%ast_skip  expr term\n'
-            '           statement_list\n'
-            '%ast_fold  expr_tail\n'
-            '%start root\n'
-            'root := expr { $$ = $1; }\n'
-            'expr := NUMBER { $$ = $1; }\n'
-            'term := NUMBER { $$ = $1; }\n'
-            'statement_list := NUMBER { $$ = $1; }\n'
-            'expr_tail := NUMBER { $$ = $1; }\n'
-        )
-        assert wrapped_ast_cfg["ast_skip"] == {
-            "expr", "term", "statement_list"
-        }
-        assert wrapped_ast_cfg["ast_fold"] == {"expr_tail"}
-        try:
-            load_grammar_text(
-                '%ast_skip  expr\n'
-                '%ast_fold  expr\n'
-                '%start root\n'
-                'root := expr { $$ = $1; }\n'
-                'expr := NUMBER { $$ = $1; }\n'
-            )
-            raise AssertionError("重复的 AST 标记没有被拒绝")
-        except GrammarLoadError:
-            pass
-        try:
-            load_grammar_text(
-                '%ast_skip  nonexistent\n'
-                '%start root\n'
-                'root := NUMBER { $$ = $1; }\n'
-            )
-            raise AssertionError("未定义的 AST 标记没有被拒绝")
-        except GrammarLoadError:
-            pass
-        try:
-            load_grammar_text(
-                '%ast_skip\n'
-                '%start root\n'
-                'root := NUMBER { $$ = $1; }\n'
-            )
-            raise AssertionError("空 %ast_skip 没有被拒绝")
-        except GrammarLoadError:
-            pass
-        # %mode：缺省 ll1，显式 %mode ll1 与缺省行为一致，重复声明报错
-        default_mode_cfg = load_grammar_text(
-            '%start root\n'
-            'root := NUMBER { $$ = $1; }\n'
-        )
-        explicit_mode_cfg = load_grammar_text(
-            '%mode ll1\n'
-            '%start root\n'
-            'root := NUMBER { $$ = $1; }\n'
-        )
-        assert default_mode_cfg["mode"] == "ll1"
-        assert default_mode_cfg["mode_declared"] is False
-        assert explicit_mode_cfg["mode"] == "ll1"
-        assert explicit_mode_cfg["mode_declared"] is True
-        assert (default_mode_cfg["grammar"] == explicit_mode_cfg["grammar"])
-        assert (generate_parser_c(
-                    default_mode_cfg["grammar"], default_mode_cfg["tokens"],
-                    {}, default_mode_cfg["token_defs"]) ==
-                generate_parser_c(
-                    explicit_mode_cfg["grammar"], explicit_mode_cfg["tokens"],
-                    {}, explicit_mode_cfg["token_defs"], mode="ll1"))
-        assert (load_grammar_text(
-            '%mode slr\n'
-            '%start root\n'
-            'root := NUMBER { $$ = $1; }\n'
-        )["mode"] == "slr")
-        try:
-            load_grammar_text(
-                '%mode ll1\n'
-                '%mode slr\n'
-                '%start root\n'
-                'root := NUMBER { $$ = $1; }\n'
-            )
-            raise AssertionError("重复 %mode 没有被拒绝")
-        except GrammarLoadError as error:
-            assert "只能声明一次" in str(error)
-        try:
-            load_grammar_text(
-                '%mode lr1\n'
-                '%start root\n'
-                'root := NUMBER { $$ = $1; }\n'
-            )
-            raise AssertionError("非法 %mode 参数没有被拒绝")
-        except GrammarLoadError:
-            pass
-        pl0_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "pl0_ll1.gram"
-        )
-        pl0_cfg = load_grammar_file(pl0_path)
-        assert pl0_cfg["tree"] is True
-        assert pl0_cfg["ast_skip"] == {
-            "expression", "term", "factor", "sign"
-        }
-        assert pl0_cfg["ast_fold"] == {
-            "expr_tail", "term_tail", "statement_list",
-            "statement_list_tail", "const_tail", "var_tail", "proc_part",
-        }
-        assert pl0_cfg["ast_label"] == {"relational"}
-        pl0_code = generate_parser_c(
-            pl0_cfg["grammar"], pl0_cfg["tokens"], pl0_cfg["variables"],
-            pl0_cfg["token_defs"], tree=True,
-            ast_skip=pl0_cfg["ast_skip"],
-            ast_fold=pl0_cfg["ast_fold"],
-            ast_label=pl0_cfg["ast_label"],
-        )
-        _compile_and_run_generated_test(pl0_code, r'''
-/** @file generated_harness.c @brief 验证 PL/0 文法与 AST 标记协同。 */
-#include <string.h>
-#include "generated_parser.c"
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pTree = Parser_ParseTreeText(".");
-    if (pTree == NULL) { return 1; }
-    if (strcmp(Parser_TreeGetName(pTree), "program") != 0) { return 2; }
-    Parser_TreeFree(pTree);
-    if (Parser_AstShouldSkip("expression") != 1u) { return 3; }
-    if (Parser_AstShouldSkip("program") != 0u) { return 4; }
-    if (Parser_AstShouldFold("proc_part") != 1u) { return 5; }
-    if (Parser_AstShouldFold("program") != 0u) { return 6; }
-    if (Parser_AstShouldLabel("relational") != 1u) { return 7; }
-    if (Parser_AstShouldLabel("expression") != 0u) { return 8; }
-    return 0;
-}
-''')
-        def slr_analysis(text):
-            """自测辅助：加载 .gram 文本并构造 SLR(1) 分析表。"""
-            slr_cfg = load_grammar_text(text)
-            return _slr_analyze(slr_cfg["grammar"], slr_cfg["tokens"])
-
-        def slr_generate(text):
-            """自测辅助：加载 .gram 文本并生成 SLR(1) C 代码。"""
-            slr_cfg = load_grammar_text(text)
-            return generate_parser_c(
-                slr_cfg["grammar"], slr_cfg["tokens"],
-                slr_cfg.get("variables", {}), slr_cfg.get("token_defs", {}),
-                tree=bool(slr_cfg.get("tree", False)),
-                ast_skip=slr_cfg.get("ast_skip"),
-                ast_fold=slr_cfg.get("ast_fold"),
-                ast_label=slr_cfg.get("ast_label"),
-                mode="slr",
-            )
-
-        # SLR(1) 表构造：教材经典例子 S := C C; C := c C | d
-        slr_cc = slr_analysis(
-            '%mode slr\n'
-            '%token c d\n'
-            '%start S\n'
-            'S := C C { $$ = int32(0); }\n'
-            'C := c C { $$ = int32(0); }\n'
-            'C := d { $$ = int32(0); }\n'
-        )
-        assert len(slr_cc["states"]) == 7
-        assert len(slr_cc["transitions"]) == 10
-        assert slr_cc["states"][0] == frozenset({
-            (SLR_START_SYMBOL, 0, 0), ("S", 0, 0),
-            ("C", 0, 0), ("C", 1, 0),
-        })
-        # GOTO 是确定性的：I0 / I1 / I3 遇到同一个符号必须合并到同一状态
-        assert (slr_cc["transitions"][(0, "c")] ==
-                slr_cc["transitions"][(1, "c")] ==
-                slr_cc["transitions"][(3, "c")])
-        # 左递归文法不做左递归消除，直接由 LR(0) 自动机接受
-        slr_expr_cfg = load_grammar_text(
-            '%mode slr\n'
-            '%define PLUS "+"\n'
-            '%start expr\n'
-            'expr := expr PLUS term { $$ = $1 + $3; }\n'
-            'expr := term { $$ = $1; }\n'
-            'term := NUMBER { $$ = $1; }\n'
-        )
-        slr_expr = _slr_analyze(
-            slr_expr_cfg["grammar"], slr_expr_cfg["tokens"]
-        )
-        assert len(slr_expr["states"]) == 6
-        assert len(slr_expr["transitions"]) == 6
-        assert slr_expr["states"][0] == frozenset({
-            (SLR_START_SYMBOL, 0, 0), ("expr", 0, 0),
-            ("expr", 1, 0), ("term", 0, 0),
-        })
-        assert (SLR_START_SYMBOL, 0, 1) in slr_expr["states"][
-            slr_expr["transitions"][(0, "expr")]
-        ]
-        # 经典非 SLR 文法（S -> L = R | R, L -> * R | id, R -> L）：
-        # 状态 {R -> L ., S -> L . = R} 上存在移进/归约冲突
-        try:
-            slr_analysis(
-                '%mode slr\n'
-                '%token EQ ID STAR\n'
-                '%start S\n'
-                'S := L EQ R { $$ = int32(0); }\n'
-                'S := R { $$ = int32(0); }\n'
-                'L := STAR R { $$ = int32(0); }\n'
-                'L := ID { $$ = int32(0); }\n'
-                'R := L { $$ = int32(0); }\n'
-            )
-            raise AssertionError("经典非 SLR 文法没有被拒绝")
-        except GrammarLoadError as error:
-            assert "移进/归约冲突" in str(error)
-            assert "状态" in str(error)
-        # 归约/归约冲突：两个不同候选同时归约
-        try:
-            slr_analysis(
-                '%mode slr\n'
-                '%start S\n'
-                'S := A { $$ = int32(0); }\n'
-                'S := B { $$ = int32(0); }\n'
-                'A := NUMBER { $$ = int32(0); }\n'
-                'B := NUMBER { $$ = int32(0); }\n'
-            )
-            raise AssertionError("归约/归约冲突没有被拒绝")
-        except GrammarLoadError as error:
-            assert "归约/归约冲突" in str(error)
-            assert "状态 1" in str(error)
-        # 1) SLR 直接左递归 + 无大括号动作：1+2+3 == 6；
-        #    同时确认 SLR 产物不含 LL 专属结构与语法树 API
-        slr_add_code = slr_generate(
-            '%mode slr\n'
-            '%define PLUS  "+"\n'
-            '%start expr\n'
-            'expr := expr PLUS term $$ = $1 + $3;\n'
-            'expr := term           { $$ = $1; }\n'
-            'term := NUMBER         $$ = $1;\n'
-        )
-        assert "Parser_ParseLoopLR" in slr_add_code
-        assert "s_ParserAction" in slr_add_code
-        assert "s_ParserGoto" in slr_add_code
-        assert "ParserSemanticFrame_T" not in slr_add_code
-        assert "Parser_ExpandProduction" not in slr_add_code
-        assert "Parser_ForwardFrame" not in slr_add_code
-        assert "Parser_CompleteFrame" not in slr_add_code
-        assert "s_ParserProductionIsLeftEmpty" not in slr_add_code
-        assert "s_ParserTable" not in slr_add_code
-        _compile_and_run_generated_test(slr_add_code, r'''
-/** @file generated_harness.c @brief 验证 SLR(1) 左递归与无大括号动作。 */
-#include "generated_parser.c"
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pValue = Parser_RunText("1+2+3");
-    int32_t result = 0;
-    if ((pValue == NULL) ||
-        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
-        (result != 6)) { return 1; }
-    Var_Free(pValue);
-    return 0;
-}
-''', sanitize=True)
-        # 2) SLR 嵌套语句：if / while / begin-end
-        slr_stmt_code = slr_generate(
-            '%mode slr\n'
-            '%define IF "if"\n'
-            '%define WHILE "while"\n'
-            '%define BEGIN "begin"\n'
-            '%define END "end"\n'
-            '%define DO "do"\n'
-            '%define SEMI ";"\n'
-            '%define ASSIGN ":="\n'
-            '%start program\n'
-            'program := statement_list { $$ = $1; }\n'
-            'statement_list := statement SEMI statement_list $$ = $1;\n'
-            'statement_list := statement $$ = $1;\n'
-            'statement := IF VARIABLE BEGIN statement_list END '
-            '{ $$ = int32(1); }\n'
-            'statement := WHILE VARIABLE DO statement { $$ = int32(2); }\n'
-            'statement := VARIABLE ASSIGN NUMBER $$ = $3;\n'
-        )
-        _compile_and_run_generated_test(slr_stmt_code, r'''
-/** @file generated_harness.c @brief 验证 SLR(1) 嵌套语句解析。 */
-#include "generated_parser.c"
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pValue = Parser_RunText(
-        "if x begin y:=1; while z do w:=2 end");
-    if (Parser_GetLastError()->code != PARSER_OK) { return 1; }
-    if (pValue == NULL) { return 2; }
-    Var_Free(pValue);
-    if (Parser_RunText("if x begin end") != NULL) { return 3; }
-    if (Parser_GetLastError()->code == PARSER_OK) { return 4; }
-    return 0;
-}
-''', sanitize=True)
-        # 3) SLR 冲突必须在生成期报错（归约/归约）
-        try:
-            slr_generate(
-                '%mode slr\n'
-                '%start S\n'
-                'S := A { $$ = int32(0); }\n'
-                'S := B { $$ = int32(0); }\n'
-                'A := NUMBER { $$ = int32(0); }\n'
-                'B := NUMBER { $$ = int32(0); }\n'
-            )
-            raise AssertionError("SLR 冲突文法没有在生成期报错")
-        except GrammarLoadError as error:
-            assert "归约/归约冲突" in str(error)
-        # 4) 同一表达式：LL(1) 无左递归版与 SLR(1) 左递归版结果一致
-        ll_minus_cfg = load_grammar_text(
-            '%define MINUS "-"\n'
-            '%start expr\n'
-            'expr := NUMBER expr_tail { $$ = $1 + $2; }\n'
-            'expr_tail := MINUS NUMBER expr_tail { $$ = $3 - $2; }\n'
-            'expr_tail := %empty { $$ = int32(0); }\n'
-        )
-        ll_minus_code = generate_parser_c(
-            ll_minus_cfg["grammar"], ll_minus_cfg["tokens"], {},
-            ll_minus_cfg["token_defs"], mode="ll1"
-        )
-        slr_minus_code = slr_generate(
-            '%mode slr\n'
-            '%define MINUS "-"\n'
-            '%start expr\n'
-            'expr := expr MINUS term $$ = $1 - $3;\n'
-            'expr := term { $$ = $1; }\n'
-            'term := NUMBER $$ = $1;\n'
-        )
-        minus_harness = r'''
-/** @file generated_harness.c @brief 验证 10-3-2 == 5。 */
-#include "generated_parser.c"
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pValue = Parser_RunText("10-3-2");
-    int32_t result = 0;
-    if ((pValue == NULL) ||
-        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
-        (result != 5)) { return 1; }
-    Var_Free(pValue);
-    return 0;
-}
-'''
-        _compile_and_run_generated_test(ll_minus_code, minus_harness)
-        _compile_and_run_generated_test(slr_minus_code, minus_harness)
-        # 5) SLR 下 %ast_* 元数据仍正确生成
-        slr_ast_cfg = load_grammar_text(
-            '%mode slr\n'
-            '%define PLUS "+"\n'
-            '%ast_skip  expr term\n'
-            '%ast_fold  expr_tail\n'
-            '%ast_label relational\n'
-            '%start root\n'
-            'root := expr { $$ = $1; }\n'
-            'expr := term expr_tail { $$ = $1; }\n'
-            'expr_tail := PLUS term expr_tail { $$ = $1; }\n'
-            'expr_tail := %empty { $$ = int32(0); }\n'
-            'term := NUMBER { $$ = $1; }\n'
-            'relational := NUMBER { $$ = $1; }\n'
-        )
-        slr_ast_code = slr_generate(
-            '%mode slr\n'
-            '%define PLUS "+"\n'
-            '%ast_skip  expr term\n'
-            '%ast_fold  expr_tail\n'
-            '%ast_label relational\n'
-            '%start root\n'
-            'root := expr { $$ = $1; }\n'
-            'expr := term expr_tail { $$ = $1; }\n'
-            'expr_tail := PLUS term expr_tail { $$ = $1; }\n'
-            'expr_tail := %empty { $$ = int32(0); }\n'
-            'term := NUMBER { $$ = $1; }\n'
-            'relational := NUMBER { $$ = $1; }\n'
-        )
-        assert slr_ast_cfg["ast_skip"] == {"expr", "term"}
-        assert "Parser_AstShouldSkip" in slr_ast_code
-        _compile_and_run_generated_test(slr_ast_code, r'''
-/** @file generated_harness.c @brief 验证 SLR 与 %ast_* 元数据协同。 */
-#include "generated_parser.c"
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    if (Parser_AstShouldSkip("expr") != 1u) { return 1; }
-    if (Parser_AstShouldFold("expr_tail") != 1u) { return 2; }
-    if (Parser_AstShouldLabel("relational") != 1u) { return 3; }
-    if (Parser_AstShouldSkip("root") != 0u) { return 4; }
-    return 0;
-}
-''')
-        # 7) SLR 下 %tree 只用于满足“动作与 %tree 二选一”，不生成树 API
-        slr_tree_code = slr_generate(
-            '%mode slr\n'
-            '%tree\n'
-            '%start root\n'
-            'root := NUMBER\n'
-        )
-        assert "Parser_TreeParseLoop" not in slr_tree_code
-        assert "Parser_ParseTreeText" not in slr_tree_code
-        assert "Parser_ParseLoopLR" in slr_tree_code
-        _compile_and_run_generated_test(slr_tree_code, r'''
-/** @file generated_harness.c @brief 验证 SLR 下无动作 + %tree 可解析。 */
-#include "generated_parser.c"
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    if (Parser_RunText("1") != NULL) { return 1; }
-    if (Parser_GetLastError()->code != PARSER_OK) { return 2; }
-    return 0;
-}
-''')
-        try:
-            slr_generate(
-                '%mode slr\n'
-                '%start root\n'
-                'root := NUMBER\n'
-            )
-            raise AssertionError("SLR 下无动作且无 %tree 没有被拒绝")
-        except GrammarLoadError as error:
-            assert "缺少语义动作" in str(error)
-        # ============================================================
-        # LALR(1)：复用 SLR 的 LR 运行时，只把归约 lookahead 换成
-        # LR(1) 项集合并后的精确集合
-        # ============================================================
-        def lalr_analysis(text):
-            """自测辅助：加载 .gram 文本并构造 LALR(1) 分析表。"""
-            lalr_cfg = load_grammar_text(text)
-            return _lalr_analyze(lalr_cfg["grammar"], lalr_cfg["tokens"])
-
-        def lalr_generate(text):
-            """自测辅助：加载 .gram 文本并生成 LALR(1) C 代码。"""
-            lalr_cfg = load_grammar_text(text)
-            return generate_parser_c(
-                lalr_cfg["grammar"], lalr_cfg["tokens"],
-                lalr_cfg.get("variables", {}),
-                lalr_cfg.get("token_defs", {}),
-                tree=bool(lalr_cfg.get("tree", False)),
-                ast_skip=lalr_cfg.get("ast_skip"),
-                ast_fold=lalr_cfg.get("ast_fold"),
-                ast_label=lalr_cfg.get("ast_label"),
-                mode="lalr",
-            )
-
-        # LALR 表构造：S := C C; C := c C | d，同心合并后 7 个状态
-        lalr_cc = lalr_analysis(
-            '%mode lalr\n'
-            '%token c d\n'
-            '%start S\n'
-            'S := C C { $$ = int32(0); }\n'
-            'C := c C { $$ = int32(0); }\n'
-            'C := d { $$ = int32(0); }\n'
-        )
-        assert len(lalr_cc["states"]) == 7
-        assert lalr_cc["lr1_state_count"] >= len(lalr_cc["states"])
-        # LALR 状态是 {core: lookahead 集合}，与 SLR 的三元组项集不同
-        assert all(isinstance(items, dict) for items in lalr_cc["states"])
-
-        # %mode lalr 能被加载并记录
-        assert (load_grammar_text(
-            '%mode lalr\n'
-            '%start root\n'
-            'root := NUMBER { $$ = $1; }\n'
-        )["mode"] == "lalr")
-
-
-        # CLI：--mode lalr 与 %mode lalr 一致时通过，不一致时报错；
-        # 没写 %mode 的文法以命令行为准（缺省 ll1）
-        with tempfile.TemporaryDirectory(prefix="lalr_cli_") as cli_dir:
-            cli_grammar = os.path.join(cli_dir, "mode.gram")
-            cli_plain = os.path.join(cli_dir, "plain.gram")
-            with open(cli_grammar, "w", encoding="utf-8") as file_handle:
-                file_handle.write(
-                    '%mode lalr\n'
-                    '%start root\n'
-                    'root := NUMBER { $$ = $1; }\n'
-                )
-            with open(cli_plain, "w", encoding="utf-8") as file_handle:
-                file_handle.write(
-                    '%start root\n'
-                    'root := NUMBER { $$ = $1; }\n'
-                )
-            script_path = os.path.abspath(__file__)
-            cli_output = os.path.join(cli_dir, "out.c")
-
-            def run_cli(*extra):
-                """在子进程里跑一次 CLI，返回 (returncode, 输出文本)。"""
-                completed = subprocess.run(
-                    [sys.executable, script_path] + list(extra) +
-                    ["-o", cli_output],
-                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                    universal_newlines=True,
-                )
-                return completed.returncode, completed.stdout
-
-            assert run_cli(
-                "--mode", "lalr", "--grammar-file", cli_grammar
-            )[0] == 0
-            assert run_cli("--grammar-file", cli_grammar)[0] == 0
-            assert run_cli(
-                "--mode", "lalr", "--grammar-file", cli_plain
-            )[0] == 0
-            conflict_code, conflict_text = run_cli(
-                "--mode", "slr", "--grammar-file", cli_grammar
-            )
-            assert conflict_code != 0
-            assert "不一致" in conflict_text
-
-        # 1) LALR 直接左递归 + 无大括号动作：1+2+3 == 6
-        lalr_add_code = lalr_generate(
-            '%mode lalr\n'
-            '%define PLUS  "+"\n'
-            '%start expr\n'
-            'expr := expr PLUS term $$ = $1 + $3;\n'
-            'expr := term           { $$ = $1; }\n'
-            'term := NUMBER         $$ = $1;\n'
-        )
-        assert "Parser_ParseLoopLR" in lalr_add_code
-        assert "s_ParserAction" in lalr_add_code
-        assert "s_ParserGoto" in lalr_add_code
-        assert "LALR(1)" in lalr_add_code
-        assert "ParserSemanticFrame_T" not in lalr_add_code
-        assert "Parser_ExpandProduction" not in lalr_add_code
-        assert "Parser_ForwardFrame" not in lalr_add_code
-        assert "Parser_CompleteFrame" not in lalr_add_code
-        assert "s_ParserProductionIsLeftEmpty" not in lalr_add_code
-        assert "s_ParserTable" not in lalr_add_code
-        _compile_and_run_generated_test(lalr_add_code, r'''
-/** @file generated_harness.c @brief 验证 LALR(1) 左递归与无大括号动作。 */
-#include "generated_parser.c"
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pValue = Parser_RunText("1+2+3");
-    int32_t result = 0;
-    if ((pValue == NULL) ||
-        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
-        (result != 6)) { return 1; }
-    Var_Free(pValue);
-    return 0;
-}
-''', sanitize=True)
-
-        # 2) 经典非 SLR 文法在 LALR 下不再冲突，且生成代码可编译
-        lalr_classic_text = (
-            '%mode lalr\n'
-            '%token EQ ID STAR\n'
-            '%start S\n'
-            'S := L EQ R { $$ = int32(0); }\n'
-            'S := R { $$ = int32(0); }\n'
-            'L := STAR R { $$ = int32(0); }\n'
-            'L := ID { $$ = int32(0); }\n'
-            'R := L { $$ = int32(0); }\n'
-        )
-        lalr_classic = lalr_analysis(lalr_classic_text)
-        assert len(lalr_classic["conflicts"]) == 0
-        lalr_classic_code = lalr_generate(lalr_classic_text)
-        assert "Parser_ParseLoopLR" in lalr_classic_code
-        _compile_and_run_generated_test(lalr_classic_code, r'''
-/** @file generated_harness.c @brief 验证经典非 SLR 文法在 LALR 下可编译。 */
-#include "generated_parser.c"
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    return 0;
-}
-''')
-
-        # 3) 真正的 LALR 冲突文法必须在生成期报错（归约/归约）
-        try:
-            lalr_generate(
-                '%mode lalr\n'
-                '%token a b c d e\n'
-                '%start S\n'
-                'S := a E c { $$ = int32(0); }\n'
-                'S := a F d { $$ = int32(0); }\n'
-                'S := b F c { $$ = int32(0); }\n'
-                'S := b E d { $$ = int32(0); }\n'
-                'E := e { $$ = int32(0); }\n'
-                'F := e { $$ = int32(0); }\n'
-            )
-            raise AssertionError("LALR 冲突文法没有在生成期报错")
-        except GrammarLoadError as error:
-            assert "归约/归约冲突" in str(error)
-            assert "状态" in str(error)
-
-        # 4) 同一表达式三种模式结果一致：10-3-2 == 5
-        lalr_minus_code = lalr_generate(
-            '%mode lalr\n'
-            '%define MINUS "-"\n'
-            '%start expr\n'
-            'expr := expr MINUS term $$ = $1 - $3;\n'
-            'expr := term { $$ = $1; }\n'
-            'term := NUMBER $$ = $1;\n'
-        )
-        _compile_and_run_generated_test(lalr_minus_code, minus_harness)
-
-        # LALR 完整表达式文法：优先级、结合性与括号
-        lalr_full_text = (
-            '%mode lalr\n'
-            '%define PLUS  "+"\n'
-            '%define MINUS "-"\n'
-            '%define STAR  "*"\n'
-            '%define SLASH "/"\n'
-            '%define LPAREN "("\n'
-            '%define RPAREN ")"\n'
-            '%start expr\n'
-            'expr := expr PLUS term  $$ = $1 + $3;\n'
-            'expr := expr MINUS term $$ = $1 - $3;\n'
-            'expr := term            { $$ = $1; }\n'
-            'term := term STAR factor  $$ = $1 * $3;\n'
-            'term := term SLASH factor $$ = $1 / $3;\n'
-            'term := factor            { $$ = $1; }\n'
-            'factor := NUMBER          $$ = $1;\n'
-            'factor := LPAREN expr RPAREN { $$ = $2; }\n'
-        )
-        lalr_full_code = lalr_generate(lalr_full_text)
-        _compile_and_run_generated_test(lalr_full_code, r'''
-/** @file generated_harness.c @brief 验证 LALR(1) 完整表达式求值。 */
-#include "generated_parser.c"
-
-/** @brief 解析表达式并断言期望值。 @retval 0 表示相等。 */
-static int CheckExpression(const char *pText, int32_t expected)
-{
-    VarValue_T *pValue = Parser_RunText(pText);
-    int32_t result = 0;
-    if ((pValue == NULL) ||
-        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK)) { return 1; }
-    Var_Free(pValue);
-    return (result == expected) ? 0 : 1;
-}
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    if (CheckExpression("10-3-2", 5) != 0) { return 1; }
-    if (CheckExpression("100-20/5", 96) != 0) { return 2; }
-    if (CheckExpression("(10-3)*2", 14) != 0) { return 3; }
-    return 0;
-}
-''', sanitize=True)
-
-        # 5) LALR 下 %ast_* 元数据仍正确生成
-        lalr_ast_code = lalr_generate(
-            '%mode lalr\n'
-            '%define PLUS "+"\n'
-            '%ast_skip  expr term\n'
-            '%ast_fold  expr_tail\n'
-            '%ast_label relational\n'
-            '%start root\n'
-            'root := expr { $$ = $1; }\n'
-            'expr := term expr_tail { $$ = $1; }\n'
-            'expr_tail := PLUS term expr_tail { $$ = $1; }\n'
-            'expr_tail := %empty { $$ = int32(0); }\n'
-            'term := NUMBER { $$ = $1; }\n'
-            'relational := NUMBER { $$ = $1; }\n'
-        )
-        assert "Parser_AstShouldSkip" in lalr_ast_code
-        assert "Parser_AstShouldFold" in lalr_ast_code
-        assert "Parser_AstShouldLabel" in lalr_ast_code
-        _compile_and_run_generated_test(lalr_ast_code, r'''
-/** @file generated_harness.c @brief 验证 LALR 与 %ast_* 元数据协同。 */
-#include "generated_parser.c"
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    if (Parser_AstShouldSkip("expr") != 1u) { return 1; }
-    if (Parser_AstShouldFold("expr_tail") != 1u) { return 2; }
-    if (Parser_AstShouldLabel("relational") != 1u) { return 3; }
-    if (Parser_AstShouldSkip("root") != 0u) { return 4; }
-    return 0;
-}
-''')
-
-        # 6) LALR 下无大括号动作（动作写到行尾）仍工作
-        _compile_and_run_generated_test(lalr_generate(
-            '%mode lalr\n'
-            '%define PLUS "+"\n'
-            '%start expr\n'
-            'expr := expr PLUS term $$ = $1 + $3;\n'
-            'expr := term           $$ = $1;\n'
-            'term := NUMBER         $$ = $1;\n'
-        ), r'''
-/** @file generated_harness.c @brief 验证 LALR 下无大括号动作。 */
-#include "generated_parser.c"
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    VarValue_T *pValue = Parser_RunText("4+5");
-    int32_t result = 0;
-    if ((pValue == NULL) ||
-        (Var_GetInt32(pValue, &result) != VAR_RUNTIME_OK) ||
-        (result != 9)) { return 1; }
-    Var_Free(pValue);
-    return 0;
-}
-''')
-
-        # 7) LALR 下动作与 %tree 二选一规则仍生效
-        lalr_tree_code = lalr_generate(
-            '%mode lalr\n'
-            '%tree\n'
-            '%start root\n'
-            'root := NUMBER\n'
-        )
-        assert "Parser_TreeParseLoop" not in lalr_tree_code
-        assert "Parser_ParseTreeText" not in lalr_tree_code
-        assert "Parser_ParseLoopLR" in lalr_tree_code
-        _compile_and_run_generated_test(lalr_tree_code, r'''
-/** @file generated_harness.c @brief 验证 LALR 下无动作 + %tree 可解析。 */
-#include "generated_parser.c"
-
-/** @brief 主入口。 @retval 0 表示通过。 */
-int main(void)
-{
-    if (Parser_RunText("1") != NULL) { return 1; }
-    if (Parser_GetLastError()->code != PARSER_OK) { return 2; }
-    return 0;
-}
-''')
-        try:
-            lalr_generate(
-                '%mode lalr\n'
-                '%start root\n'
-                'root := NUMBER\n'
-            )
-            raise AssertionError("LALR 下无动作且无 %tree 没有被拒绝")
-        except GrammarLoadError as error:
-            assert "缺少语义动作" in str(error)
-
-        # 8) 默认 ll1 与显式 ll1 生成产物逐字节一致
-        assert (generate_parser_c(
-                    calc_cfg["grammar"], calc_cfg["tokens"],
-                    calc_cfg["variables"], calc_cfg["token_defs"]) ==
-                generate_parser_c(
-                    calc_cfg["grammar"], calc_cfg["tokens"],
-                    calc_cfg["variables"], calc_cfg["token_defs"],
-                    mode="ll1"))
-        print("生成器自测通过")
-        return 0
-
-    script_dir = os.path.dirname(os.path.abspath(__file__))
 
     if args.grammar_file:
         cfg = load_grammar_file(args.grammar_file)
@@ -8252,15 +8776,23 @@ int main(void)
     if args.mode is not None:
         mode = args.mode
 
+    # 优先级元数据：%left / %right / %nonassoc / %prec / %expect
+    priority = _priority_from_cfg(cfg)
+    # 词法元数据：%regex / %identifier
+    lex_spec = _lex_spec_from_cfg(cfg)
     if mode == "lalr":
-        analysis = _lalr_analyze(grammar, tokens)
+        analysis = _lalr_analyze(grammar, tokens, priority)
         report = format_lalr_report(analysis)
     elif mode == "slr":
-        analysis = _slr_analyze(grammar, tokens)
+        analysis = _slr_analyze(grammar, tokens, priority)
         report = format_slr_report(analysis)
     else:
         analysis = prepare_grammar(grammar, tokens)
         report = format_grammar_report(analysis)
+        if priority["precedence"] or (
+                priority["expect_conflicts"] is not None):
+            report += ("\n[提示] LL(1) 模式忽略 %left / %right / %nonassoc / "
+                       "%prec 优先级指令与 %expect\n")
     print(report, end="")
     if args.report is not None:
         with open(args.report, "w", encoding="utf-8") as file_handle:
@@ -8287,7 +8819,30 @@ int main(void)
         ast_fold=cfg.get("ast_fold"),
         ast_label=cfg.get("ast_label"),
         mode=mode,
+        priority=priority,
+        lex_spec=lex_spec,
     )
+    if args.split or (args.out_dir is not None):
+        out_dir = args.out_dir if args.out_dir is not None else "out"
+        project = generate_parser_project(
+            grammar, tokens, variables, token_defs,
+            tree=bool(cfg.get("tree", False)),
+            var_max_count=cfg.get("var_max_count") or 32,
+            ast_skip=cfg.get("ast_skip"),
+            ast_fold=cfg.get("ast_fold"),
+            ast_label=cfg.get("ast_label"),
+            mode=mode,
+            source_name=args.grammar_file,
+            report_text=report,
+            priority=priority,
+            lex_spec=lex_spec,
+        )
+        written = write_parser_project(out_dir, project)
+        print("生成成功（分文件布局）: %s（%d 个文件）"
+              % (out_dir, len(written)))
+        for path in written:
+            print("  %s" % path)
+        return 0
     with open(args.output, "w", encoding="utf-8") as f:
         f.write(code)
     print(f"生成成功: {args.output}")
