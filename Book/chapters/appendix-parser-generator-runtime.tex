@@ -1,6 +1,6 @@
 \chapter{Python 语法转换器与动态类型解析} \label{app:parser-generator-runtime}
 
-第~\ref{ch:script-engine}~章介绍了递归下降解析器、LL(1) 文法和 Python 解析器生成器，但正文把实现细节控制在了“能够理解整体思路”的范围内。本附录沿着仓库中的真实源码继续向下分析：单文件 \texttt{parser\_gen.py} 如何加载文法、生成默认 Lexer 与非递归预测分析器，语义动作如何接入 \texttt{VarValue\_T} 动态类型运行时，以及字符串、数组、字典和结构体由谁创建、持有与释放。
+第~\ref{ch:script-engine}~章介绍了递归下降解析器、LL(1) 文法和 Python 解析器生成器，但正文把实现细节控制在了“能够理解整体思路”的范围内。本附录沿着仓库中的真实源码继续向下分析：单文件 \texttt{parser.py} 如何加载文法、生成默认 Lexer 与非递归预测分析器，语义动作如何接入 \texttt{VarValue\_T} 动态类型运行时，以及字符串、数组、字典和结构体由谁创建、持有与释放。
 
 完整实现位于 \texttt{Chapter-script-engine/} 目录。本附录只解释现有实现，不另外设计一套解析框架。
 
@@ -28,9 +28,9 @@
     note/.style={font=\small, align=center}
 ]
     \node[block] (grammar) at (-5.0,2.0) {文法文件\\\texttt{.gram}};
-    \node[block] (loader) at (-1.7,2.0) {单文件加载与分析\\\texttt{parser\_gen.py}};
+    \node[block] (loader) at (-1.7,2.0) {单文件加载与分析\\\texttt{parser.py}};
     \node[block] (model) at (1.7,2.0) {Python 内部模型\\终结符、规则、变量};
-    \node[block] (generator) at (5.0,2.0) {代码生成器\\\texttt{parser\_gen.py}};
+    \node[block] (generator) at (5.0,2.0) {代码生成器\\\texttt{parser.py}};
     \node[block] (cparser) at (5.0,-0.4) {生成的 C 解析器};
     \node[block] (tokens) at (1.7,-0.4) {运行期 Token 流};
     \node[block] (runtime) at (-1.7,-0.4) {动态类型运行时\\\texttt{VarValue\_T}};
@@ -54,7 +54,7 @@
 % ---------------------------------------------------------------------
 \section{文法文件的输入格式}
 
-\texttt{parser\_gen.py} 接收一种精简的 Yacc 风格文法。\texttt{STRING}、\texttt{NUMBER} 和 \texttt{VARIABLE} 默认存在；固定字符串 Token 通过 \texttt{\%define} 声明，起始非终结符通过 \texttt{\%start} 声明，动态变量通过 \texttt{\%var} 声明，每条产生式独立写成一行。
+\texttt{parser.py} 接收一种精简的 Yacc 风格文法。\texttt{STRING}、\texttt{NUMBER} 和 \texttt{VARIABLE} 默认存在；固定字符串 Token 通过 \texttt{\%define} 声明，起始非终结符通过 \texttt{\%start} 声明，动态变量通过 \texttt{\%var} 声明，每条产生式独立写成一行。
 
 \begin{lstlisting}
 /* 声明固定字符串 Token，竖线只表示候选“或” */
@@ -222,7 +222,7 @@ while (context.stackTop > 0u) {
 
 生成结果主要包含默认 Lexer、Token 枚举、预测分析表、显式分析栈、语义帧栈和变量注册表。\texttt{Parser\_Run} 继续接收调用者准备的 Token 数组；\texttt{Parser\_RunText} 则直接从脚本文本按需取出 Token。
 
-\texttt{parser\_gen.py} 还会把 \texttt{variable\_runtime.c/h} 的完整内容复制进同一个输出文件，使生成结果不再依赖仓库里的运行时源码。文件末尾默认附带演示 \texttt{main()}：编译后运行可解析 \texttt{argv[1]}（缺省使用 \texttt{PARSER\_DEMO\_INPUT}），并递归打印数组等结果。需要把生成文件作为库嵌入其他工程时，在 \texttt{\#include} 前定义 \texttt{PARSER\_SKIP\_DEMO\_MAIN} 即可关闭演示入口。
+\texttt{parser.py} 还会把 \texttt{variable\_runtime.c/h} 的完整内容复制进同一个输出文件，使生成结果不再依赖仓库里的运行时源码。文件末尾默认附带演示 \texttt{main()}：编译后运行可解析 \texttt{argv[1]}（缺省使用 \texttt{PARSER\_DEMO\_INPUT}），并递归打印数组等结果。需要把生成文件作为库嵌入其他工程时，在 \texttt{\#include} 前定义 \texttt{PARSER\_SKIP\_DEMO\_MAIN} 即可关闭演示入口。
 
 若文法开头包含 \texttt{\%tree}，生成代码还会附带通用语法树 API：\texttt{Parser\_ParseTreeText} 返回根节点，根节点与子节点都是 \texttt{VarValue\_T} 结构体，字段包含 \texttt{name}、\texttt{text} 与 \texttt{children}；外部程序可用 \texttt{Parser\_TreeGetName}、\texttt{Parser\_TreeGetText}、\texttt{Parser\_TreeGetChildren} 遍历，或用 \texttt{Parser\_TreePrint} 直接打印。
 
@@ -405,4 +405,4 @@ Python 生成器适合放在构建电脑上，生成的 C 解析器可以移植�
 % ---------------------------------------------------------------------
 \section{本附录小结}
 
-语法转换器的价值不只是“少写几段 C 代码”，而是把文法合法性、选择集冲突和语义动作类型问题提前到生成期。单文件 \texttt{parser\_gen.py} 负责文法加载、分析报告、默认 Lexer、非递归预测分析代码生成，并直接把 \texttt{variable\_runtime.c/h} 内嵌进产物；生成出的 C 文件在运行期自带动态值创建、类型转换和容器管理，还附有演示 \texttt{main()}。生成期和运行期边界清晰以后，解析器才能既方便扩展，又不把文法分析复杂度塞进目标单片机。
+语法转换器的价值不只是“少写几段 C 代码”，而是把文法合法性、选择集冲突和语义动作类型问题提前到生成期。单文件 \texttt{parser.py} 负责文法加载、分析报告、默认 Lexer、非递归预测分析代码生成，并直接把 \texttt{variable\_runtime.c/h} 内嵌进产物；生成出的 C 文件在运行期自带动态值创建、类型转换和容器管理，还附有演示 \texttt{main()}。生成期和运行期边界清晰以后，解析器才能既方便扩展，又不把文法分析复杂度塞进目标单片机。

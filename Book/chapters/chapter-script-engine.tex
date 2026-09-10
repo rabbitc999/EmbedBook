@@ -530,7 +530,7 @@ Lua 的代价是需要移植内存分配、提供系统时间，并严格限制�
 % ---------------------------------------------------------------------
 \section{Python 解析生成器}
 
-仓库里的 \texttt{Chapter-script-engine/parser\_gen.py} 是一个单文件工具：它负责加载 \texttt{.gram}、计算最终文法和预测分析表，并生成自带 Lexer 的非递归 C 解析器。生成出的单个 C 文件会把原 \texttt{variable\_runtime.c/h} 的完整实现内嵌，并附带一个演示 \texttt{main()}，因此不需要额外复制运行时源码即可直接编译运行。生成结果既可以继续接收调用者准备的 TOKEN 流，也可以通过 \texttt{Parser\_RunText} 直接解析脚本文本。
+仓库里的 \texttt{Chapter-script-engine/parser.py} 是一个单文件工具：它负责加载 \texttt{.gram}、计算最终文法和预测分析表，并生成自带 Lexer 的非递归 C 解析器。生成出的单个 C 文件会把原 \texttt{variable\_runtime.c/h} 的完整实现内嵌，并附带一个演示 \texttt{main()}，因此不需要额外复制运行时源码即可直接编译运行。生成结果既可以继续接收调用者准备的 TOKEN 流，也可以通过 \texttt{Parser\_RunText} 直接解析脚本文本。
 
 文法只使用 Yacc 风格但去掉 \texttt{|} 分隔符的 \texttt{.gram} 文本格式：
 
@@ -712,11 +712,11 @@ gcc parser_calc.c -lm -o parser_calc
 完整示例见 \texttt{Chapter-script-engine/grammar\_calc.gram}；包含 IF/FOR、布尔与比较运算的高级示例见 \texttt{Chapter-script-engine/grammar\_advanced.gram}。两类文法都通过 \texttt{--grammar-file} 交给生成器，统一使用 \texttt{.gram} 文本格式。
 
 \begin{anybox}{为什么不把运行时与生成器展开讲解}
-	细心的读者可能已经注意到，本章的 \texttt{parser\_gen.py} 已经不再只是“文法转 C”的翻译器：它把 \texttt{variable\_runtime.c/h} 的实现收进自身，生成的 C 文件又同时携带动态类型运行时和演示 \texttt{main()}。正文中仍然只浅尝辄止地介绍它们的存在，这并不是遗漏，而是刻意的边界划定。
+	细心的读者可能已经注意到，本章的 \texttt{parser.py} 已经不再只是“文法转 C”的翻译器：它把 \texttt{variable\_runtime.c/h} 的实现收进自身，生成的 C 文件又同时携带动态类型运行时和演示 \texttt{main()}。正文中仍然只浅尝辄止地介绍它们的存在，这并不是遗漏，而是刻意的边界划定。
 	
 	\texttt{VarValue\_T} 运行时实现了一套完整的动态类型系统——支持多种类型、深拷贝、切片拼接、类型自动提升等。这套代码本身已经构成了一个“微型语言运行时”，其设计涉及内存所有权、容器扩容、类型转换等话题，如果要讲透，至少需要再写半本书。本章的核心目标是让读者理解“如何用递归下降解析表达式”，而不是“如何设计一个动态语言虚拟机”，因此运行时的细节被封装进生成器和生成产物，作为“愿意深究的读者可以翻阅”的材料。
 	
-	\texttt{parser\_gen.py} 则是“工具链的工具链”——它把人类可读的文法描述翻译成带 Lexer、显式分析栈、内嵌运行时和演示 \texttt{main()} 的 C 代码。这套生成器涉及 FIRST/FOLLOW 集合、预测表、左递归转换、动作表达式翻译等编译原理话题，每一部分都足以单独成章。如果把这些内容全部铺进正文，这章就会从“单片机脚本引擎”变成“编译原理实践教程”，彻底脱离本书“嵌入式 C 生存实战”的定位。
+	\texttt{parser.py} 则是“工具链的工具链”——它把人类可读的文法描述翻译成带 Lexer、显式分析栈、内嵌运行时和演示 \texttt{main()} 的 C 代码。这套生成器涉及 FIRST/FOLLOW 集合、预测表、左递归转换、动作表达式翻译等编译原理话题，每一部分都足以单独成章。如果把这些内容全部铺进正文，这章就会从“单片机脚本引擎”变成“编译原理实践教程”，彻底脱离本书“嵌入式 C 生存实战”的定位。
 	
 	因此，作者的选择是：在正文中保留生成器的“使用方式”和“设计思路”，让读者知道存在这样一套工具，但把实现细节留在源码里。工具的价值在于被使用，而不是被背诵。对于有兴趣深挖的读者，仓库里的源码和注释是比任何书本都更直接的老师。
 	
@@ -831,7 +831,7 @@ gcc parser_calc.c -lm -o parser_calc
 因为 G 代码的宏展开（例如 \texttt{\#1 = 10; G01 X[\#1 + 5]}）必须在解析期完成展开，然后把展开后的结果直接变成插补器的输入。Lua 的运行时变量查表会在每次插补周期引入不可预测的延迟，而生成器在编译期就把 \texttt{\#1} 变成 \texttt{axis\_pos[1]} 的直接数组访问——少了整整一个“解释执行”的开销层级。
 \end{anybox}
 
-仓库中 \texttt{Chapter-script-engine/parser\_gen.py} 的更多实现细节见附录~\ref{app:parser-generator-runtime}。
+仓库中 \texttt{Chapter-script-engine/parser.py} 的更多实现细节见附录~\ref{app:parser-generator-runtime}。
 
 % ---------------------------------------------------------------------
 \begin{problemset}
