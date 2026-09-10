@@ -3,7 +3,7 @@
 本附录给出各章习题的参考答案。需要“写代码”的题目只给出核心实现思路，读者可在完整示例工程中找到可直接运行的版本；标为“思考题”的题目没有唯一答案，这里只提供分析角度。
 
 % ---------------------------------------------------------------------
-\section{第~\ref{ch:embedded-c}~章 参考答案}
+\section*{第~\ref{ch:embedded-c}~章 参考答案}
 
 \begin{enumerate}
 	\item 十进制 173 的二进制为 \texttt{10101101}，八进制为 \texttt{255}，十六进制为 \texttt{AD}。
@@ -19,7 +19,7 @@
 \end{enumerate}
 
 % ---------------------------------------------------------------------
-\section{第~\ref{ch:scheduler-and-state-machine}~章 参考答案}
+\section*{第~\ref{ch:scheduler-and-state-machine}~章 参考答案}
 
 \begin{enumerate}
 	\item 定时器中断负责记录时间与“置唤醒标志”，主循环负责扫描任务并执行回调；中断只做短小工作，避免阻塞其他中断。
@@ -30,7 +30,7 @@
 \end{enumerate}
 
 % ---------------------------------------------------------------------
-\section{第~\ref{ch:simple-task}~章 参考答案}
+\section*{第~\ref{ch:simple-task}~章 参考答案}
 
 \begin{enumerate}
 	\item \texttt{Task\_Tick} 在中断里推进时间并把到期的任务放入 FIFO；\texttt{Task\_Loop} 在主循环中取出任务并调用任务运行函数 \texttt{Task\_RunTask} 执行。
@@ -44,7 +44,7 @@
 \end{enumerate}
 
 % ---------------------------------------------------------------------
-\section{第~\ref{ch:serial-fifo}~章 参考答案}
+\section*{第~\ref{ch:serial-fifo}~章 参考答案}
 
 \begin{enumerate}
 	\item 固定数组被写满后，后续字节会覆盖未读数据或直接被丢弃，例如高波特率下主循环稍慢就丢帧。
@@ -62,7 +62,7 @@
 \end{enumerate}
 
 % ---------------------------------------------------------------------
-\section{第~\ref{ch:oop-in-c}~章 参考答案}
+\section*{第~\ref{ch:oop-in-c}~章 参考答案}
 
 \begin{enumerate}
 	\item 封装的核心是“只暴露稳定接口、隐藏内部实现”，在 C 中通常用不透明结构体指针加模块函数实现。
@@ -73,7 +73,7 @@
 \end{enumerate}
 
 % ---------------------------------------------------------------------
-\section{第~\ref{ch:memory-alloc}~章 参考答案}
+\section*{第~\ref{ch:memory-alloc}~章 参考答案}
 
 \begin{enumerate}
 	\item 典型布局从低地址到高地址依次是：.data/.bss、堆向上增长、栈向下增长；栈与堆在中间碰撞会互相覆盖导致系统崩溃。
@@ -85,7 +85,7 @@
 \end{enumerate}
 
 % ---------------------------------------------------------------------
-\section{第~\ref{ch:param-store}~章 参考答案}
+\section*{第~\ref{ch:param-store}~章 参考答案}
 
 \begin{enumerate}
 	\item 魔数用于识别“这一块数据是否属于本参数结构体”，能发现写错版本或误读其他存储区；校验和只能发现位错误。
@@ -96,7 +96,7 @@
 \end{enumerate}
 
 % ---------------------------------------------------------------------
-\section{第~\ref{ch:menu-system}~章 参考答案}
+\section*{第~\ref{ch:menu-system}~章 参考答案}
 
 \begin{enumerate}
 	\item 菜单项中有一个“项类型”枚举（跳转/函数/数值/单选/多选），运行时先判断类型，再读取联合体对应成员。
@@ -107,7 +107,7 @@
 \end{enumerate}
 
 % ---------------------------------------------------------------------
-\section{第~\ref{ch:command-parser}~章 参考答案}
+\section*{第~\ref{ch:command-parser}~章 参考答案}
 
 \begin{enumerate}
 	\item 切词时可用引号或转义表示字符串参数；例如把 \texttt{"hello world"} 作为一个整体 token。
@@ -124,7 +124,7 @@
 \end{enumerate}
 
 % ---------------------------------------------------------------------
-\section{第~\ref{ch:script-engine}~章 参考答案}
+\section*{第~\ref{ch:script-engine}~章 参考答案}
 
 \begin{enumerate}
 	\item 终结符是不可再展开的最小 token；非终结符可被产生式展开；产生式描述展开规则；开始符号是整棵推导树的根。
@@ -135,7 +135,7 @@
 \end{enumerate}
 
 % ---------------------------------------------------------------------
-\section{第~\ref{ch:coroutine-scheduler}~章 参考答案}
+\section*{第~\ref{ch:coroutine-scheduler}~章 参考答案}
 
 \begin{enumerate}
 	\item \texttt{setjmp} 保存程序计数器、栈指针和 callee-saved 寄存器等现场；\texttt{longjmp} 恢复后，\texttt{setjmp} 之后被修改的“非易失”局部变量值不再保证，应避免依赖。
@@ -155,7 +155,7 @@
 \end{enumerate}
 
 % ---------------------------------------------------------------------
-\section{第~\ref{ch:hardfault}~章 参考答案}
+\section*{第~\ref{ch:hardfault}~章 参考答案}
 
 \begin{enumerate}
 	\item 典型原因包括空指针/野指针解引用、非对齐访问、执行非法函数指针、向无效地址写入等；对应代码示例可在“制造 HardFault”实验中运行。
@@ -166,7 +166,7 @@
 \end{enumerate}
 
 % ---------------------------------------------------------------------
-\section{第~\ref{ch:pid-control}~章 参考答案}
+\section*{第~\ref{ch:pid-control}~章 参考答案}
 
 \begin{enumerate}
 	\item 比例项根据当前误差立即修正输出，主要影响响应速度与控制强度；积分项累积历史误差，用于消除稳态误差；微分项根据误差变化趋势提前抑制超调。直接对原始误差作差分会放大高频测量噪声，因此工程中通常先滤波，或者对微分项本身加入低通滤波。
@@ -177,7 +177,7 @@
 \end{enumerate}
 
 % ---------------------------------------------------------------------
-\section{第~\ref{ch:fft}~章 参考答案}
+\section*{第~\ref{ch:fft}~章 参考答案}
 
 \begin{enumerate}
 	\item 频率分辨率为 $\Delta f=f_s/N=1024/256=4\,\mathrm{Hz}$；根据奈奎斯特采样条件，可观察的最高频率为 $512\,\mathrm{Hz}$；下标为 37 的频点对应 $37\times4=148\,\mathrm{Hz}$。
@@ -188,7 +188,7 @@
 \end{enumerate}
 
 % ---------------------------------------------------------------------
-\section{第~\ref{ch:digital-filter}~章 参考答案}
+\section*{第~\ref{ch:digital-filter}~章 参考答案}
 
 \begin{enumerate}
 	\item 近似零均值随机噪声可优先使用滑动平均；偶发脉冲尖峰适合中值滤波；RAM 很少且信号缓慢变化时可使用只保存一个历史输出的一阶低通；具有可信状态模型并能估计过程噪声与测量噪声时，可使用卡尔曼滤波。实际选择还要结合允许的延迟和计算资源。
@@ -202,7 +202,7 @@
 % 正式版：跳过13、14、15章的所有介绍
 \else
 % ---------------------------------------------------------------------
-\section{第~\ref{ch:linux}~章 参考答案}
+\section*{第~\ref{ch:linux}~章 参考答案}
 
 \begin{enumerate}
 	\item \texttt{grep -rni "error" src/ --include="*.c"}

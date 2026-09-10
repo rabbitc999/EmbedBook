@@ -17,7 +17,7 @@
 
 \section{文件与目录操作}
 
-\subsection{\texttt{ls} —— 列出目录内容} 语法：\texttt{ls [选项] [路径]}
+\subsection*{\texttt{ls} —— 列出目录内容} 语法：\texttt{ls [选项] [路径]}
 
 高频参数：
 \begin{itemize}
@@ -52,7 +52,7 @@
 
 注意：文件名含空格时建议使用 \texttt{--quoting-style=shell}。
 
-\subsection{\texttt{cd} —— 切换目录} 语法：\texttt{cd [目标路径]}
+\subsection*{\texttt{cd} —— 切换目录} 语法：\texttt{cd [目标路径]}
 
 特殊符号：
 \begin{itemize}
@@ -75,7 +75,7 @@
 
 注意：\texttt{cd} 是 shell 内建，用 \texttt{help cd} 查看帮助；目录以 \texttt{-} 开头时用 \texttt{cd ./-dirname}。
 
-\subsection{\texttt{cp} —— 复制文件或目录} 语法：\texttt{cp [选项] 源 目标}
+\subsection*{\texttt{cp} —— 复制文件或目录} 语法：\texttt{cp [选项] 源 目标}
 
 高频参数：
 \begin{itemize}
@@ -109,7 +109,7 @@
 
 注意：目标已存在目录时，\texttt{cp -r src dest} 会在 \texttt{dest} 下创建 \texttt{src} 子目录；若想合并内容，用 \texttt{cp -r src/. dest/}。
 
-\subsection{\texttt{mv} —— 移动或重命名} 语法：\texttt{mv [选项] 源 目标}
+\subsection*{\texttt{mv} —— 移动或重命名} 语法：\texttt{mv [选项] 源 目标}
 
 常用参数：\texttt{-i}（提示）、\texttt{-f}（强制）、\texttt{-u}（仅更新）、\texttt{-v}、\texttt{-b}（备份）、\texttt{-n}、\texttt{-t}（指定目标目录）。
 
@@ -123,7 +123,7 @@
 
 注意：同一文件系统内移动只是改目录项，跨文件系统则复制再删除。
 
-\subsection{\texttt{rm} —— 删除文件或目录（极度危险）} 语法：\texttt{rm [选项] 目标}
+\subsection*{\texttt{rm} —— 删除文件或目录（极度危险）} 语法：\texttt{rm [选项] 目标}
 
 参数：\texttt{-r}（递归）、\texttt{-f}（强制）、\texttt{-i}（询问）、\texttt{-v}、\texttt{-d}（删空目录）、\texttt{--one-file-system}（防误删挂载点）。
 
@@ -141,7 +141,7 @@
 	rm -d empty_dir
 \end{lstlisting}
 
-\subsection{\texttt{mkdir} —— 创建目录} 参数：\texttt{-p}（递归创建父目录）、\texttt{-v}、\texttt{-m}（设置权限，如 \texttt{-m 755}）。
+\subsection*{\texttt{mkdir} —— 创建目录} 参数：\texttt{-p}（递归创建父目录）、\texttt{-v}、\texttt{-m}（设置权限，如 \texttt{-m 755}）。
 
 示例：
 \begin{lstlisting}[language=bash]
@@ -150,7 +150,7 @@
 	mkdir -m 700 secret
 \end{lstlisting}
 
-\subsection{\texttt{touch} —— 创建空文件或更新时间戳} 参数：\texttt{-a}（仅访问时间）、\texttt{-m}（仅修改时间）、\texttt{-c}（不创建文件）、\texttt{-t}（指定时间，格式 \texttt{[[CC]YY]MMDDhhmm[.ss]}）、\texttt{-d}（日期字符串）、\texttt{-r}（参考文件）。
+\subsection*{\texttt{touch} —— 创建空文件或更新时间戳} 参数：\texttt{-a}（仅访问时间）、\texttt{-m}（仅修改时间）、\texttt{-c}（不创建文件）、\texttt{-t}（指定时间，格式 \texttt{[[CC]YY]MMDDhhmm[.ss]}）、\texttt{-d}（日期字符串）、\texttt{-r}（参考文件）。
 
 示例：
 \begin{lstlisting}[language=bash]
@@ -160,7 +160,8 @@
 	touch -c existing.txt
 \end{lstlisting}
 
-\subsection{\texttt{ln} —— 创建链接} 参数：\texttt{-s}（软链接）、\texttt{-f}（覆盖）、\texttt{-i}、\texttt{-v}、\texttt{-n}（将链接名视为普通文件）、\texttt{-r}（相对路径软链接）。
+\subsection*{\texttt{ln} —— 创建链接}
+参数：\texttt{-s}（软链接）、\texttt{-f}（覆盖）、\texttt{-i}、\texttt{-v}、\texttt{-n}（将链接名视为普通文件）、\texttt{-r}（相对路径软链接）。
 
 软硬链接区别：软链接可跨文件系统、可指向目录，删除源失效；硬链接不可跨文件系统、不可指向目录，删除任意链接不影响数据。
 
@@ -175,7 +176,7 @@
 
 \section{文本查看与内容处理}
 
-\subsection{\texttt{cat} —— 连接并输出（小文件查看和拼接）} 参数：\texttt{-n}（编号）、\texttt{-b}（非空行编号）、\texttt{-s}（压缩空行）、\texttt{-E}（行尾显示 \texttt{\$}）、\texttt{-T}（Tab 显示为 \texttt{\^I}）、\texttt{-A}（显示所有控制字符）。
+\subsection*{\texttt{cat} —— 连接并输出（小文件查看和拼接）} 参数：\texttt{-n}（编号）、\texttt{-b}（非空行编号）、\texttt{-s}（压缩空行）、\texttt{-E}（行尾显示 \texttt{\$}）、\texttt{-T}（Tab 显示为 \texttt{\^I}）、\texttt{-A}（显示所有控制字符）。
 
 示例：
 \begin{lstlisting}[language=bash]
@@ -186,7 +187,7 @@
 
 注意：大文件用 \texttt{less}。
 
-\subsection{\texttt{less} —— 分页查看（大文件必用）} 参数：\texttt{-N}（行号）、\texttt{-S}（截断长行）、\texttt{-g}（高亮当前匹配）、\texttt{-i}（忽略大小写）、\texttt{-F}（内容少于一屏时自动退出）、\texttt{-R}（解释 ANSI 颜色）、\texttt{-X}（退出不清屏）。
+\subsection*{\texttt{less} —— 分页查看（大文件必用）} 参数：\texttt{-N}（行号）、\texttt{-S}（截断长行）、\texttt{-g}（高亮当前匹配）、\texttt{-i}（忽略大小写）、\texttt{-F}（内容少于一屏时自动退出）、\texttt{-R}（解释 ANSI 颜色）、\texttt{-X}（退出不清屏）。
 
 快捷键：
 \begin{itemize}
@@ -202,7 +203,7 @@
 	less +F /var/log/syslog
 \end{lstlisting}
 
-\subsection{\texttt{head} —— 显示文件开头} 参数：\texttt{-n N}（前 N 行）、\texttt{-c N}（前 N 字节）、\texttt{-q}（多文件不显示文件名）、\texttt{-v}（显示文件名）。
+\subsection*{\texttt{head} —— 显示文件开头} 参数：\texttt{-n N}（前 N 行）、\texttt{-c N}（前 N 字节）、\texttt{-q}（多文件不显示文件名）、\texttt{-v}（显示文件名）。
 
 示例：
 \begin{lstlisting}[language=bash]
@@ -211,7 +212,7 @@
 	head -v file1.txt file2.txt
 \end{lstlisting}
 
-\subsection{\texttt{tail} —— 显示文件末尾（看日志神器）} 参数：\texttt{-n N}（末尾 N 行）、\texttt{-f}（实时追踪）、\texttt{-F}（按文件名追踪，文件轮转也能继续）、\texttt{-c N}、\texttt{--pid=PID}（进程结束自动退出）、\texttt{--retry}。
+\subsection*{\texttt{tail} —— 显示文件末尾（看日志神器）} 参数：\texttt{-n N}（末尾 N 行）、\texttt{-f}（实时追踪）、\texttt{-F}（按文件名追踪，文件轮转也能继续）、\texttt{-c N}、\texttt{--pid=PID}（进程结束自动退出）、\texttt{--retry}。
 
 示例：
 \begin{lstlisting}[language=bash]
@@ -221,7 +222,7 @@
 	tail -f app.log | grep --line-buffered ERROR
 \end{lstlisting}
 
-\subsection{\texttt{grep} —— 全局正则搜索（文本过滤之王）} 语法：\texttt{grep [选项] '正则模式' 文件}
+\subsection*{\texttt{grep} —— 全局正则搜索（文本过滤之王）} 语法：\texttt{grep [选项] '正则模式' 文件}
 
 关键参数：
 \begin{itemize}
@@ -242,7 +243,7 @@
 
 性能提示：大文件用 \texttt{-F} 或 \texttt{-m} 限制输出。
 
-\subsection{\texttt{awk} —— 文本分析与格式化（切列神器）} 语法：\texttt{awk [选项] '模式{动作}' 文件}
+\subsection*{\texttt{awk} —— 文本分析与格式化（切列神器）} 语法：\texttt{awk [选项] '模式{动作}' 文件}
 
 常用选项：\texttt{-F}（字段分隔符）、\texttt{-v}（变量赋值）、\texttt{-f}（脚本文件）。
 
@@ -265,7 +266,8 @@
 	awk 'length($0) > 80' file.txt
 \end{lstlisting}
 
-\subsection{\texttt{sed} —— 流编辑器（替换、插入和删除）} 语法：\texttt{sed [选项] '动作' 文件}
+\subsection*{\texttt{sed} —— 流编辑器（替换、插入和删除）}
+语法：\texttt{sed [选项] '动作' 文件}
 
 选项：\texttt{-i}（直接修改，建议加备份后缀）、\texttt{-n}（安静模式）、\texttt{-e}（多点编辑）、\texttt{-E}（扩展正则）、\texttt{-f}（脚本文件）。
 
@@ -289,7 +291,8 @@
 	sed -E 's/[0-9]{4}-[0-9]{2}-[0-9]{2}/DATE/g' file.txt
 \end{lstlisting}
 
-\subsection{\texttt{sort} —— 排序} 参数：\texttt{-n}（数值排序）、\texttt{-r}（反向）、\texttt{-k}（指定列）、\texttt{-t}（分隔符）、\texttt{-u}（去重）、\texttt{-h}（人类可读数字排序）、\texttt{-m}（合并已排序文件）、\texttt{-o}（输出文件）、\texttt{-c}（检查是否已排序）。
+\subsection*{\texttt{sort} —— 排序}
+参数：\texttt{-n}（数值排序）、\texttt{-r}（反向）、\texttt{-k}（指定列）、\texttt{-t}（分隔符）、\texttt{-u}（去重）、\texttt{-h}（人类可读数字排序）、\texttt{-m}（合并已排序文件）、\texttt{-o}（输出文件）、\texttt{-c}（检查是否已排序）。
 
 示例：
 \begin{lstlisting}[language=bash]
@@ -299,7 +302,7 @@
 	sort -rnk 2 data.txt
 \end{lstlisting}
 
-\subsection{\texttt{uniq} —— 去重与统计（必须先排序）} 参数：\texttt{-c}（计数）、\texttt{-d}（仅重复行）、\texttt{-u}（仅唯一行）、\texttt{-f}（跳过字段）、\texttt{-s}（跳过字符）、\texttt{-w}（比较前 N 字符）、\texttt{-i}（忽略大小写）。
+\subsection*{\texttt{uniq} —— 去重与统计（必须先排序）} 参数：\texttt{-c}（计数）、\texttt{-d}（仅重复行）、\texttt{-u}（仅唯一行）、\texttt{-f}（跳过字段）、\texttt{-s}（跳过字符）、\texttt{-w}（比较前 N 字符）、\texttt{-i}（忽略大小写）。
 
 示例：
 \begin{lstlisting}[language=bash]
@@ -308,7 +311,7 @@
 	sort file.txt | uniq -u
 \end{lstlisting}
 
-\subsection{\texttt{wc} —— 统计行、词和字符} 参数：\texttt{-l}（行数）、\texttt{-w}（单词数）、\texttt{-c}（字节数）、\texttt{-m}（字符数，多字节）、\texttt{-L}（最长行长度）。
+\subsection*{\texttt{wc} —— 统计行、词和字符} 参数：\texttt{-l}（行数）、\texttt{-w}（单词数）、\texttt{-c}（字节数）、\texttt{-m}（字符数，多字节）、\texttt{-L}（最长行长度）。
 
 示例：
 \begin{lstlisting}[language=bash]
@@ -317,7 +320,7 @@
 	wc -w report.txt
 \end{lstlisting}
 
-\subsection{\texttt{cut} —— 按列或字符切割} 参数：\texttt{-d}（分隔符，默认 Tab）、\texttt{-f}（字段列表，如 \texttt{-f1,3}）、\texttt{-c}（字符范围，如 \texttt{-c1-5}）、\texttt{--complement}（取补集）、\texttt{-s}（不输出无分隔符的行）。
+\subsection*{\texttt{cut} —— 按列或字符切割} 参数：\texttt{-d}（分隔符，默认 Tab）、\texttt{-f}（字段列表，如 \texttt{-f1,3}）、\texttt{-c}（字符范围，如 \texttt{-c1-5}）、\texttt{--complement}（取补集）、\texttt{-s}（不输出无分隔符的行）。
 
 示例：
 \begin{lstlisting}[language=bash]
@@ -327,7 +330,7 @@
 	cut -d: --complement -f3 /etc/passwd
 \end{lstlisting}
 
-\subsection{\texttt{tr} —— 字符转换、压缩、删除} 参数：\texttt{-d}（删除指定字符）、\texttt{-s}（压缩连续重复字符）、\texttt{-c}（取补集）、\texttt{-t}（截断）。
+\subsection*{\texttt{tr} —— 字符转换、压缩、删除} 参数：\texttt{-d}（删除指定字符）、\texttt{-s}（压缩连续重复字符）、\texttt{-c}（取补集）、\texttt{-t}（截断）。
 
 示例：
 \begin{lstlisting}[language=bash]
@@ -338,7 +341,7 @@
 	tr '[:lower:]' '[:upper:]' < file.txt
 \end{lstlisting}
 
-\subsection{\texttt{xargs} —— 将标准输入转为命令行参数} 参数：\texttt{-I}（替换符，如 \texttt{-I \{\}}）、\texttt{-n}（每次传递 N 个参数）、\texttt{-p}（提示确认）、\texttt{-0}（NUL 分隔，配合 \texttt{find -print0}）、\texttt{-P}（并行进程数）、\texttt{-L}（每次 N 行）、\texttt{-t}（打印命令）。
+\subsection*{\texttt{xargs} —— 将标准输入转为命令行参数} 参数：\texttt{-I}（替换符，如 \texttt{-I \{\}}）、\texttt{-n}（每次传递 N 个参数）、\texttt{-p}（提示确认）、\texttt{-0}（NUL 分隔，配合 \texttt{find -print0}）、\texttt{-P}（并行进程数）、\texttt{-L}（每次 N 行）、\texttt{-t}（打印命令）。
 
 示例：
 \begin{lstlisting}[language=bash]
@@ -377,7 +380,7 @@
 
 \section{进程、系统与网络}
 
-\subsection{\texttt{ps} —— 显示进程快照} 常用组合：
+\subsection*{\texttt{ps} —— 显示进程快照} 常用组合：
 \begin{itemize}
 \item \texttt{ps aux}：BSD 风格，显示所有进程。
 \item \texttt{ps -ef}：System V 风格。
@@ -398,7 +401,7 @@
 	ps -fp 1234
 \end{lstlisting}
 
-\subsection{\texttt{top} 与 \texttt{htop} —— 实时进程监控} 参数：\texttt{-p PID}、\texttt{-u 用户}、\texttt{-b}（批处理）、\texttt{-n 次数}、\texttt{-d 秒}、\texttt{-H}（显示线程）。
+\subsection*{\texttt{top} 与 \texttt{htop} —— 实时进程监控} 参数：\texttt{-p PID}、\texttt{-u 用户}、\texttt{-b}（批处理）、\texttt{-n 次数}、\texttt{-d 秒}、\texttt{-H}（显示线程）。
 
 交互快捷键：\texttt{P}（CPU排序）、\texttt{M}（内存）、\texttt{N}（PID）、\texttt{T}（时间）、\texttt{k}（杀进程）、\texttt{r}（调整优先级）、\texttt{q}（退出）、\texttt{c}（完整命令）、\texttt{1}（各CPU核心）、\texttt{z}（彩色）、\texttt{f}（选择字段）。
 
@@ -408,7 +411,7 @@
 	top -b -n 1 > top_output.txt
 \end{lstlisting}
 
-\subsection{\texttt{kill} —— 终止进程} 常用信号：
+\subsection*{\texttt{kill} —— 终止进程} 常用信号：
 \begin{itemize}
 \item \texttt{-15} (SIGTERM)：优雅终止（默认）。
 \item \texttt{-9} (SIGKILL)：强制杀死。
@@ -425,7 +428,7 @@
 	kill -1 $(cat /var/run/nginx.pid)
 \end{lstlisting}
 
-\subsection{\texttt{df} —— 查看磁盘分区空间} 参数：\texttt{-h}（人类可读）、\texttt{-H}（1000进制）、\texttt{-T}（文件系统类型）、\texttt{-i}（inode使用情况）、\texttt{--total}、\texttt{-a}（所有）、\texttt{-x}（排除类型）。
+\subsection*{\texttt{df} —— 查看磁盘分区空间} 参数：\texttt{-h}（人类可读）、\texttt{-H}（1000进制）、\texttt{-T}（文件系统类型）、\texttt{-i}（inode使用情况）、\texttt{--total}、\texttt{-a}（所有）、\texttt{-x}（排除类型）。
 
 示例：
 \begin{lstlisting}[language=bash]
@@ -434,7 +437,7 @@
 	df -h /var/log
 \end{lstlisting}
 
-\subsection{\texttt{du} —— 查看文件和目录的磁盘占用} 参数：\texttt{-s}（汇总）、\texttt{-h}、\texttt{-a}（显示所有文件）、\texttt{-c}（显示总和）、\texttt{-d}（递归深度）、\texttt{-b/-k/-m}（单位）、\texttt{--exclude}。
+\subsection*{\texttt{du} —— 查看文件和目录的磁盘占用} 参数：\texttt{-s}（汇总）、\texttt{-h}、\texttt{-a}（显示所有文件）、\texttt{-c}（显示总和）、\texttt{-d}（递归深度）、\texttt{-b/-k/-m}（单位）、\texttt{--exclude}。
 
 示例：
 \begin{lstlisting}[language=bash]
@@ -444,7 +447,7 @@
 	du -h -d 2 /var
 \end{lstlisting}
 
-\subsection{\texttt{free} —— 查看内存使用} 参数：\texttt{-h}、\texttt{-m/-g}、\texttt{-s}（刷新间隔）、\texttt{-t}（总计行）。
+\subsection*{\texttt{free} —— 查看内存使用} 参数：\texttt{-h}、\texttt{-m/-g}、\texttt{-s}（刷新间隔）、\texttt{-t}（总计行）。
 
 列说明：total、used、free、shared、buff/cache、available（真正可用）。
 
@@ -454,7 +457,7 @@
 	free -hs 2
 \end{lstlisting}
 
-\subsection{\texttt{ss} —— 查看网络端口与连接（推荐）} 参数：\texttt{-t}（TCP）、\texttt{-u}（UDP）、\texttt{-l}（仅监听）、\texttt{-n}（数字显示）、\texttt{-p}（显示进程）、\texttt{-a}（所有）、\texttt{-r}（解析主机名）、\texttt{-s}（统计摘要）、\texttt{-4/-6}、\texttt{-o}（计时器）。
+\subsection*{\texttt{ss} —— 查看网络端口与连接（推荐）} 参数：\texttt{-t}（TCP）、\texttt{-u}（UDP）、\texttt{-l}（仅监听）、\texttt{-n}（数字显示）、\texttt{-p}（显示进程）、\texttt{-a}（所有）、\texttt{-r}（解析主机名）、\texttt{-s}（统计摘要）、\texttt{-4/-6}、\texttt{-o}（计时器）。
 
 示例：
 \begin{lstlisting}[language=bash]
@@ -465,7 +468,7 @@
 
 （兼容 \texttt{netstat -tunlp}）
 
-\subsection{\texttt{curl} —— 发送 HTTP/HTTPS 请求（接口测试）} 常用参数：
+\subsection*{\texttt{curl} —— 发送 HTTP/HTTPS 请求（接口测试）} 常用参数：
 \begin{itemize}
 \item \texttt{-I}：仅响应头（HEAD）。
 \item \texttt{-o/-O}：保存文件。
@@ -492,7 +495,7 @@
 	curl -v https://example.com
 \end{lstlisting}
 
-\subsection{\texttt{wget} —— 下载文件} 参数：\texttt{-c}（断点续传）、\texttt{-O}（输出文件名）、\texttt{-P}（目录）、\texttt{-q}（安静）、\texttt{-t}（重试次数）、\texttt{-i}（批量下载列表）、\texttt{--limit-rate}、\texttt{--user-agent}、\texttt{--post-data}、\texttt{-r}（递归）、\texttt{-np}（不进入上层）、\texttt{-A}（后缀过滤）。
+\subsection*{\texttt{wget} —— 下载文件} 参数：\texttt{-c}（断点续传）、\texttt{-O}（输出文件名）、\texttt{-P}（目录）、\texttt{-q}（安静）、\texttt{-t}（重试次数）、\texttt{-i}（批量下载列表）、\texttt{--limit-rate}、\texttt{--user-agent}、\texttt{--post-data}、\texttt{-r}（递归）、\texttt{-np}（不进入上层）、\texttt{-A}（后缀过滤）。
 
 示例：
 \begin{lstlisting}[language=bash]
@@ -503,7 +506,7 @@
 
 \section{权限与打包}
 
-\subsection{\texttt{chmod} —— 修改权限} 数字法：4=读，2=写，1=执行，组合如 755、644。 符号法：\texttt{u/g/o/a}、\texttt{+/-/=}、\texttt{r/w/x}。
+\subsection*{\texttt{chmod} —— 修改权限} 数字法：4=读，2=写，1=执行，组合如 755、644。 符号法：\texttt{u/g/o/a}、\texttt{+/-/=}、\texttt{r/w/x}。
 
 参数：\texttt{-R}（递归）、\texttt{-c/-v}（显示变化）、\texttt{--reference}（参考文件）。
 
@@ -518,7 +521,7 @@
 	chmod u+s /usr/bin/passwd
 \end{lstlisting}
 
-\subsection{\texttt{chown} —— 修改所有者和组} 参数：\texttt{-R}、\texttt{--from}（条件修改）、\texttt{-v/-c}。
+\subsection*{\texttt{chown} —— 修改所有者和组} 参数：\texttt{-R}、\texttt{--from}（条件修改）、\texttt{-v/-c}。
 
 示例：
 \begin{lstlisting}[language=bash]
@@ -528,7 +531,7 @@
 	chown --from=old new file.txt
 \end{lstlisting}
 
-\subsection{\texttt{tar} —— 打包与解包（最常用压缩工具）} 主操作：\texttt{-c}（创建）、\texttt{-x}（解包）、\texttt{-t}（列出）、\texttt{-r}（追加）、\texttt{-u}（更新）、\texttt{-d}（比较）。
+\subsection*{\texttt{tar} —— 打包与解包（最常用压缩工具）} 主操作：\texttt{-c}（创建）、\texttt{-x}（解包）、\texttt{-t}（列出）、\texttt{-r}（追加）、\texttt{-u}（更新）、\texttt{-d}（比较）。
 
 辅助选项：\texttt{-v}、\texttt{-f}（归档名，必须紧跟）、\texttt{-z}（gzip）、\texttt{-j}（bzip2）、\texttt{-J}（xz）、\texttt{-C}（解压目录）、\texttt{-p}（保留权限）、\texttt{--exclude}、\texttt{--exclude-vcs}、\texttt{--strip-components}、\texttt{-P}（绝对路径，不推荐）。
 
