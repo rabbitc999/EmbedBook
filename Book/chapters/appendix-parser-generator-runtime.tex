@@ -213,7 +213,7 @@ while (context.stackTop > 0u) {
 
 直接给 \texttt{\$1} 赋一个新对象会改变子结果指针，原对象的归属关系随之丢失，因此生成器明确拒绝这种写法。需要修改变量时，应使用带类型字段的赋值；需要产生新的当前结果时，应给 \texttt{\$\$} 赋值。
 
-生成期能够确定的 C 标量遵循一组简化提升规则：相同类型保持不变；只要一侧是 \texttt{double}，结果就是 \texttt{double}；存在其他浮点类型时结果为 \texttt{float}；两个不同整数类型统一提升为 \texttt{int64}。运行时对象之间的算术则交给 \texttt{Var\_Add}、\texttt{Var\_Sub}、\texttt{Var\_Mul} 和 \texttt{Var\_Div}。
+生成期能够确定的 C 标量遵循一组简化提升规则：相同类型保持不变；只要一侧是 \texttt{double}，结果就是 \texttt{double}；存在其他浮点类型时结果为 \texttt{float}；此时整数类型统一提升为 \texttt{int64}。运行时对象之间的算术则交给 \texttt{Var\_Add}、\texttt{Var\_Sub}、\texttt{Var\_Mul} 和 \texttt{Var\_Div}。
 
 位运算和移位没有定义为动态对象操作。遇到运行时对象时，生成器会发出警告并按整数读取。这个选择保证生成过程能够继续，但也提醒文法作者显式写出目标类型，避免依赖隐式截断。
 

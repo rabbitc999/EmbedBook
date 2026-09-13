@@ -303,9 +303,9 @@ static uint8_t Task_IsTimeReached(uint32_t currentTime,
 % ---------------------------------------------------------------------
 \section{条件等待与任务连接}
 
-\texttt{Task\_ConditionWait} 与 \texttt{Task\_Wait} 的现场切换结构相同，区别是它把 \texttt{nextRunTime} 清零，并把 \texttt{pWaitCondition} 指向目标条件。\texttt{Task\_ConditionNotify} 只把条件标志置一，真正的状态更新仍由调度扫描完成。
+\texttt{Task\_ConditionWait} 与 \texttt{Task\_Wait} 的现场切换相同，区别是它把 \texttt{nextRunTime} 清零，并把 \texttt{pWaitCondition} 指向目标条件。\texttt{Task\_ConditionNotify} 只把条件标志置一，真正的状态更新仍由调度扫描完成。
 
-每个任务控制块内部还有一个结束条件 \texttt{condition}。\texttt{Task\_Join(taskId)} 找到目标任务后，增加 \texttt{joinWaitCount}，再等待该结束条件。目标入口返回时，\texttt{Task\_RunEntry} 把任务状态改为 \texttt{DELETED}，并通知结束条件。
+任务控制块内部有一个结束条件 \texttt{condition}。\texttt{Task\_Join(taskId)} 找到目标任务后，增加 \texttt{joinWaitCount}，再等待该结束条件。目标入口返回时，\texttt{Task\_RunEntry} 把任务状态改为 \texttt{DELETED}，并通知结束条件。
 
 \texttt{joinWaitCount} 解决了一个生命周期问题：如果还有任务等待目标结束，目标 TCB 不能立刻回收到资源池。等待者恢复后减少计数，最后一个等待者再尝试销毁目标任务。
 
@@ -355,7 +355,7 @@ static uint8_t Task_IsTimeReached(uint32_t currentTime,
 
 \subsection{独立栈重叠检查}
 
-\texttt{Task\_CheckStackOverlap} 的意图是比较新栈区和已有独立栈区。共享栈任务的 \texttt{stackTop} 为零，且 \texttt{stackSize} 不参与共享栈管理。检查时应明确跳过共享栈任务，避免把没有独立栈区的 TCB 当成地址区间参与计算。
+\texttt{Task\_CheckStackOverlap} 的意图是比较新栈区和已有栈区。共享栈任务的 \texttt{stackTop} 为零，且 \texttt{stackSize} 不参与共享栈管理。检查时应明确跳过共享栈任务，避免把没有独立栈区的 TCB 当成地址区间参与计算。
 
 \subsection{中断临界区}
 

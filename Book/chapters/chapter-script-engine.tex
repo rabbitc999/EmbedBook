@@ -596,7 +596,7 @@ $$ = [$1];                /* 读取变量作为产生式结果 */
 delete[$1];               /* 删除普通变量 */
 \end{lstlisting}
 
-通过 \texttt{\%var} 预声明的变量属于系统默认变量：类型固定，不能被 \texttt{def} 重新定义，也不能用 \texttt{delete} 删除；脚本里尝试覆盖或删除系统变量会返回 \texttt{PARSER\_ERR\_SYSTEM}。运行时通过 \texttt{def} 创建的普通变量则可以再次 \texttt{def}，并且允许改变类型；\texttt{delete[\$1]} 会删除普通变量，之后可以重新定义。外部 C 代码也可以调用 \texttt{Parser\_DeleteVariable()} 删除普通变量。\texttt{def[\$1, \$2]} 可以从已有的简单类型、数组、字典、结构体或嵌套复合值复制类型；显式字面类型写法仍用于简单类型和定长数组。
+通过 \texttt{\%var} 预声明的变量属于系统默认变量：类型固定，不能被 \texttt{def} 重新定义，也不能用 \texttt{delete} 删除；脚本里尝试覆盖或删除系统变量会返回 \texttt{PARSER\_ERR\_SYSTEM}。运行时通过 \texttt{def} 创建的普通变量则可以再次 \texttt{def}，并且允许改变类型；\texttt{delete[\$1]} 会删除普通变量，之后可以重新定义。外部 C 代码也可以调用 \texttt{Parser\_DeleteVariable} 删除普通变量。\texttt{def[\$1, \$2]} 可以从已有的简单类型、数组、字典、结构体或嵌套复合值复制类型；显式字面类型写法仍用于简单类型和定长数组。
 
 “一个非终结符的多条候选”不再用 \texttt{|} 连接，而是重复写 \texttt{lhs :=}：
 
@@ -724,84 +724,11 @@ gcc parser_calc.c -lm -o parser_calc
 \end{anybox}
 
 % ---------------------------------------------------------------------
-\section{单片机实验：串口表达式计算移植与实测}
-
-本节实验把表达式解析器接入单片机串口，让用户发送公式并记录解析结果或错误码。实验代码参考 \texttt{Chapter-script-engine/表达式脚本引擎/}。
-
-\subsection{实验基本信息}
-
-\begin{tabular}{r l r l}
-  脚本缓冲区容量： & \LabFillLine[3.5cm] & 
-  变量表容量：     & \LabFillLine[3.5cm] \\[2pt]
-  串口配置：       & \LabFillLine[4cm]   & 
-  表达式最大长度： & \LabFillLine[3.5cm]
-\end{tabular}
-
-\subsection{实验目的}
-
-\begin{enumerate}
-\item 在单片机串口层之上实现表达式输入、解析和结果回传。
-\item 验证整数、浮点、变量和四则运算表达式的处理流程。
-\item 分析非法语法、递归深度、内存边界和错误恢复机制。
-\end{enumerate}
-
-\subsection{实验原理}
-
-串口接收程序按换行收集脚本文本，词法分析器把数字、变量、运算符和括号转换为 Token，递归下降解析器按优先级计算表达式。变量从静态变量表读取，解析深度、输入长度和结果写入均进行边界检查，错误码沿调用链返回到串口输出层。
-
-\subsection{实验步骤}
-
-\begin{enumerate}
-\item 连接 USB-TTL 与开发板串口，配置串口参数并下载脚本引擎程序。
-\item 发送整数表达式 \texttt{10 + 2 * 3}，记录解析返回值。
-\item 发送浮点表达式并检查浮点结果的格式化输出。
-\item 设置变量后发送包含变量和括号的表达式，检查运算优先级。
-\item 发送含多级括号的表达式，观察递归深度限制边界。
-\item 发送非法语法表达式，记录语法错误码和恢复后的可用状态。
-\item 发送超过脚本缓冲区容量的超长输入，记录截断或拒绝处理结果。
-\end{enumerate}
-
-\subsection{实验现象与数据记录}
-
-\begin{table}[htbp]
-\centering
-\caption{脚本表达式实验记录}
-\label{tab:ch10-script-record}
-\begin{tabularx}{\textwidth}{p{4cm}p{4cm}p{3cm}X}
-\toprule
-表达式 & 期望结果 & 实际结果 & 错误码 \\
-\midrule
-\texttt{10 + 2 * 3} & 16 & \LabFillBlack[2.8cm] & \LabFillBlack[2.4cm] \\
-浮点表达式 & \LabFillBlack[2.8cm] & \LabFillBlack[2.8cm] & \LabFillBlack[2.4cm] \\
-变量与括号表达式 & \LabFillBlack[2.8cm] & \LabFillBlack[2.8cm] & \LabFillBlack[2.4cm] \\
-非法语法表达式 & 返回语法错误 & \LabFillBlack[2.8cm] & \LabFillBlack[2.4cm] \\
-超长输入 & 触发长度保护 & \LabFillBlack[2.8cm] & \LabFillBlack[2.4cm] \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-\subsection{结果分析}
-
-递归下降解析深度与 MCU 栈空间的关系：\LabFillLine[6cm]
-
-脚本缓冲区、变量表和 Token 存储的内存边界：\LabFillLine[6cm]
-
-语法错误后的输入丢弃、重新同步和错误恢复过程：\LabFillLine[6cm]
-
-\subsection{实验总结}
-
-\noindent\LabFillLine[\linewidth]\par
-\noindent\LabFillLine[\linewidth]\par
-\noindent\LabFillLine[\linewidth]
-
-% ---------------------------------------------------------------------
 \section{解析器的选择与工程边界}
 
 如果你读到这里觉得“这章怎么突然就停了”，没错，是我故意停的。
 
-因为当我把递归下降、$LL(1)$ 以及 First 与 Follow 集合全部铺完之后，我必须面对一个诚实的问题：在单片机上，你到底该不该手写解析器？
-
-答案分三种情况，如表~\ref{tab:parser-decision}~所示。
+因为当我把递归下降、$LL(1)$ 以及 First 与 Follow 集合全部铺完之后，我必须面对一个诚实的问题：在单片机上，你到底该不该手写解析器？答案分三种情况，如表~\ref{tab:parser-decision}~所示。
 
 \begin{table}[htbp]
 	\centering

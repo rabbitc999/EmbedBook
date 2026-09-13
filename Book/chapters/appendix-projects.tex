@@ -482,7 +482,7 @@ FreeRTOS阶段解决了一些问题：10ms的IMU任务不再被其他任务干�
 
 \begin{enumerate}
 	\item V1.0（简单弹窗）：每天23:30弹窗，10分钟后锁屏。作者随手点“稍后”，继续写代码到凌晨。
-	\item V2.0（反任务管理器）：用\texttt{EnumWindows}遍历窗口，发现任务管理器就\texttt{PostMessage}退出。作者用\texttt{taskkill /f /im}解决。
+	\item V2.0（反任务管理器）：发现任务管理器就\texttt{PostMessage}退出。作者用\texttt{taskkill /f /im}解决。
 	\item V3.0（锁系统工具）：禁用CMD、PowerShell，改注册表。作者因为“好麻烦”而放弃抵抗——第一次“被自己的懒惰拯救”。
 	\item V4.0（守护进程）：用C语言写守护进程，每秒检查主程序是否存活，被杀后立即重启。作者花了一个半小时跟自己的守护进程打攻防战，没写一行业务代码。
 	\item V5.0（系统服务 + 三层嵌套）：注册为Windows系统服务，三层自我修复（主程序被杀→服务重启→被杀→重启计算机→再被杀→再重启）。CPU占用飙到70\%，作者拔了电源线。
@@ -589,3 +589,79 @@ FreeRTOS阶段解决了一些问题：10ms的IMU任务不再被其他任务干�
 作者在第~\ref{ch:about-author}~章里说过：“热爱可以等，交期不等。”这句话的背后，是对“塑料轮子”的深刻理解：它不是在否定更先进的技术方案，而是在承认“在有限的时间、有限的资源、有限的精力下，先交付一个可用的结果，比追求一个完美的方案更重要”。
 
 这个附录里的每一个项目，都是这句话的注脚。
+
+% ---------------------------------------------------------------------
+\section{Script-Engine：36 块的解析器生成器（2026 年）}
+
+\subsection{这是什么}
+
+Script-Engine 是一个解析器生成器。输入 \texttt{.gram} 文法文件，输出可编译的 C 解析器。它支持 LL(1)、SLR(1)、LALR(1)、IELR(1) 和 GLR，一条文法进去，对应模式的解析器出来。
+
+\subsection{为什么写它}
+
+正文第~\ref{ch:script-engine}~章讲过递归下降和 LL(1)，但那个版本覆盖不了 LALR 和 GLR。作者想验证一件事：一个人加一个 AI Agent，能不能把解析器生成的主流硬路线全走一遍。
+
+\subsection{覆盖了什么}
+
+\begin{itemize}
+\item 文法层：\texttt{\%token}、\texttt{\%define}、\texttt{\%start}、\texttt{\%left}、\texttt{\%right}、\texttt{\%nonassoc}、\texttt{\%prec}、\texttt{\%expect}、\texttt{\%tree}、\texttt{\%ast\_skip}、\texttt{\%ast\_fold}、\texttt{\%ast\_label}、\texttt{\%var}；
+\item 词法层：\texttt{\%token regex} 支持正则到 NFA、子集构造和最小化 DFA；\texttt{\%identifier} 支持标识符 DFA 与关键字表；
+\item 语义动作层：\texttt{\$1 + \$3} 自动翻译成 \texttt{Var\_Add}，并支持 \texttt{[\$1] = \$3}、\texttt{def[\$1, int32] = \$3}、\texttt{delete[\$1]}；
+\item 运行时：动态类型、数组、字典、结构体、切片、拼接、深拷贝和递归释放；
+\item 输出：默认生成 11 个文件的分文件布局，也支持把模板内联进单一可执行文件。
+\end{itemize}
+
+\subsection{成本}
+
+总共 36 块。20 块重造 Yacc，5 块重造造 Yacc 的机器，11 块把 IELR 和 GLR 装进去。这里的“块”不是精确财务核算，而是作者对五段人机协作投入的记账口径。
+
+\subsection{性能对比}
+
+\begin{table}[htbp]
+	\centering
+	\caption{Script-Engine 在代表性文法上的运行时间}
+	\label{tab:app-parsergen-performance}
+	\begin{tabular}{lrrr}
+		\toprule
+		文法 & Python & C++ 改前 & C++ 改后 \\
+		\midrule
+		c89\_subset & 33.2s & 28.7s & 4.6s \\
+		pl0 & 75ms & --- & 12ms \\
+		calc\_prec & 64ms & --- & 8ms \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+33.2 秒到 4.6 秒，不是算法变了，是字符串拼接、容器查找和模板加载时机变了。正确性没有让步，只是把机器内部的浪费拿掉了。
+
+\subsection{验证方式}
+
+项目用 parity check 做底线：Python 版和 C++ 版逐字节比对产物、标准输出和 \texttt{--report}。全部一致才算通过。每增加一个解析模式，都先对齐已有行为，再验证新模式自己的边界用例。
+
+\subsection{项目地址}
+
+\url{https://gitee.com/rabbitc999/Script-Engine}
+
+仓库包含完整源码、示例文法、parity check 脚本、\texttt{RESULT.md} 实跑结果，以及 Makefile 与 CMakeLists.txt。项目采用 MIT 发布。
+
+\subsection{和正文的对应关系}
+
+\begin{table}[htbp]
+	\centering
+	\caption{Script-Engine 与正文各章的对应关系}
+	\label{tab:app-parsergen-mapping}
+	\begin{tabular}{ll}
+		\toprule
+		正文章节 & 对应内容 \\
+		\midrule
+		第~\ref{ch:script-engine}~章 & 递归下降、LL(1)、Python 生成器 \\
+		第~\ref{ch:parser-production-line}~章 & 20 块重造 Yacc、5 块重造机器、36 块装 IELR/GLR \\
+		第~\ref{ch:branch-pipeline}~章 & AI 分支、PR 闸门、全量回归、parity check \\
+		附录~\ref{app:parser-generator-runtime} & Python 生成器与动态类型解析 \\
+		\bottomrule
+	\end{tabular}
+\end{table}
+
+\subsection{一句话}
+
+36 块买的不是代码，是一个人加 Agent 能干到什么程度的实证。轮子归你们了，造轮子的机器也归你们了。

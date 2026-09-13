@@ -814,6 +814,61 @@ cmake --build build
 CMake 的价值是“一处写 CMakeLists.txt，Windows、Linux 与单片机交叉编译都能复用”。
 
 % ---------------------------------------------------------------------
+\section{从单片机到 Linux：约束变了什么}
+
+前 15 章的经验主要来自单片机：资源少、没有操作系统、所有时序都要自己盯住。到了 Linux，很多具体做法会变，但判断问题的方式不会推倒重来。先把两边的约束摊开对照，比急着记命令更重要。
+
+\begin{table}[htbp]
+\centering
+\caption{单片机与 Linux 的主要约束对照}
+\label{tab:mcu-linux-constraints}
+\begin{tabularx}{\textwidth}{lXX}
+\toprule
+维度 & 单片机 & Linux \\
+\midrule
+RAM & 几 KB，分配前先算清楚 & 几百 MB 起，但仍要处理失败、泄漏和碎片 \\
+操作系统 & 通常没有，需要自己写主循环或调度器 & 进程、线程和调度器都是现成能力 \\
+内存分配 & 静态分配为主，慎用 \texttt{malloc} & 可以用 \texttt{malloc}，但必须面对失败路径和长期占用 \\
+故障形态 & HardFault、跑飞、复位 & 段错误、core dump、\texttt{dmesg}、\texttt{strace} \\
+并发模型 & 一个主循环，加上少量中断与标志位 & 多进程、多线程、IO 多路复用 \\
+外设访问 & 自己操作寄存器，自己控制时序 & 驱动、设备树、\texttt{sysfs}、\texttt{ioctl} \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+差异看上去很大，实际上只是约束换了位置：单片机把不确定性压在“资源”和“时序”上，Linux 把不确定性放到“生态”和“并发”上。核心句仍然是：约束变了，判断框架不变。先问资源够不够，再问失败会怎样，最后问出了问题能不能定位。
+
+% ---------------------------------------------------------------------
+\section{最小可跑实验：从命令行到守护进程}
+
+想理解 Linux，不要从背命令开始，从一个小程序开始。写一个最简单的 C 程序，用 \texttt{gcc} 编译，用 \texttt{Makefile} 固化构建步骤，再用 \texttt{CMake} 把它组织成可迁移的工程。程序本身不需要复杂，只要它能打印日志、接收信号、在后台留下来即可。
+
+接下来做四件事：
+
+\begin{enumerate}
+\item 用 \texttt{grep}、\texttt{awk}、\texttt{sed} 过滤和处理它产生的日志，体验文本接口如何把程序行为变成可检查的数据；
+\item 用 \texttt{ps}、\texttt{top}、\texttt{ss} 观察它的进程、资源占用和网络状态；
+\item 把它改成后台运行，写自己的日志文件，并处理终止、重载一类信号；
+\item 用 \texttt{strace} 看系统调用，用 \texttt{gdb} 看栈和变量，确认程序到底卡在哪一步。
+\end{enumerate}
+
+目标不是学命令，是体验“在复杂系统里怎么定位一个问题”。单片机上，你习惯先量电压、看波形、单步进中断；Linux 上，你要先确认进程还活着，再确认它打开了哪些文件、卡在哪个系统调用、为什么没有继续往下走。工具不同，定位路径是一致的：先建立现象，再缩小范围，最后用证据验证判断。
+
+% ---------------------------------------------------------------------
+\section{一条诚实的边界：Linux 不是单片机的替代，是另一条赛道}
+
+不是所有嵌入式项目都要上 Linux。上不上 Linux，取决于约束：算力、内存、实时性、成本、功耗、启动时间和团队能力。一个需要十几微秒内响应中断的电机控制任务，并不会因为 Linux 功能多就变得合适；一个需要网络、文件系统、摄像头和多进程协作的设备，也不必为了“纯粹”硬扛裸机。
+
+单片机练的是“在极小资源里做确定的事”，Linux 练的是“在复杂生态里管住不确定性”。两条路都需要知道资源边界、失败模式和验证方法，只是侧重点不同。只走单片机，容易把复杂度都塞进自己的主循环；只走 Linux，容易把硬件时序当成理所当然。两条路都走，判断框架才完整。
+
+% ---------------------------------------------------------------------
+\section{交叉编译与部署（可选）}
+
+嵌入式 Linux 程序通常在 PC 上编译，再把二进制放到板子上运行。原因很直接：板子的 CPU 架构、指令集和系统库都可能与开发机不同，必须在 PC 上使用目标平台对应的交叉编译工具链。工具链、\texttt{sysroot}、动态库与静态库之间的关系，决定了程序能不能在目标板上找到自己的依赖。
+
+最小部署流程可以压缩成三步：先确认目标板架构和系统库版本，再用工具链生成二进制，最后通过 \texttt{ssh} 或 \texttt{scp} 把程序和依赖送到板上。需要长期运行时，再考虑用 \texttt{systemd} 或启动脚本管理它、重定向日志、设置自动重启。这里不展开命令细节，重点是先让一个最小程序在板上跑起来，再逐步增加部署约束。
+
+% ---------------------------------------------------------------------
 \section{后续转行——Linux 驱动与应用开发}
 
 对从单片机转过来的开发者，最自然的第一步不是看内核源码，而是先把 RK3588 与 K230 开发板跑起来，写一个“用户空间点亮 LED”的程序，再逐步下沉到驱动层。本章的目标是“快速上手”，但 Linux 体系庞大，单靠一章命令速查远远不够。以下书目按学习路径分层整理，供读者根据自身阶段选读。
@@ -849,80 +904,6 @@ CMake 的价值是“一处写 CMakeLists.txt，Windows、Linux 与单片机交�
 
 \subsection*{选读建议}
 从单片机转向嵌入式 Linux，不必一上来就啃内核。务实的路径是：先跑通开发板、写用户空间程序（第二阶段）\(\rightarrow\) 再学 U-Boot 与内核移植（第三阶段）\(\rightarrow\) 最后按需深入驱动或内核（第四阶段）。第一阶段的命令和 Shell 脚本贯穿始终，建议边用边查，不必一次性背完。
-% ---------------------------------------------------------------------
-\section{单片机实验：Linux 开发环境搭建与基础命令验证}
-
-\subsection{实验基本信息}
-
-\begin{tabular}{r l r l}
-  Linux 发行版：   & \LabFillLine[3.5cm] & 
-  内核版本：       & \LabFillLine[3.5cm] \\[2pt]
-  虚拟机软件：     & \LabFillLine[3.5cm] & 
-  分配内存/CPU：   & \LabFillLine[3.5cm] \\[2pt]
-  GCC 版本：       & \LabFillLine[3.5cm] & 
-  CMake 版本：     & \LabFillLine[3.5cm]
-\end{tabular}
-
-\subsection{实验目的}
-\begin{enumerate}
-\item 掌握 Linux 虚拟机的安装与基本配置方法；
-\item 熟悉 Linux 常用命令（文件操作、文本处理、进程管理、网络工具）；
-\item 掌握 GCC 单文件与多文件编译流程；
-\item 理解 Makefile 自动构建规则；
-\item 掌握 CMake 工程构建方法。
-\end{enumerate}
-
-\subsection{实验原理}
-Linux 是嵌入式开发的重要平台，现代工具链（GCC、CMake、Git 等）均原生支持 Linux 环境。虚拟机技术允许在 Windows 主机上运行完整的 Linux 系统，无需双系统或额外硬件。GCC 将 C 源码依次经过预处理、编译、汇编、链接四个阶段生成可执行文件。Makefile 通过“目标-依赖-命令”规则实现增量编译，CMake 则进一步抽象构建过程，生成平台无关的构建配置。
-
-\subsection{实验步骤}
-\begin{enumerate}
-\item 下载 Ubuntu 22.04/24.04 ISO 镜像，在 VMware 或 VirtualBox 中创建虚拟机，分配 4GB 以上内存和 60GB 以上磁盘。
-\item 安装系统，配置用户和网络（NAT 模式确保能联网），执行 \texttt{sudo apt update \&\& sudo apt upgrade -y} 更新系统。
-\item 安装开发工具：\texttt{sudo apt install -y build-essential cmake git openssh-server}。
-\item 练习文件操作命令：\texttt{ls}、\texttt{cd}、\texttt{cp}、\texttt{mv}、\texttt{rm}、\texttt{mkdir}、\texttt{touch}、\texttt{ln}。
-\item 练习文本查看与处理命令：\texttt{cat}、\texttt{less}、\texttt{head}、\texttt{tail}、\texttt{grep}、\texttt{awk}、\texttt{sed}、\texttt{sort}、\texttt{uniq}、\texttt{wc}、\texttt{cut}、\texttt{tr}、\texttt{xargs}。
-\item 练习查找命令：\texttt{find}，以及进程与网络命令：\texttt{ps}、\texttt{top}、\texttt{kill}、\texttt{df}、\texttt{du}、\texttt{free}、\texttt{ss}、\texttt{curl}、\texttt{wget}。
-\item 编写一个简单的 C 程序（\texttt{hello.c}），分别使用 GCC 单步（\texttt{-E}、\texttt{-S}、\texttt{-c}、\texttt{-o}）和一步编译，生成可执行文件并运行。
-\item 编写 Makefile，实现 \texttt{hello.c} 的自动构建和清理，执行 \texttt{make} 和 \texttt{make clean} 验证。
-\item 编写 \texttt{CMakeLists.txt}，使用 \texttt{cmake -S . -B build} 和 \texttt{cmake --build build} 构建工程。
-\item 启用 SSH 服务，在主机上用 VS Code Remote-SSH 连接虚拟机，验证远程开发环境。
-\end{enumerate}
-
-\subsection{实验现象与数据记录}
-
-\begin{table}[htbp]
-\centering
-\caption{Linux 命令与构建工具验证记录}
-\label{tab:linux-record}
-\begin{tabularx}{\textwidth}{XXXX}
-\toprule
-\textbf{测试项目} & \textbf{输入命令/操作} & \textbf{预期结果} & \textbf{实际结果} \\
-\midrule
-文件操作 & \texttt{ls -la \string~} & 显示家目录所有文件 & \LabFillBlack[2.8cm] \\
-文本搜索 & \texttt{grep -rn "main" .} & 显示含 main 的行 & \LabFillBlack[2.8cm] \\
-GCC 编译 & \texttt{gcc hello.c -o hello} & 生成可执行文件 & \LabFillBlack[2.8cm] \\
-Makefile & \texttt{make} & 自动编译生成目标 & \LabFillBlack[2.8cm] \\
-CMake & \texttt{cmake --build build} & 构建成功 & \LabFillBlack[2.8cm] \\
-\bottomrule
-\end{tabularx}
-\end{table}
-
-\subsection{结果分析}
-
-虚拟机网络配置（NAT/桥接模式）的选择依据：\LabFillLine[6cm]
-
-GCC 预处理、编译、汇编、链接四个阶段分别生成什么文件：\LabFillLine[6cm]
-
-Makefile 中 \texttt{\$@}、\texttt{\$<}、\texttt{\${\string^}} 分别代表什么：\LabFillLine[6cm]
-
-CMake 相比 Makefile 在跨平台构建中的优势：\LabFillLine[6cm]
-
-\subsection{实验总结}
-
-\noindent\LabFillLine[\linewidth]\par
-\noindent\LabFillLine[\linewidth]\par
-\noindent\LabFillLine[\linewidth]
 
 % ---------------------------------------------------------------------
 \section{小结}
