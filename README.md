@@ -35,15 +35,30 @@
 | 第 2 章 | 任务调度与状态机编程 | `Chapter-task-state-machine` |
 | 第 3 章 | 轻量级协作式任务调度器 | `Chapter-simple-task` |
 | 第 4 章 | 串口通信与 FIFO 缓冲区 | `Chapter-serial-fifo` |
-| 第 5 章 | C 语言实现面向对象特性 | `Chapter-c-oop` |
-| 第 6 章 | 单片机用户界面 | `Chapter-ui-system` |
-| 第 7 章 | 内存分配与内存池 | `Chapter-memory-alloc` |
-| 第 8 章 | 字符串命令解析器 | `Chapter-command-parser` |
-| 第 9 章 | 单片机脚本运行功能 | `Chapter-script-engine` |
-| 第 10 章 | 增强版协程调度器 | `Chapter-coroutine-scheduler` |
-| 第 11 章 | 用户参数存储 | `Chapter-param-store` |
-| 第 12 章 | 内存拷贝、置零与 HardFault | `Chapter-memory-hardfault` |
-| ... | ... | `...` |
+| 第 5 章 | 内存分配与内存池 | `Chapter-memory-alloc` |
+| 第 6 章 | 用户参数存储 | `Chapter-param-store` |
+| 第 7 章 | C 语言实现面向对象特性 | `Chapter-c-oop` |
+| 第 8 章 | 单片机用户界面 | `Chapter-ui-system` |
+| 第 9 章 | 字符串命令解析器 | `Chapter-command-parser` |
+| 第 10 章 | 单片机脚本运行功能 | `Chapter-script-engine` |
+| 第 11 章 | 增强版协程调度器 | `Chapter-coroutine-scheduler` |
+| 第 12 章 | HardFault 分析与处理 | `Chapter-memory-hardfault` |
+| 第 13 章 | PID 控制器设计 | `Chapter-pid-control` |
+| 第 14 章 | FFT 频谱分析 | `Chapter-fft` |
+| 第 15 章 | 数字滤波器设计 | `Chapter-filter` |
+| 第 16 章 | Linux 简单查询手册与转行建议 | `Chapter-linux` |
+| 第 17 章 | 如何应对紧急的交期 | `Chapter-deadline-ai` |
+| 第 18 章 | 关于本书与作者 | `Chapter-about-author` |
+| 第 19 章 | 从备份文件夹到分支闸门 | `Chapter-branch-pipeline` |
+| 第 20 章 | 36 块的产线 | `Chapter-parser-production-line` |
+| 附录 A | 开发板与 BSP 框架 | `Appendix-board-bsp` |
+| 附录 B | Python 语法转换器与动态类型解析 | `Chapter-script-engine`（同第 10 章） |
+| 附录 C | 深入理解协程任务管理器 | `Chapter-coroutine-scheduler`（同第 11 章） |
+| 附录 D | AGENTS.md 设计详解 | `Book/`（文档） |
+| 附录 E | 教程的实现代码在哪里获得 | 本仓库 |
+| 附录 F | 作者项目纪实 | 本仓库 |
+| 附录 G | 学习方法：从新手到专家的路径 | `Book/`（文档） |
+| 附录 H | 各章习题参考答案与提示 | `Book/`（文档） |
 
 ---
 
